@@ -68,9 +68,9 @@ from mirgecom.boundary import (
     OutflowBoundary,
     SymmetryBoundary,
     PrescribedFluidBoundary,
-    #MyPrescribedBoundary_v3,
+    MyPrescribedBoundary_v3,
     AdiabaticNoslipWallBoundary,
-    #LinearizedBoundary
+    LinearizedBoundary
 )
 from mirgecom.fluid import make_conserved
 from mirgecom.transport import (
@@ -80,7 +80,7 @@ from mirgecom.transport import (
     #MixtureAveragedTransport
 )
 from mirgecom.eos import PyrometheusMixture
-from mirgecom.gas_model import GasModel, make_fluid_state
+from mirgecom.gas_model import GasModel, make_fluid_state, ViscousFluidState
 import cantera
 
 from logpyle import IntervalTimer, set_dt
@@ -390,13 +390,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     else:
         queue = cl.CommandQueue(cl_ctx)
 
+    from mirgecom.simutil import get_reasonable_memory_pool
+    alloc = get_reasonable_memory_pool(cl_ctx, queue)
+
     if lazy:
-        actx = actx_class(comm, queue, mpi_base_tag=12000,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+        actx = actx_class(comm, queue, mpi_base_tag=12000, allocator=alloc)
     else:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                force_device_scalars=True)
+        actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
 
     # ~~~~~~~~~~~~~~~~~~
 
@@ -466,9 +466,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{  Set up initial state using Cantera
 
     # Use Cantera for initialization
-    #mechanism_file = "uiuc_based_on_usc_v5a"
+    mechanism_file = "uiuc_based_on_usc_v5a"
     #mechanism_file = "uiuc_sharp"
-    mechanism_file = "uiuc"
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -545,10 +544,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     
     # {{{ Initialize transport model
 #    physical_transport = MixtureAveragedTransport(pyrometheus_mechanism,
-##                                                  lewis=np.ones((nspecies)),
+#                                                  lewis=np.ones((nspecies)),
 #                                                  factor=speedup_factor)
-    physical_transport = PowerLawTransport(lewis=np.ones((nspecies)))#,
-                                           #factor=speedup_factor)
+    physical_transport = PowerLawTransport(lewis=np.ones((nspecies)),
+                                           factor=speedup_factor)
     if use_AV:
         s0 = np.log10(1.0e-4 / np.power(order, 4))
         alpha = 1.0e-4
@@ -589,7 +588,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     transport_model = \
         ArtificialViscosityTransport(physical_transport=physical_transport,
-                                     #nspecies=nspecies,
+                                     nspecies=nspecies,
                                      av_mu=alpha, av_prandtl=0.71,
                                      av_species_diffusivity=av_species)
     # }}}
@@ -800,16 +799,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     vel_ref = np.zeros(shape=(dim,))
     wall_bnd = AdiabaticNoslipWallBoundary()
-#    inflow_bnd = MyPrescribedBoundary_v3(bnd_state_func=inlet_bnd_state_func,
-#                                         wall_temperature=300.0)
-    inflow_bnd = PrescribedFluidBoundary(boundary_state_func=inlet_bnd_state_func)
+    inflow_bnd = MyPrescribedBoundary_v3(bnd_state_func=inlet_bnd_state_func,
+                                         wall_temperature=300.0)
     outflow_bnd = OutflowBoundary(boundary_pressure=101325.0)
-#    linear_bnd = LinearizedBoundary(dim=2, 
-#                                    ref_density=rho_atmosphere,
-#                                    ref_pressure=101325.0,
-#                                    ref_velocity=vel_ref,
-#                                    ref_species_mass_fractions=y_atmosphere)
-    linear_bnd = OutflowBoundary(boundary_pressure=101325.0)
+    linear_bnd = LinearizedBoundary(dim=2, 
+                                    ref_density=rho_atmosphere,
+                                    ref_pressure=101325.0,
+                                    ref_velocity=vel_ref,
+                                    ref_species_mass_fractions=y_atmosphere)
     symmmetry_bnd = SymmetryBoundary()
     
     boundaries = {DTAG_BOUNDARY("inlet"): inflow_bnd,
@@ -1198,6 +1195,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return cv_limited
 
+    apply_limiter = actx.compile(limiter)
+
+    def _update_dv(cv, temperature, smoothness):
+        return eos.update_dependent_vars(cv, temperature, smoothness)
+
+    update_dv = actx.compile(_update_dv)
+
+    def _update_tv(cv, dv):
+        return gas_model.transport.transport_vars(cv, dv, eos)
+
+    update_tv = actx.compile(_update_tv)
+
+    def _update_fluid_state(cv, dv, tv):
+        return ViscousFluidState(cv, dv, tv)
+
+    update_fluid_state = actx.compile(_update_fluid_state)
+
 ##############################################################################
 
     import os
@@ -1217,14 +1231,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # update temperature value
         fluid_state = get_fluid_state(cv, tseed, smoothness=smoothness)
 
-        # apply limiter and reevaluate energy
-        limited_cv = force_evaluation(actx, limiter(fluid_state.cv,
-                                                    fluid_state.pressure,
-                                                    fluid_state.temperature))
+        # apply limiter and reevaluate CV
+        limited_cv = apply_limiter(
+            fluid_state.cv, fluid_state.pressure, fluid_state.temperature)
 
         # get new fluid_state with limited species and respective energy
-        fluid_state = get_fluid_state(limited_cv, 
-                                      tseed, smoothness=smoothness)
+        new_dv = update_dv(limited_cv, fluid_state.temperature, smoothness)
+        new_tv = update_tv(limited_cv, new_dv)
+        fluid_state = update_fluid_state(limited_cv, new_dv, new_tv)
 
         if local_dt:
             t = force_evaluation(actx, t)
