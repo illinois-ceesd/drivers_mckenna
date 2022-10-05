@@ -35,7 +35,7 @@ from functools import partial
 from arraycontext import thaw, freeze
 
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.dof_desc import BoundaryDomainTag
+from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
@@ -45,7 +45,7 @@ from mirgecom.utils import force_evaluation
 from mirgecom.simutil import (
     check_step,
     get_sim_timestep,
-    distribute_mesh,
+    generate_and_distribute_mesh,
     write_visfile,
     check_naninf_local,
     check_range_local,
@@ -95,9 +95,7 @@ from pytools.obj_array import make_obj_array
 
 from mirgecom.fluid import velocity_gradient, species_mass_fraction_gradient
 
-from grudge.dof_desc import (
-    DOFDesc, as_dofdesc, DISCR_TAG_BASE, VolumeDomainTag
-)
+from grudge.dof_desc import DOFDesc, as_dofdesc, DISCR_TAG_BASE 
 
 #########################################################################
 
@@ -273,13 +271,13 @@ class MyRuntimeError(RuntimeError):
     pass
 
 
-#def get_mesh(dim, read_mesh=True):
-#    """Get the mesh."""
-#    from meshmode.mesh.io import read_gmsh
-#    mesh_filename = "mesh_09m_ReactionRate-v2.msh"
-#    mesh = partial(read_gmsh, filename=mesh_filename, force_ambient_dim=dim)
+def get_mesh(dim, read_mesh=True):
+    """Get the mesh."""
+    from meshmode.mesh.io import read_gmsh
+    mesh_filename = "mesh_09m_ReactionRate-v2.msh"
+    mesh = partial(read_gmsh, filename=mesh_filename, force_ambient_dim=dim)
 
-#    return mesh
+    return mesh
 
 
 def sponge_func(cv, cv_ref, sigma):
@@ -687,24 +685,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-    mesh_filename = "mesh_09m_ReactionRate-v2.msh"
     restart_step = None
     if restart_file is None:        
-        if rank == 0:
-            print(f"Reading mesh from {mesh_filename}")
-
-        def get_mesh_data():
-            from meshmode.mesh.io import read_gmsh
-            mesh, tag_to_elements = read_gmsh(
-                mesh_filename, force_ambient_dim=dim,
-                return_tag_to_elements_map=True)
-            volume_to_tags = {
-                "fluid": ["domain"]
-                }
-            return mesh, tag_to_elements, volume_to_tags
-
-        volume_to_local_mesh_data, global_nelements = distribute_mesh(
-            comm, get_mesh_data)
+        local_mesh, global_nelements = generate_and_distribute_mesh(
+            comm, get_mesh(dim=dim))
+        local_nelements = local_mesh.nelements
 
     else:  # Restart
         from mirgecom.restart import read_restart_data
@@ -719,27 +704,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from grudge.dof_desc import DISCR_TAG_QUAD
     from mirgecom.discretization import create_discretization_collection
-    dcoll = create_discretization_collection(
-        actx,
-        volume_meshes={
-            vol: mesh
-            for vol, (mesh, _) in volume_to_local_mesh_data.items()},
-        order=order)
+    dcoll = create_discretization_collection(actx, local_mesh, order, 
+                                             mpi_communicator=comm)
+    nodes = actx.thaw(dcoll.nodes())
 
     from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
     if use_overintegration:
         quadrature_tag = DISCR_TAG_QUAD
     else:
-        quadrature_tag = DISCR_TAG_BASE
-
-    if rank == 0:
-        logger.info("Done making discretization")
-
-    dd_vol_fluid = DOFDesc(VolumeDomainTag("fluid"), DISCR_TAG_BASE)
-
-    nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
-
-#####################################################################################
+        quadrature_tag = None
 
     def vol_min(x):
         from grudge.op import nodal_min
@@ -848,15 +821,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #####################################################################################
 
-    inflow_btag = BoundaryDomainTag("inlet")
-    inflow_btag = as_dofdesc(inflow_btag).domain_tag
-    inflow_dd = dd_vol_fluid.trace(inflow_btag)
-    inflow_bnd_discr = dcoll.discr_from_dd(inflow_btag)
+    #dd_vol_fluid = DOFDesc(VolumeDomainTag("fluid"), DISCR_TAG_BASE)
+
+#####################################################################################
+
+    inflow_dd = as_dofdesc("inlet").domain_tag
+    inflow_bnd_discr = dcoll.discr_from_dd(inflow_dd)
     inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
     inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos)
     inflow_state = make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
         temperature_seed=300.0, smoothness=inflow_nodes[0]*0.0,
-        limiter_func=_limit_fluid_cv, limiter_dd=inflow_dd)
+        limiter_func=_limit_fluid_cv, dd=inflow_dd)
     def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
         return inflow_state
 
@@ -883,11 +858,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                                    ref_velocity=np.zeros(shape=(dim,)),
 #                                    ref_species_mass_fractions=y_atmosphere)
     
-    boundaries = {BoundaryDomainTag("inlet"): inflow_bnd,
-                  BoundaryDomainTag("symmetry"): symmmetry_bnd,
-                  BoundaryDomainTag("outlet"): outflow_bnd,
-                  BoundaryDomainTag("sponge"): linear_bnd,
-                  BoundaryDomainTag("wall"): wall_bnd}
+    boundaries = {DTAG_BOUNDARY("inlet"): inflow_bnd,
+                  DTAG_BOUNDARY("symmetry"): symmmetry_bnd,
+                  DTAG_BOUNDARY("outlet"): outflow_bnd,
+                  DTAG_BOUNDARY("sponge"): linear_bnd,
+                  DTAG_BOUNDARY("wall"): wall_bnd}
 
 #####################################################################################
 
