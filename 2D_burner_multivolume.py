@@ -30,14 +30,26 @@ import numpy as np
 import pyopencl as cl
 import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
+import pyopencl.tools as cl_tools
 from functools import partial
+from dataclasses import dataclass, fields
 
-from arraycontext import thaw, freeze
+#from arraycontext import thaw, freeze
+from arraycontext import (
+    dataclass_array_container,
+    with_container_arithmetic,
+    get_container_context_recursively
+)
 
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
+from meshmode.dof_array import DOFArray
 from grudge.dof_desc import BoundaryDomainTag
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
+from grudge.trace_pair import inter_volume_trace_pairs
+from grudge.dof_desc import (
+    DOFDesc, as_dofdesc, DISCR_TAG_BASE, VolumeDomainTag
+)
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from mirgecom.navierstokes import ns_operator
@@ -51,14 +63,10 @@ from mirgecom.simutil import (
     check_range_local,
     global_reduce
 )
-from mirgecom.restart import (
-    write_restart_file
-)
+from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
-import pyopencl.tools as cl_tools
 
-from mirgecom.integrators import euler_step
 from grudge.shortcuts import compiled_lsrk45_step
 
 from mirgecom.steppers import advance_state
@@ -72,16 +80,20 @@ from mirgecom.boundary import (
     AdiabaticNoslipWallBoundary,
     #LinearizedBoundary
 )
-from mirgecom.fluid import make_conserved
+
+from mirgecom.fluid import (
+    velocity_gradient, species_mass_fraction_gradient,
+    make_conserved
+)
+
 from mirgecom.transport import (
-    #SimpleTransport,
     PowerLawTransport,
     ArtificialViscosityTransport,
     #MixtureAveragedTransport
 )
+import cantera
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.gas_model import GasModel, make_fluid_state
-import cantera
 
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
@@ -93,10 +105,14 @@ from mirgecom.logging_quantities import (
 
 from pytools.obj_array import make_obj_array
 
-from mirgecom.fluid import velocity_gradient, species_mass_fraction_gradient
+from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
+    coupled_grad_t_operator,
+    coupled_ns_heat_operator
+)
 
-from grudge.dof_desc import (
-    DOFDesc, as_dofdesc, DISCR_TAG_BASE, VolumeDomainTag
+from mirgecom.diffusion import (
+    diffusion_operator,
+    DirichletDiffusionBoundary
 )
 
 #########################################################################
@@ -373,10 +389,109 @@ class InitSponge:
         return actx.np.maximum(sponge_x,sponge_y)
 
 
+
+def mask_from_elements(vol_discr, actx, elements):
+    mesh = vol_discr.mesh
+    zeros = vol_discr.zeros(actx)
+
+    group_arrays = []
+
+    for igrp in range(len(mesh.groups)):
+        start_elem_nr = mesh.base_element_nrs[igrp]
+        end_elem_nr = start_elem_nr + mesh.groups[igrp].nelements
+        grp_elems = elements[
+            (elements >= start_elem_nr)
+            & (elements < end_elem_nr)] - start_elem_nr
+        grp_ary_np = actx.to_numpy(zeros[igrp])
+        grp_ary_np[grp_elems] = 1
+        group_arrays.append(actx.from_numpy(grp_ary_np))
+
+    return DOFArray(actx, tuple(group_arrays))
+
+
+@with_container_arithmetic(bcast_obj_array=False,
+                           bcast_container_types=(DOFArray, np.ndarray),
+                           matmul=True,
+                           _cls_has_array_context_attr=True,
+                           rel_comparison=True)
+@dataclass_array_container
+@dataclass(frozen=True)
+class WallVars:
+    mass: DOFArray
+    energy: DOFArray
+    ox_mass: DOFArray
+
+    @property
+    def array_context(self):
+        """Return an array context for the :class:`ConservedVars` object."""
+        return get_container_context_recursively(self.mass)
+
+    def __reduce__(self):
+        """Return a tuple reproduction of self for pickling."""
+        return (WallVars, tuple(getattr(self, f.name)
+                                    for f in fields(WallVars)))
+
+
+class WallModel:
+    """Model for calculating wall quantities."""
+    def __init__(
+            self,
+            insert_mask, surround_mask,
+            insert_heat_capacity, surround_heat_capacity,
+            insert_mass_to_thermal_conductivity, surround_thermal_conductivity,
+            insert_mass_to_effective_surface_area,
+            insert_oxygen_diffusivity, *,
+            gas_const, mw_o2, mw_co):
+        self._insert_mask = insert_mask
+        self._surround_mask = surround_mask
+        self._heat_capacity = (
+            insert_heat_capacity * insert_mask
+            + surround_heat_capacity * surround_mask)
+        self._insert_mass_to_thermal_conductivity = \
+            insert_mass_to_thermal_conductivity
+        self._surround_thermal_conductivity = surround_thermal_conductivity
+        self._insert_mass_to_effective_surface_area = \
+            insert_mass_to_effective_surface_area
+        self._oxygen_diffusivity = insert_oxygen_diffusivity * insert_mask
+        self._gas_const = gas_const
+        self._mw_o2 = mw_o2
+        self._mw_co = mw_co
+
+    @property
+    def heat_capacity(self):
+        return self._heat_capacity
+
+    def mass_loss_rate(self, wv):
+        actx = wv.mass.array_context
+        temperature = wv.energy/(wv.mass * self.heat_capacity)
+        alpha = (
+            (0.00143+0.01*actx.np.exp(-1450.0/temperature))
+            / (1.0+0.0002*actx.np.exp(13000.0/temperature)))
+        k = alpha * actx.np.sqrt(
+            (self._gas_const*temperature)/(2.0*np.pi*self._mw_o2))
+        eff_surf_area = self._insert_mass_to_effective_surface_area(wv.mass)
+        return (self._mw_co/self._mw_o2 - 0.5)*wv.ox_mass*k*eff_surf_area
+
+    def thermal_conductivity(self, mass):
+        return (
+            self._insert_mask * self._insert_mass_to_thermal_conductivity(mass)
+            + self._surround_mask * self._surround_thermal_conductivity)
+
+    def thermal_diffusivity(self, mass, thermal_conductivity=None):
+        if thermal_conductivity is None:
+            thermal_conductivity = self.thermal_conductivity(mass)
+        return thermal_conductivity/(mass * self.heat_capacity)
+
+    @property
+    def oxygen_diffusivity(self):
+        return self._oxygen_diffusivity
+
+
+
 @mpi_entry_point
 def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
          use_leap=False, use_profiling=False, casename=None, lazy=False,
-         rst_filename=None):
+         restart_filename=None):
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
@@ -408,17 +523,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_path = "restart_data/"
     viz_path = "viz_data/"
     vizname = viz_path+casename
-    rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
+    restart_pattern = rst_path + "{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
-    nviz = 1000
+    nviz = 500
     nrestart = 10000
     nhealth = 1
     nstatus = 100
 
     # default timestepping control
     integrator = "compiled_lsrk45"
-    current_dt = 1.0e-9
+    current_dt = 1.0e-8
     t_final = 2.0
 
     niter = 100001
@@ -426,8 +541,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # discretization and model control
     order = 1
 
-    local_dt = True
-    constant_cfl = True
+    local_dt = False
+    constant_cfl = False
     current_cfl = 0.4
 
     speedup_factor = 7.5
@@ -567,23 +682,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         kappa_av = 0.0
         av_species = 0.0
 
-    def smoothness_indicator(dcoll, field, **kwargs):
-        
-        actx = field.array_context
-        nodes = force_evaluation(actx, dcoll.nodes())
-        xpos = nodes[0]
-        ypos = nodes[1]
-
-        return xpos*0.0
-
-    transport_model = \
-        ArtificialViscosityTransport(physical_transport=physical_transport,
-                                     #nspecies=nspecies,
-                                     av_mu=alpha, av_prandtl=0.71,
-                                     av_species_diffusivity=av_species)
-    # }}}
-
-    gas_model = GasModel(eos=eos, transport=transport_model)
+    gas_model = GasModel(eos=eos, transport=physical_transport)
 
     print(f"Pyrometheus mechanism species names {species_names}")
     print(f"Unburned:")
@@ -610,12 +709,33 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     print(f"Y = {y_shroud}")
     print(f"W = {mmw_shroud}")
 
+    # Averaging from https://www.azom.com/article.aspx?ArticleID=1630
+    # for graphite
+    wall_insert_rho = 1625
+    wall_insert_cp = 770
+    wall_insert_kappa = 247.5
+
+    wall_surround_rho = 1625
+    wall_surround_cp = 770
+    wall_surround_kappa = 247.5
+
+    # wall stuff
+    wall_penalty_amount = 25
+    wall_time_scale = 50
+
+    temp_wall = 300
+
+    wall_insert_ox_diff = 1e-4
+
+##################################
+
     from mirgecom.limiter import bound_preserving_limiter
     def _limit_fluid_cv(cv, pressure, temperature, dd=None):
 
         # limit species
         spec_lim = make_obj_array([
-            bound_preserving_limiter(dcoll, cv.species_mass_fractions[i], mmin=0.0, mmax=1.0, modify_average=True, dd=dd)
+            bound_preserving_limiter(dcoll, cv.species_mass_fractions[i], 
+                                     mmin=0.0, mmax=1.0, modify_average=True, dd=dd)
             for i in range(nspecies)
         ])
 
@@ -639,15 +759,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
                               momentum=mass_lim*cv.velocity,
                               species_mass=mass_lim*spec_lim)
-
-
-    def _get_fluid_state(cv, temp_seed, smoothness):
-        return make_fluid_state(cv=cv, gas_model=gas_model,
-            temperature_seed=temp_seed, smoothness=smoothness,
-            limiter_func=_limit_fluid_cv
-        )
-
-    get_fluid_state = actx.compile(_get_fluid_state)
 
 ##################################
 
@@ -687,7 +798,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-    mesh_filename = "mesh_09m_ReactionRate-v2.msh"
+    mesh_filename = "mesh_10m_ReactionRate-v2.msh"
     restart_step = None
     if restart_file is None:        
         if rank == 0:
@@ -699,7 +810,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 mesh_filename, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             volume_to_tags = {
-                "fluid": ["domain"]
+                "fluid": ["fluid"],
+                "solid": ["wall_insert", "wall_surround"]
                 }
             return mesh, tag_to_elements, volume_to_tags
 
@@ -717,6 +829,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         assert comm.Get_size() == restart_data["num_parts"]
 
+    local_nelements = (
+          volume_to_local_mesh_data["fluid"][0].nelements
+        + volume_to_local_mesh_data["solid"][0].nelements)
+
     from grudge.dof_desc import DISCR_TAG_QUAD
     from mirgecom.discretization import create_discretization_collection
     dcoll = create_discretization_collection(
@@ -725,6 +841,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             vol: mesh
             for vol, (mesh, _) in volume_to_local_mesh_data.items()},
         order=order)
+
 
     from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
     if use_overintegration:
@@ -736,32 +853,54 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         logger.info("Done making discretization")
 
     dd_vol_fluid = DOFDesc(VolumeDomainTag("fluid"), DISCR_TAG_BASE)
+    dd_vol_solid = DOFDesc(VolumeDomainTag("solid"), DISCR_TAG_BASE)
 
-    nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
+    wall_vol_discr = dcoll.discr_from_dd(dd_vol_solid)
+    wall_tag_to_elements = volume_to_local_mesh_data["solid"][1]
+    wall_insert_mask = mask_from_elements(
+        wall_vol_discr, actx, wall_tag_to_elements["wall_insert"])
+    wall_surround_mask = mask_from_elements(
+        wall_vol_discr, actx, wall_tag_to_elements["wall_surround"])
+
+    fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
+    solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
 
 #####################################################################################
 
-    def vol_min(x):
-        from grudge.op import nodal_min
-        return actx.to_numpy(nodal_min(dcoll, "vol", x))[()]
+    def _create_wall_derived(wv):
+        wall_kappa = wall_model.thermal_conductivity(wv.mass)
+        wall_temperature = wv.energy/(wv.mass * wall_model.heat_capacity)
+        return make_obj_array([wall_kappa, wall_temperature])
 
-    def vol_max(x):
-        from grudge.op import nodal_max
-        return actx.to_numpy(nodal_max(dcoll, "vol", x))[()]
+    create_wall_derived_compiled = actx.compile(_create_wall_derived)
 
+    def _get_wall_kappa(wv):
+        return wall_model.thermal_conductivity(wv.mass)
 
-    from grudge.dt_utils import characteristic_lengthscales
-    length_scales = characteristic_lengthscales(actx, dcoll)
-    h_min = vol_min(length_scales)
-    h_max = vol_max(length_scales)
+    get_wall_kappa_compiled = actx.compile(_get_wall_kappa)
 
-    if rank == 0:
-        print("----- Discretization info ----")
-        print(f"Discr: {nodes.shape=}, {order=}, {h_min=}, {h_max=}")
-    for i in range(nparts):
-        if rank == i:
-            print(f"{rank=},{local_nelements=},{global_nelements=}")
-        comm.Barrier()
+    def _get_wv(wv):
+        return wv
+
+    get_wv = actx.compile(_get_wv)
+
+    def _get_fluid_state(cv, temp_seed):
+        return make_fluid_state(cv=cv, gas_model=gas_model,
+            temperature_seed=temp_seed, limiter_func=_limit_fluid_cv,
+            limiter_dd=dd_vol_fluid,
+        )
+
+    get_fluid_state = actx.compile(_get_fluid_state)
+
+#####################################################################################
+
+    def vol_min(dd_vol, x):
+        return actx.to_numpy(nodal_min(dcoll, dd_vol, x,
+                                       initial=np.inf))[()]
+
+    def vol_max(dd_vol, x):
+        return actx.to_numpy(nodal_max(dcoll, dd_vol, x,
+                                       initial=-np.inf))[()]
 
 #########################################################################
 
@@ -803,7 +942,19 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if restart_file is None:
         if rank == 0:
             logging.info("Initializing soln.")
-        current_cv = flow_init(nodes, eos, init=False)
+        current_cv = flow_init(fluid_nodes, eos, init=False)
+
+        wall_mass = (
+            wall_insert_rho * wall_insert_mask
+            + wall_surround_rho * wall_surround_mask)
+        wall_cp = (
+            wall_insert_cp * wall_insert_mask
+            + wall_surround_cp * wall_surround_mask)
+        current_wv = WallVars(
+            mass=wall_mass,
+            energy=wall_mass * wall_cp * temp_wall,
+            ox_mass=0*wall_mass)
+
     else:
         current_step = restart_step
         current_t = restart_data["t"]
@@ -835,45 +986,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             logmgr_set_time(logmgr, current_step, current_t)
 
 
-    tseed = force_evaluation(actx, 1000.0 + nodes[0]*0.0)
-#    tseed = force_evaluation(actx, tseed)
+    tseed = force_evaluation(actx, 1000.0 + fluid_nodes[0]*0.0)
     current_cv = force_evaluation(actx, current_cv)
+    current_wv = force_evaluation(actx, current_wv)
 
-    if True: #use_AV:
-        smoothness = force_evaluation(actx, smoothness_indicator(
-            dcoll, current_cv.mass, kappa=kappa_av, s0=s0))
-
-    current_state = get_fluid_state(current_cv, tseed, smoothness=smoothness)
-    current_state = force_evaluation(actx, current_state)
+    current_state = get_fluid_state(current_cv, tseed)
 
 #####################################################################################
 
-    inflow_btag = BoundaryDomainTag("inlet")
-    inflow_btag = as_dofdesc(inflow_btag).domain_tag
-    inflow_dd = dd_vol_fluid.trace(inflow_btag)
-    inflow_bnd_discr = dcoll.discr_from_dd(inflow_btag)
-    inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
-    inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos)
-    inflow_state = make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-        temperature_seed=300.0, smoothness=inflow_nodes[0]*0.0,
-        limiter_func=_limit_fluid_cv, limiter_dd=inflow_dd)
-    def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-        return inflow_state
 
-#    def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-#        inflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
-#        inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
-#        inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
-#                                   state_minus=state_minus)
-#        return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-#            temperature_seed=300.0, smoothness=inflow_nodes[0]*0.0,
-#            limiter_func=_limit_fluid_cv
-#        )
+    def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+        inflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
+        inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
+        inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos)
+        return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
+            temperature_seed=300.0,
+            limiter_func=_limit_fluid_cv, limiter_dd=dd_bdry)
 
     wall_bnd = AdiabaticNoslipWallBoundary()
     inflow_bnd = PrescribedFluidBoundary(boundary_state_func=inlet_bnd_state_func)
     outflow_bnd = OutflowBoundary(boundary_pressure=101325.0)
-    linear_bnd = OutflowBoundary(boundary_pressure=101325.0)
     symmmetry_bnd = SymmetryBoundary()
 #    inflow_bnd = MyPrescribedBoundary_v3(bnd_state_func=inlet_bnd_state_func,
 #                                         wall_temperature=300.0)
@@ -883,11 +1015,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                                    ref_velocity=np.zeros(shape=(dim,)),
 #                                    ref_species_mass_fractions=y_atmosphere)
     
-    boundaries = {BoundaryDomainTag("inlet"): inflow_bnd,
-                  BoundaryDomainTag("symmetry"): symmmetry_bnd,
-                  BoundaryDomainTag("outlet"): outflow_bnd,
-                  BoundaryDomainTag("sponge"): linear_bnd,
-                  BoundaryDomainTag("wall"): wall_bnd}
+    wall_symmetry = DirichletDiffusionBoundary(temp_wall)
+
+    fluid_boundaries = {
+        dd_vol_fluid.trace("inlet").domain_tag: inflow_bnd,
+        dd_vol_fluid.trace("symmetry").domain_tag: symmmetry_bnd,
+        dd_vol_fluid.trace("outlet").domain_tag: outflow_bnd,
+        dd_vol_fluid.trace("wall").domain_tag: wall_bnd}
+
+    solid_boundaries = {
+        dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry
+    }
 
 #####################################################################################
 
@@ -908,12 +1046,38 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                              y_thickness=sponge_y_thickness
                              )
 
-    sponge_sigma = force_evaluation(actx, sponge_init(x_vec=nodes))
-    ref_cv = force_evaluation(actx, ref_state(nodes, eos))
+    sponge_sigma = force_evaluation(actx, sponge_init(x_vec=fluid_nodes))
+    ref_cv = force_evaluation(actx, ref_state(fluid_nodes, eos))
 
-####################################################################################
+##############################################################################
 
-    visualizer = make_visualizer(dcoll)
+    def insert_mass_to_kappa(mass):
+        # TODO
+        # mass_loss_frac = (wall_insert_rho - mass)/wall_insert_rho
+        # ...
+        return wall_insert_kappa
+
+    def insert_mass_to_effective_surface_area(mass):
+        # TODO
+        # mass_loss_frac = (wall_insert_rho - mass)/wall_insert_rho
+        # ...
+        return 1
+
+    mw_o2 = 15.999*2
+    mw_co = 28.010
+    gas_const = 8314.59/mmw_atmosphere
+    wall_model = WallModel(
+        wall_insert_mask, wall_surround_mask,
+        wall_insert_cp, wall_surround_cp,
+        insert_mass_to_kappa, wall_surround_kappa,
+        insert_mass_to_effective_surface_area,
+        wall_insert_ox_diff,
+        gas_const=gas_const, mw_o2=mw_o2, mw_co=mw_co)
+
+##############################################################################
+
+    fluid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_fluid)
+    solid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_solid)
 
     initname = original_casename
     eosname = eos.__class__.__name__
@@ -933,51 +1097,66 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #########################################################################
 
     from grudge.dt_utils import characteristic_lengthscales, dt_geometric_factors
-    def my_write_viz(step, t, state, dt=None,
-                     ns_rhs=None, chem_sources=None,
-                     grad_cv=None, grad_t=None,
-                     ref_cv=None, sources=None, plot_gradients=False):
+    def my_write_viz(step, t, fluid_state, wv, wall_kappa, wall_temperature):
 
-        R = eos.gas_const(state.cv)
+        fluid_viz_fields = [
+            ("CV_rho", fluid_state.cv.mass),
+            ("CV_rhoU", fluid_state.cv.momentum),
+            ("CV_rhoE", fluid_state.cv.energy),
+            ("DV_P", fluid_state.pressure),
+            ("DV_T", fluid_state.temperature),
+            ("DV_U", fluid_state.velocity[0]),
+            ("DV_V", fluid_state.velocity[1]),
+#            ("dt", dt),
+            ("sponge", sponge_sigma)
+        ]
 
-        viz_fields = [("CV_rho", state.cv.mass),
-                      ("CV_rhoU", state.cv.momentum),
-                      ("CV_rhoE", state.cv.energy),
-                      ("DV_P", state.pressure),
-                      ("DV_T", state.temperature),
-                      ("DV_U", state.velocity[0]),
-                      ("DV_V", state.velocity[1]),
-                      ("DV_AV", state.dv.smoothness),
-                      ("dt", dt),
-                      ("R", R),
-                      ("sponge", sponge_sigma),
-                      ]
+        cell_alpha = wall_model.thermal_diffusivity(wv.mass, wall_kappa)
+        solid_viz_fields = [
+            ("wv", wv),
+            ("wall_kappa", wall_kappa),
+            ("wall_temperature", wall_temperature),
+            ("wall_alpha", cell_alpha)
+            #("dt" if constant_cfl else "cfl", ts_field_wall)
+        ]
 
         # species mass fractions
-        viz_fields.extend(
-            ("Y_"+species_names[i], state.cv.species_mass_fractions[i])
+        fluid_viz_fields.extend(
+            ("Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
                 for i in range(nspecies))
                       
         print('Writing solution file...')
-        write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
-                      step=step, t=t, overwrite=True)
+        write_visfile(
+            dcoll, fluid_viz_fields, fluid_visualizer,
+            vizname=vizname+"-fluid", step=step, t=t,
+            overwrite=True, comm=comm)
+        write_visfile(
+            dcoll, solid_viz_fields, solid_visualizer,
+            vizname=vizname+"-wall", step=step, t=t,
+            overwrite=True, comm=comm)
 
-    def my_write_restart(step, t, cv, tseed):
-        rst_fname = rst_pattern.format(cname=casename, step=step, rank=rank)
-        if rst_fname != rst_filename:
-            rst_data = {
-                "local_mesh": local_mesh,
-                "state": cv,
+    from mirgecom.restart import write_restart_file
+    def my_write_restart(step, t, state):
+        if rank == 0:
+            print('Writing restart file...')
+
+        cv, tseed, wv = state
+        restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
+        if restart_fname != restart_filename:
+            restart_data = {
+                "volume_to_local_mesh_data": volume_to_local_mesh_data,
+                "cv": cv,
                 "temperature_seed": tseed,
+                "nspecies": nspecies,
+                "wv": wv,
                 "t": t,
                 "step": step,
                 "order": order,
                 "global_nelements": global_nelements,
                 "num_parts": nparts
             }
-            from mirgecom.restart import write_restart_file
-            print('Writing restart file...')
-            write_restart_file(actx, rst_data, rst_fname, comm)
+            
+            write_restart_file(actx, restart_data, restart_fname, comm)
 
 #########################################################################
 
@@ -998,164 +1177,164 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
           
-    from mirgecom.flux import num_flux_central
-    from arraycontext import outer
-    from grudge.trace_pair import TracePair, interior_trace_pair
-   #from grudge.trace_pair import TracePair, interior_trace_pairs
-    from mirgecom.boundary import DummyBoundary
-    from mirgecom.operators import grad_operator
-    from arraycontext import outer
-    from grudge import op
+#    from mirgecom.flux import num_flux_central
+#    from arraycontext import outer
+#    from grudge.trace_pair import TracePair, interior_trace_pair
+#   #from grudge.trace_pair import TracePair, interior_trace_pairs
+#    from mirgecom.boundary import DummyBoundary
+#    from mirgecom.operators import grad_operator
+#    from arraycontext import outer
+#    from grudge import op
 
-    def _elbnd_flux(dcoll, compute_interior_flux, compute_boundary_flux,
-                int_tpair, boundaries):
-        return (compute_interior_flux(int_tpair)
-            + sum(compute_boundary_flux(btag) for btag in boundaries))
-            
-            
-    def central_flux_interior(actx, dcoll, int_tpair):
-        """Compute a central flux for interior faces."""       
-        normal = actx.thaw(dcoll.normal(int_tpair.dd))
-        flux_weak = outer(num_flux_central(int_tpair.int, int_tpair.ext), normal)
-        dd_all_faces = int_tpair.dd.with_dtag("all_faces")
-        
-        return op.project(dcoll, int_tpair.dd, dd_all_faces, flux_weak)
-
-
-    def central_flux_boundary(actx, dcoll, field, btag):
-        """Compute a central flux for boundary faces."""
-        dd_base_vol = DOFDesc("vol")
-        bnd_solution_quad = op.project(dcoll, dd_base_vol, as_dofdesc(btag), field)     
-        bnd_nhat = actx.thaw(dcoll.normal(btag))
-        bnd_tpair = TracePair(btag, interior=bnd_solution_quad,
-                                    exterior=bnd_solution_quad)
-        flux_weak = outer(num_flux_central(bnd_tpair.int, bnd_tpair.ext), bnd_nhat)
-        dd_all_faces = bnd_tpair.dd.with_dtag("all_faces")
-        
-        return op.project(dcoll, bnd_tpair.dd, dd_all_faces, flux_weak)
+#    def _elbnd_flux(dcoll, compute_interior_flux, compute_boundary_flux,
+#                int_tpair, boundaries):
+#        return (compute_interior_flux(int_tpair)
+#            + sum(compute_boundary_flux(btag) for btag in boundaries))
+#            
+#            
+#    def central_flux_interior(actx, dcoll, int_tpair):
+#        """Compute a central flux for interior faces."""       
+#        normal = actx.thaw(dcoll.normal(int_tpair.dd))
+#        flux_weak = outer(num_flux_central(int_tpair.int, int_tpair.ext), normal)
+#        dd_all_faces = int_tpair.dd.with_dtag("all_faces")
+#        
+#        return op.project(dcoll, int_tpair.dd, dd_all_faces, flux_weak)
 
 
-    field_bounds = {DTAG_BOUNDARY("symmetry"): DummyBoundary(),
-                    DTAG_BOUNDARY("inlet"): DummyBoundary(),
-                    DTAG_BOUNDARY("outlet"): DummyBoundary(),
-                    DTAG_BOUNDARY("sponge"): DummyBoundary(),
-                    DTAG_BOUNDARY("wall"): DummyBoundary()}
-    def my_derivative_function(actx, dcoll, field):
-        
-        int_flux = partial(central_flux_interior, actx, dcoll)
-        bnd_flux = partial(central_flux_boundary, actx, dcoll, field)        
+#    def central_flux_boundary(actx, dcoll, field, btag):
+#        """Compute a central flux for boundary faces."""
+#        dd_base_vol = DOFDesc("vol")
+#        bnd_solution_quad = op.project(dcoll, dd_base_vol, as_dofdesc(btag), field)     
+#        bnd_nhat = actx.thaw(dcoll.normal(btag))
+#        bnd_tpair = TracePair(btag, interior=bnd_solution_quad,
+#                                    exterior=bnd_solution_quad)
+#        flux_weak = outer(num_flux_central(bnd_tpair.int, bnd_tpair.ext), bnd_nhat)
+#        dd_all_faces = bnd_tpair.dd.with_dtag("all_faces")
+#        
+#        return op.project(dcoll, bnd_tpair.dd, dd_all_faces, flux_weak)
 
-        int_tpair = interior_trace_pair(dcoll, field) #XXX
-        flux_bnd = _elbnd_flux(dcoll, int_flux, bnd_flux, int_tpair, field_bounds)
 
-        dd_vol = as_dofdesc("vol")
-        dd_faces = as_dofdesc("all_faces")
-        
-        return grad_operator(dcoll, dd_vol, dd_faces, field, flux_bnd)
+#    field_bounds = {BoundaryDomainTag("symmetry"): DummyBoundary(),
+#                    BoundaryDomainTag("inlet"): DummyBoundary(),
+#                    BoundaryDomainTag("outlet"): DummyBoundary(),
+#                    BoundaryDomainTag("sponge"): DummyBoundary(),
+#                    BoundaryDomainTag("wall"): DummyBoundary()}
+#    def my_derivative_function(actx, dcoll, field):
+#        
+#        int_flux = partial(central_flux_interior, actx, dcoll)
+#        bnd_flux = partial(central_flux_boundary, actx, dcoll, field)        
 
-    #########################################################################
+#        int_tpair = interior_trace_pair(dcoll, field) #XXX
+#        flux_bnd = _elbnd_flux(dcoll, int_flux, bnd_flux, int_tpair, field_bounds)
 
-    off_axis_x = 1e-7
-    nodes_are_off_axis = actx.np.greater(nodes[0], off_axis_x)  # noqa
-   
-    def axisymmetry_source_terms(actx, dcoll, state, grad_cv, grad_t):
+#        dd_vol = as_dofdesc("vol")
+#        dd_faces = as_dofdesc("all_faces")
+#        
+#        return grad_operator(dcoll, dd_vol, dd_faces, field, flux_bnd)
 
-        nodes = actx.thaw(dcoll.nodes())
-        
-        cv = state.cv
-        dv = state.dv
-        
-        mu = state.tv.viscosity
-        beta = transport_model.volume_viscosity(cv, dv, eos)
-        kappa = state.tv.thermal_conductivity
-        d_ij = state.tv.species_diffusivity
-        
-        grad_v = velocity_gradient(cv,grad_cv)
-        grad_y = species_mass_fraction_gradient(cv, grad_cv)
+#    #########################################################################
 
-        u = state.velocity[0]
-        v = state.velocity[1]
+#    off_axis_x = 1e-7
+#    nodes_are_off_axis = actx.np.greater(nodes[0], off_axis_x)  # noqa
+#   
+#    def axisymmetry_source_terms(actx, dcoll, state, grad_cv, grad_t):
 
-        dudr = grad_v[0][0]
-        dudy = grad_v[0][1]
-        dvdr = grad_v[1][0]
-        dvdy = grad_v[1][1]
-        
-        drhoudr = (grad_cv.momentum[0])[0]
+#        nodes = actx.thaw(dcoll.nodes())
+#        
+#        cv = state.cv
+#        dv = state.dv
+#        
+#        mu = state.tv.viscosity
+#        beta = transport_model.volume_viscosity(cv, dv, eos)
+#        kappa = state.tv.thermal_conductivity
+#        d_ij = state.tv.species_diffusivity
+#        
+#        grad_v = velocity_gradient(cv,grad_cv)
+#        grad_y = species_mass_fraction_gradient(cv, grad_cv)
 
-        d2udrdy = my_derivative_function(actx, dcoll, dudy)[0]
-                
-        dbetadr = my_derivative_function(actx, dcoll, beta)[0]
-        dbetady = my_derivative_function(actx, dcoll, beta)[1]
-        
-        dyidr = grad_y[:,0]
-        dyi2dr2 = my_derivative_function(actx, dcoll, dyidr)[:,0]   
-        
-        qr = kappa*grad_t[0]
-        dqrdr  = my_derivative_function(actx, dcoll,  qr)[0]
-        
-        tau_ry = 1.0*mu*(dudy + dvdr)
-        tau_rr = 2.0*mu*dudr + beta*(dudr + dvdy)
-        tau_yy = 2.0*mu*dvdy + beta*(dudr + dvdy)
-        tau_tt = beta*(dudr + dvdy) + 2.0*mu*actx.np.where(
-                              nodes_are_off_axis, u/nodes[0], dudr )
+#        u = state.velocity[0]
+#        v = state.velocity[1]
 
-        dtaurydr = my_derivative_function(actx, dcoll, tau_ry)[0]
+#        dudr = grad_v[0][0]
+#        dudy = grad_v[0][1]
+#        dvdr = grad_v[1][0]
+#        dvdy = grad_v[1][1]
+#        
+#        drhoudr = (grad_cv.momentum[0])[0]
 
-        """
-        """
-        source_mass_dom = - cv.momentum[0]
+#        d2udrdy = my_derivative_function(actx, dcoll, dudy)[0]
+#                
+#        dbetadr = my_derivative_function(actx, dcoll, beta)[0]
+#        dbetady = my_derivative_function(actx, dcoll, beta)[1]
+#        
+#        dyidr = grad_y[:,0]
+#        dyi2dr2 = my_derivative_function(actx, dcoll, dyidr)[:,0]   
+#        
+#        qr = kappa*grad_t[0]
+#        dqrdr  = my_derivative_function(actx, dcoll,  qr)[0]
+#        
+#        tau_ry = 1.0*mu*(dudy + dvdr)
+#        tau_rr = 2.0*mu*dudr + beta*(dudr + dvdy)
+#        tau_yy = 2.0*mu*dvdy + beta*(dudr + dvdy)
+#        tau_tt = beta*(dudr + dvdy) + 2.0*mu*actx.np.where(
+#                              nodes_are_off_axis, u/nodes[0], dudr )
 
-        source_rhoU_dom = - cv.momentum[0]*u \
-                          + tau_rr - tau_tt \
-                          + u*dbetadr + beta*dudr \
-                          + beta*actx.np.where(
-                              nodes_are_off_axis, -u/nodes[0], -dudr )
-                              
-        source_rhoV_dom = - cv.momentum[0]*v \
-                          + tau_ry \
-                          + u*dbetady + beta*dudy
-        
-        source_rhoE_dom = -( (cv.energy+dv.pressure)*u + qr ) \
-                          + u*tau_rr + v*tau_ry \
-                          + u**2*dbetadr + beta*2.0*u*dudr \
-                          + u*v*dbetady + u*beta*dvdy + v*beta*dudy
+#        dtaurydr = my_derivative_function(actx, dcoll, tau_ry)[0]
 
-        source_spec_dom = - cv.species_mass*u + d_ij*dyidr
-        """
-        """
+#        """
+#        """
+#        source_mass_dom = - cv.momentum[0]
 
-        source_mass_sng = - drhoudr
-        source_rhoU_sng = 0.0
-        source_rhoV_sng = - v*drhoudr + dtaurydr + beta*d2udrdy + dudr*dbetady
-        source_rhoE_sng = -( (cv.energy+dv.pressure)*dudr + dqrdr ) \
-                                + tau_rr*dudr + v*dtaurydr \
-                                + 2.0*beta*dudr**2 \
-                                + beta*dudr*dvdy \
-                                + v*dudr*dbetady \
-                                + v*beta*d2udrdy
+#        source_rhoU_dom = - cv.momentum[0]*u \
+#                          + tau_rr - tau_tt \
+#                          + u*dbetadr + beta*dudr \
+#                          + beta*actx.np.where(
+#                              nodes_are_off_axis, -u/nodes[0], -dudr )
+#                              
+#        source_rhoV_dom = - cv.momentum[0]*v \
+#                          + tau_ry \
+#                          + u*dbetady + beta*dudy
+#        
+#        source_rhoE_dom = -( (cv.energy+dv.pressure)*u + qr ) \
+#                          + u*tau_rr + v*tau_ry \
+#                          + u**2*dbetadr + beta*2.0*u*dudr \
+#                          + u*v*dbetady + u*beta*dvdy + v*beta*dudy
 
-        source_spec_sng = -( grad_cv.species_mass[:,0]*u \
-                             + cv.species_mass*dudr )
-        
-        """
-        """
-        source_mass = actx.np.where( nodes_are_off_axis,
-                          source_mass_dom/nodes[0], source_mass_sng )
-        source_rhoU = actx.np.where( nodes_are_off_axis,
-                          source_rhoU_dom/nodes[0], source_rhoU_sng )
-        source_rhoV = actx.np.where( nodes_are_off_axis,
-                          source_rhoV_dom/nodes[0], source_rhoV_sng )
-        source_rhoE = actx.np.where( nodes_are_off_axis,
-                          source_rhoE_dom/nodes[0], source_rhoE_sng )
-        source_spec = make_obj_array([
-                      actx.np.where( nodes_are_off_axis,
-                          source_spec_dom[i]/nodes[0], source_spec_sng[i] )
-                      for i in range(nspecies)])
-        
-        return make_conserved(dim=2, mass=source_mass, energy=source_rhoE,
-                       momentum=make_obj_array([source_rhoU, source_rhoV]),
-                       species_mass=source_spec)
+#        source_spec_dom = - cv.species_mass*u + d_ij*dyidr
+#        """
+#        """
+
+#        source_mass_sng = - drhoudr
+#        source_rhoU_sng = 0.0
+#        source_rhoV_sng = - v*drhoudr + dtaurydr + beta*d2udrdy + dudr*dbetady
+#        source_rhoE_sng = -( (cv.energy+dv.pressure)*dudr + dqrdr ) \
+#                                + tau_rr*dudr + v*dtaurydr \
+#                                + 2.0*beta*dudr**2 \
+#                                + beta*dudr*dvdy \
+#                                + v*dudr*dbetady \
+#                                + v*beta*d2udrdy
+
+#        source_spec_sng = -( grad_cv.species_mass[:,0]*u \
+#                             + cv.species_mass*dudr )
+#        
+#        """
+#        """
+#        source_mass = actx.np.where( nodes_are_off_axis,
+#                          source_mass_dom/nodes[0], source_mass_sng )
+#        source_rhoU = actx.np.where( nodes_are_off_axis,
+#                          source_rhoU_dom/nodes[0], source_rhoU_sng )
+#        source_rhoV = actx.np.where( nodes_are_off_axis,
+#                          source_rhoV_dom/nodes[0], source_rhoV_sng )
+#        source_rhoE = actx.np.where( nodes_are_off_axis,
+#                          source_rhoE_dom/nodes[0], source_rhoE_sng )
+#        source_spec = make_obj_array([
+#                      actx.np.where( nodes_are_off_axis,
+#                          source_spec_dom[i]/nodes[0], source_spec_sng[i] )
+#                      for i in range(nspecies)])
+#        
+#        return make_conserved(dim=2, mass=source_mass, energy=source_rhoE,
+#                       momentum=make_obj_array([source_rhoU, source_rhoV]),
+#                       species_mass=source_spec)
 
         
 #    def gravity_source_terms(cv):
@@ -1204,28 +1383,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if logmgr:
             logmgr.tick_before()
 
-        cv, tseed = state
+
+        cv, tseed, wv = state
         cv = force_evaluation(actx, cv)
         tseed = force_evaluation(actx, tseed)
+        wv = force_evaluation(actx, wv)
 
-        if True: #use_AV:
-            smoothness = force_evaluation(actx, smoothness_indicator(
-                dcoll, cv.mass, kappa=kappa_av, s0=s0))
-
-        # update temperature value
-        fluid_state = get_fluid_state(cv, tseed, smoothness=smoothness)
-
-#        # apply limiter and reevaluate energy
-#        limited_cv = force_evaluation(actx, limiter(fluid_state.cv,
-#                                                    fluid_state.pressure,
-#                                                    fluid_state.temperature))
-##        # apply limiter and reevaluate energy
-##        limited_cv = apply_limiter(fluid_state.cv, fluid_state.pressure,
-##                                   fluid_state.temperature)
-
-#        # get new fluid_state with limited species and respective energy
-#        fluid_state = get_fluid_state(limited_cv, 
-#                                      tseed, smoothness=smoothness)
+        fluid_state = get_fluid_state(cv, tseed)
+        wall_kappa, wall_temperature = create_wall_derived_compiled(wv)
 
         if local_dt:
             t = force_evaluation(actx, t)
@@ -1233,18 +1398,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl,
                                  gas_model,
                                  constant_cfl=constant_cfl,
-                                 local_dt=local_dt)
+                                 local_dt=local_dt,
+                                 fluid_dd=dd_vol_fluid
+                                 )
             ))
             #dt = force_evaluation(actx, actx.np.maximum(current_dt, dt))
         else:
             if constant_cfl:
                 dt = get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl,
-                                      t_final, constant_cfl, local_dt)
+                                      t_final, constant_cfl, local_dt, dd_vol_fluid)
 
         try:
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
             do_health = check_step(step=step, interval=nhealth)
+
+            state = make_obj_array([cv, fluid_state.temperature, wv])
+            wv = get_wv(wv)
 
             file_exists = os.path.exists('write_solution')
             if file_exists:
@@ -1265,70 +1435,95 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     raise MyRuntimeError("Failed simulation health check.")
 
             if do_restart:
-                my_write_restart(step=step, t=t, cv=fluid_state.cv,
-                                 tseed=fluid_state.temperature)
+                my_write_restart(step, t, state)
 
-            if do_viz:
-                grad_cv = None
-                grad_t = None
-                sources = None
-                if plot_gradients:
-                    cv_rhs, grad_cv, grad_t = \
-                        ns_operator(dcoll, state=fluid_state, time=t,
-                                    boundaries=boundaries,
-                                    gas_model=gas_model,
-                                    return_gradients=True,
-                                    quadrature_tag=quadrature_tag)
-
-                    sources = (
-                        axisymmetry_source_terms(actx, dcoll, fluid_state, 
-                                                 grad_cv, grad_t)
-                    )
-                
-                my_write_viz(step=step, t=t, state=fluid_state, dt=dt,
-                             ns_rhs=None, grad_cv=grad_cv, grad_t=grad_t,
-                             sources=sources, plot_gradients=plot_gradients)
+            if do_viz:               
+                my_write_viz(step, t, fluid_state, wv, wall_kappa, wall_temperature)
 
         except MyRuntimeError:
             if rank == 0:
                 logger.info("Errors detected; attempting graceful exit.")
-            my_write_viz(step=step, t=t, state=fluid_state)
+            my_write_viz(step, t, fluid_state, wv, wall_kappa, wall_temperature)
             raise
 
         #return make_obj_array([cv, tseed]), dt
-        return make_obj_array([fluid_state.cv, fluid_state.temperature]), dt
+        return make_obj_array([fluid_state.cv, fluid_state.temperature, wv]), dt
 
-    #from mirgecom.gas_model import make_operator_fluid_states
+
     def my_rhs(t, state):
-        cv, tseed = state
+        cv, tseed, wv = state
 
-        if True: #use_AV:
-            smoothness = smoothness_indicator(dcoll, cv.mass,
-                                              kappa=kappa_av, s0=s0)
-
+        #FIXME add limiter
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-            temperature_seed=tseed, smoothness=smoothness, limiter_func=_limit_fluid_cv)
+                                       temperature_seed=tseed)
 
-        ns_rhs, grad_cv, grad_t = (
-            ns_operator(dcoll, state=fluid_state, time=t,
-                        boundaries=boundaries, gas_model=gas_model,
-                        return_gradients=True, quadrature_tag=quadrature_tag)
-        )
+        # update wall model
+        wall_kappa = wall_model.thermal_conductivity(wv.mass)
 
-        chem_rhs = (#speedup_factor * 
-            0.25*eos.get_species_source_terms(cv, fluid_state.temperature)
-        )
+        # Temperature seed RHS (keep tseed updated)
+        tseed_rhs = fluid_state.temperature - tseed
 
-#        sources = (
-##            speedup_factor*gravity_source_terms(cv) +
-#            axisymmetry_source_terms(actx, dcoll, fluid_state, grad_cv, grad_t)
-#        )
+        ns_rhs, wall_energy_rhs = coupled_ns_heat_operator(
+            dcoll=dcoll,
+            gas_model=gas_model,
+            fluid_dd=dd_vol_fluid, wall_dd=dd_vol_solid,
+            fluid_boundaries=fluid_boundaries,
+            wall_boundaries=solid_boundaries,
+            fluid_state=fluid_state,
+            wall_density=wv.mass,
+            wall_heat_capacity=wall_model.heat_capacity,
+            wall_kappa=wall_kappa,
+            wall_energy=wv.energy,
+            time=t,
+            wall_penalty_amount=wall_penalty_amount,
+            quadrature_tag=quadrature_tag)
 
-        sponge = sponge_func(cv=cv, cv_ref=ref_cv, sigma=sponge_sigma)
- 
-        cv_rhs = ns_rhs + chem_rhs + sponge #+ sources
-        
-        return make_obj_array([cv_rhs, fluid_state.temperature*0.0])
+        chem_rhs =  0.25*eos.get_species_source_terms(
+            cv, temperature=fluid_state.temperature)
+
+        sponge_rhs = sponge_func(cv=cv, cv_ref=ref_cv, sigma=sponge_sigma)
+
+        fluid_rhs = ns_rhs + chem_rhs + sponge_rhs
+
+        wall_mass_rhs = -wall_model.mass_loss_rate(wv)
+        wall_energy_rhs = wall_time_scale * wall_energy_rhs
+        fluid_ox_mass = cv.species_mass[cantera_soln.species_index("O2")]
+
+        pairwise_ox = {
+            (dd_vol_fluid, dd_vol_solid):
+                (fluid_ox_mass, wv.ox_mass)}
+        pairwise_ox_tpairs = inter_volume_trace_pairs(
+            dcoll, pairwise_ox, comm_tag=_OxCommTag)
+        ox_tpairs = pairwise_ox_tpairs[dd_vol_fluid, dd_vol_solid]
+
+        wall_ox_boundaries = {
+            dd_vol_solid.trace("wall_sym").domain_tag:
+                DirichletDiffusionBoundary(0)}
+        wall_ox_boundaries.update({
+            tpair.dd.domain_tag: DirichletDiffusionBoundary(tpair.ext)
+            for tpair in ox_tpairs})
+
+        wall_ox_mass_rhs = wall_time_scale * diffusion_operator(
+            dcoll, wall_model.oxygen_diffusivity, wall_ox_boundaries, wv.ox_mass,
+            penalty_amount=wall_penalty_amount,
+            quadrature_tag=quadrature_tag, dd=dd_vol_solid)
+
+        wall_rhs = WallVars(
+            mass=wall_mass_rhs,
+            energy=wall_energy_rhs,
+            ox_mass=wall_ox_mass_rhs)
+
+        return make_obj_array([fluid_rhs, tseed_rhs, wall_rhs])
+
+
+
+
+
+
+
+
+    class _OxCommTag:
+        pass
 
     def my_post_step(step, t, dt, state):
         min_dt = np.min(actx.to_numpy(dt))
@@ -1340,11 +1535,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
+    stepper_state = make_obj_array([current_state.cv,
+                                    current_state.temperature, current_wv])
+
     if local_dt == True:
         dt = (#force_evaluation(actx, 
              get_sim_timestep(dcoll, current_state, current_t,
                      current_dt, current_cfl, gas_model,
-                     constant_cfl=constant_cfl, local_dt=local_dt)
+                     constant_cfl=constant_cfl, local_dt=local_dt, fluid_dd=dd_vol_fluid)
         )
         dt = force_evaluation(actx, actx.np.maximum(current_dt, dt))
 
@@ -1356,26 +1554,25 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if rank == 0:
         logging.info("Stepping.")
 
-    (current_step, current_t, stepper_state) = \
+    current_step, current_t, stepper_state = \
         advance_state(rhs=my_rhs, timestepper=timestepper,
                       pre_step_callback=my_pre_step,
                       post_step_callback=my_post_step,
-                      state=make_obj_array([current_state.cv, tseed]),
-                      dt=dt, t_final=t_final, t=t,
-                      max_steps=niter, local_dt=local_dt,
-                      istep=current_step)
-    current_cv, tseed = stepper_state
+                      istep=current_step, dt=current_dt,
+                      t=t, t_final=t_final,
+                      force_eval=force_eval,
+                      state=stepper_state)
+
+    current_cv, tseed, current_wv = stepper_state
+    current_fluid_state = create_fluid_state(current_cv, tseed)
+    current_wall_kappa, current_wall_temperature = \
+        create_wall_derived_compiled(current_wv)
 
     # Dump the final data
     if rank == 0:
         logger.info("Checkpointing final state ...")
 
-    if True: #use_AV:
-        smoothness = smoothness_indicator(dcoll, current_cv.mass,
-                                          kappa=kappa_av, s0=s0)
-
-    current_state = make_fluid_state(current_cv, gas_model, tseed, 
-                                     smoothness=smoothness)
+    current_state = make_fluid_state(current_cv, gas_model, tseed)
 
     my_write_restart(step=current_step, t=current_t, cv=current_state.cv,
                      tseed=tseed)
@@ -1443,4 +1640,4 @@ if __name__ == "__main__":
 
     main(actx_class, use_logmgr=args.log, 
          use_profiling=args.profile, casename=casename,
-         lazy=args.lazy, rst_filename=restart_file)
+         lazy=args.lazy, restart_filename=restart_file)
