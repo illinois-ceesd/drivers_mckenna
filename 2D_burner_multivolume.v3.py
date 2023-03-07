@@ -1,4 +1,4 @@
-""" Tue 07 Mar 2023 10:53:48 AM CST """
+""" Tue 07 Mar 2023 16:39:35 CST """
 
 __copyright__ = """
 Copyright (C) 2020 University of Illinois Board of Trustees
@@ -1727,10 +1727,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wv = force_evaluation(actx, wv)
 
         smoothness = force_evaluation(actx, smooth_region + sponge_sigma/sponge_amp)
-        cv = drop_order_cv(cv, smoothness, theta_factor)
 
+        cv = drop_order_cv(cv, smoothness, theta_factor)
         fluid_state = get_fluid_state(cv, tseed)
 
+        cv = fluid_state.cv
         wdv = create_wall_dependent_vars_compiled(wv)
 
         if local_dt:
@@ -1766,7 +1767,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     import gc
                     gc.collect()
 
-            state = make_obj_array([cv, fluid_state.temperature, wv])
+            state = make_obj_array([fluid_state.cv, fluid_state.temperature, wv])
             wv = get_wv(wv)
 
             file_exists = os.path.exists('write_solution')
@@ -1809,11 +1810,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def my_rhs(t, state):
         cv, tseed, wv = state
 
-        smoothness = smooth_region + sponge_sigma/sponge_amp #*smoothness_indicator(dcoll, cv.mass)
+        smoothness = smooth_region + sponge_sigma/sponge_amp #
+        #smoothness = smoothness_indicator(dcoll, cv.mass)
 
-        cv = _drop_order_cv(cv, smoothness, theta_factor)
+        cv = _drop_order_cv(cv, smoothness, theta_factor) # apply outflow damping
 
-        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,temperature_seed=300.0)
+        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+            temperature_seed=tseed, limiter_func=_limit_fluid_cv,
+            limiter_dd=dd_vol_fluid
+        )
+
+        cv = fluid_state.cv # get species-limited cv
+
         wdv = wall_model.dependent_vars(wv)
 
         #~~~~~~~~~~~~~
@@ -1822,17 +1830,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             coupled_ns_heat_operator(
                 dcoll, gas_model, dd_vol_fluid, dd_vol_solid, fluid_boundaries, solid_boundaries,
                 fluid_state, wdv.thermal_conductivity, wdv.temperature, time=t, quadrature_tag=quadrature_tag,
-                interface_noslip=False,
+                #interface_noslip=False,
                 return_gradients=True
             )
 
         #~~~~~~~~~~~~~
 
-        chem_rhs = chemical_source_term(cv, fluid_state.temperature)
+        chem_rhs = chemical_source_term(fluid_state.cv, fluid_state.temperature)
 
         fluid_sources = (
-            sponge_func(cv=cv, cv_ref=ref_cv, sigma=sponge_sigma)
-            + gravity_source_terms(cv)
+            sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
+            + gravity_source_terms(fluid_state.cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, grad_cv_fluid, grad_t_fluid)
         )
 
