@@ -1,4 +1,4 @@
-""" Mon 06 Mar 2023 07:46:21 PM CST """
+""" Tue 07 Mar 2023 10:53:48 AM CST """
 
 __copyright__ = """
 Copyright (C) 2020 University of Illinois Board of Trustees
@@ -507,7 +507,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_05m_40mm_025um_wall-v2.msh"
+    mesh_filename = "mesh_06m_40mm_025um_wall-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -527,7 +527,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_dt = 1.0e-6
     t_final = 2.0
 
-    niter = 125001
+    niter = 1000001
 
     local_dt = True
     constant_cfl = True
@@ -543,7 +543,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     equiv_ratio = 0.7
     speedup_factor = 7.5
-    chem_rate = 7.5
+    chem_rate = 1.875
     flow_rate = 25.0
     Twall = 300.0
     T_products = 2000.0
@@ -716,15 +716,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     print(f"Y = {y_shroud}")
     print(f"W = {mmw_shroud}")
 
-    # Averaging from https://www.azom.com/article.aspx?ArticleID=1630
+    # Averaging from https://www.azom.com/properties.aspx?ArticleID=1630
     # for graphite
     wall_insert_rho = 1625
     wall_insert_cp = 770
     wall_insert_kappa = 247.5
 
-#    wall_surround_rho = 1625
-#    wall_surround_cp = 770
-#    wall_surround_kappa = 247.5
+    # Averaging from https://www.azom.com/properties.aspx?ArticleID=52
+    # for alumina
+    wall_surround_rho = 3500
+    wall_surround_cp = 700
+    wall_surround_kappa = 25.00
 
     # wall stuff
     wall_penalty_amount = 25
@@ -934,8 +936,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-##############################################################################
-
     restart_step = None
     if restart_file is None:        
         if rank == 0:
@@ -948,8 +948,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 return_tag_to_elements_map=True)
             volume_to_tags = {
                 "fluid": ["fluid"],
-                #"solid": ["wall_insert", "wall_surround"]
-                "solid": ["wall_insert"]
+                "solid": ["wall_insert", "wall_surround"]
                 }
             return mesh, tag_to_elements, volume_to_tags
 
@@ -960,8 +959,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         from mirgecom.restart import read_restart_data
         restart_data = read_restart_data(actx, restart_file)
         restart_step = restart_data["step"]
-        local_mesh = restart_data["local_mesh"]
-        local_nelements = local_mesh.nelements
+        volume_to_local_mesh_data = restart_data["volume_to_local_mesh_data"]
         global_nelements = restart_data["global_nelements"]
         restart_order = int(restart_data["order"])
 
@@ -997,8 +995,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_tag_to_elements = volume_to_local_mesh_data["solid"][1]
     wall_insert_mask = mask_from_elements(
         wall_vol_discr, actx, wall_tag_to_elements["wall_insert"])
-#    wall_surround_mask = mask_from_elements(
-#        wall_vol_discr, actx, wall_tag_to_elements["wall_surround"])
+    wall_surround_mask = mask_from_elements(
+        wall_vol_discr, actx, wall_tag_to_elements["wall_surround"])
 
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
     solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
@@ -1060,8 +1058,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                mode="wo", mpi_comm=comm)
                                
     vis_timer = None
-    #log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
-
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
         logmgr_add_device_memory_usage(logmgr, queue)
@@ -1074,7 +1070,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("t_step.max", "--- step walltime: {value:5g} s\n")
             ])
 
-        #logmgr_add_device_memory_usage(logmgr, queue)
         try:
             logmgr.add_watches(["memory_usage_python.max",
                                 "memory_usage_gpu.max"])
@@ -1098,13 +1093,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_cv = flow_init(fluid_nodes, eos, flow_rate=flow_rate,
                                solve_the_flame=solve_the_flame)
 
+        tseed = force_evaluation(actx, 1000.0 + fluid_nodes[0]*0.0)
+
         wall_mass = (
             wall_insert_rho * wall_insert_mask
-#            + wall_surround_rho * wall_surround_mask
+            + wall_surround_rho * wall_surround_mask
         )
         wall_cp = (
             wall_insert_cp * wall_insert_mask
-#            + wall_surround_cp * wall_surround_mask
+            + wall_surround_cp * wall_surround_mask
         )
         current_wv = WallVars(
             mass=wall_mass,
@@ -1115,37 +1112,47 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_step = restart_step
         current_t = restart_data["t"]
         if (np.isscalar(current_t) is False):
-            current_t = np.min(actx.to_numpy(current_t))
+            current_t = np.min(actx.to_numpy(current_t[0]))
 
         if restart_iterations:
             current_t = 0.0
             current_step = 0
 
-        if restart_order != order:
-            restart_discr = EagerDGDiscretization(
-                actx,
-                local_mesh,
-                order=restart_order,
-                mpi_communicator=comm)
-            from meshmode.discretization.connection import make_same_mesh_connection
-            connection = make_same_mesh_connection(
-                actx,
-                dcoll.discr_from_dd("vol"),
-                restart_discr.discr_from_dd("vol"))
+        if rank == 0:
+            logger.info("Restarting soln.")
 
-            current_cv = connection(restart_data["state"])
-            tseed = connection(restart_data["temperature_seed"])
+        if restart_order != order:
+            restart_dcoll = create_discretization_collection(
+                actx,
+                volume_meshes={
+                    vol: mesh
+                    for vol, (mesh, _) in volume_to_local_mesh_data.items()},
+                order=restart_order)
+            from meshmode.discretization.connection import make_same_mesh_connection
+            fluid_connection = make_same_mesh_connection(
+                actx,
+                dcoll.discr_from_dd(dd_vol_fluid),
+                restart_dcoll.discr_from_dd(dd_vol_fluid)
+            )
+            wall_connection = make_same_mesh_connection(
+                actx,
+                dcoll.discr_from_dd(dd_vol_solid),
+                restart_dcoll.discr_from_dd(dd_vol_solid)
+            )
+            tseed = fluid_connection(restart_data["temperature_seed"])
+            current_cv = fluid_connection(restart_data["cv"])
+            current_wv = wall_connection(restart_data["wv"])
         else:
-            current_cv = restart_data["state"]
             tseed = restart_data["temperature_seed"]
+            current_cv = restart_data["cv"]
+            current_wv = restart_data["wv"]
 
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
 
-
-    tseed = force_evaluation(actx, 1000.0 + fluid_nodes[0]*0.0)
     current_cv = force_evaluation(actx, current_cv)
     current_wv = force_evaluation(actx, current_wv)
+    tseed = force_evaluation(actx, tseed)
 
     current_state = get_fluid_state(current_cv, tseed)
 
@@ -1246,38 +1253,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         def grad_cv_bc(self, state_plus, state_minus, grad_cv_minus, normal, **kwargs):
             """Return grad(CV) to be used in the boundary calculation of viscous flux."""
-
-            # extrapolate density and its gradient
-            mass_plus = state_minus.mass_density
-            grad_mass_plus = grad_cv_minus.mass
-
-            #v_minus = state_minus.velocity               
-            grad_v_minus = velocity_gradient(state_minus.cv, grad_cv_minus)
-
-            v_plus = state_plus.velocity
-            aux = np.ones((2,2))
-            aux[0,0] = 0.0  # du/dx and u are zero at the surface, so is d(rho u)/dx
-            grad_mom_plus = grad_cv_minus.momentum*0.0 + grad_cv_minus.momentum*aux
-
-            grad_species_mass_plus = grad_cv_minus.species_mass
-
-#            Dij = gas_model.transport.species_diffusivity(cv=state_minus.cv, 
-#                    dv=state_minus.dv, eos=gas_model.eos) #XXX 
-
-#            if state_minus.nspecies > 0:
-#                grad_y_minus = species_mass_fraction_gradient(state_minus.cv, grad_cv_minus)
-#
-#                grad_y_plus = 0.*grad_y_minus
-#                grad_species_mass_plus = 0.*grad_y_minus
-#                for i in range(state_minus.nspecies):
-#                    grad_y_plus[i] = state_minus.velocity[1]/Dij[i]*(ref_cv_inlet.species_mass_fractions[i] - state_minus.species_mass_fractions[i]) #XXX
-#                    grad_species_mass_plus[i] = (state_minus.mass_density*grad_y_plus[i]
-#                         + state_minus.species_mass_fractions[i]*grad_cv_minus.mass)                    
-
-            return make_conserved(dim=grad_cv_minus.dim, mass=grad_cv_minus.mass,
-                energy=grad_cv_minus.energy*10000000.0, #XXX It doesn't matter what we do to energy
-                momentum=grad_mom_plus, species_mass=grad_species_mass_plus
-            )
+            return grad_cv_minus
 
         def viscous_wall_flux(self, dcoll, dd_bdry, gas_model, state_minus,
             grad_cv_minus, grad_t_minus, numerical_flux_func, **kwargs):
@@ -1325,13 +1301,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def _get_wall_kappa_inert(mass, temperature):
         return (
             wall_insert_kappa * wall_insert_mask
-            #+ wall_surround_kappa * wall_surround_mask
+            + wall_surround_kappa * wall_surround_mask
         )
 
     wall_model = WallModel(
         heat_capacity=(
             wall_insert_cp * wall_insert_mask
-#            + wall_surround_cp * wall_surround_mask
+            + wall_surround_cp * wall_surround_mask
         ),
         thermal_conductivity_func=_get_wall_kappa_inert)
 
@@ -1824,10 +1800,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 logger.info("Errors detected; attempting graceful exit.")
             my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     wv=wv, wall_kappa=wdv.thermal_conductivity,
-                    wall_temperature=wdv.temperature)
+                    wall_temperature=wdv.temperature, smoothness=smoothness)
             raise
 
-        #return make_obj_array([cv, tseed]), dt
         return make_obj_array([fluid_state.cv, fluid_state.temperature, wv]), dt
 
 
@@ -1908,7 +1883,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         pass
 
     def my_post_step(step, t, dt, state):
-        min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
+        min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt  #FIXME dt is constant thoughout the simulation...
         if logmgr:
             set_dt(logmgr, min_dt)         
             logmgr.tick_after()
