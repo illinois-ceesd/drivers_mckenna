@@ -2031,6 +2031,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return make_obj_array([fluid_rhs, fluid_state.temperature*0.0, wall_rhs])
 
     def my_post_step(step, t, dt, state):
+
+        if step == 1:
+            with gc_timer.start_sub_timer():
+                import gc
+                gc.collect()
+                # Freeze the objects that are still alive so they will not
+                # be considered in future gc collections.
+                gc.freeze()
+
         min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt  #FIXME dt is constant thoughout the simulation...
         if logmgr:
             set_dt(logmgr, min_dt)
