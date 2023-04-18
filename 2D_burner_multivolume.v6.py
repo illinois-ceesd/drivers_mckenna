@@ -63,8 +63,6 @@ from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
 
-from grudge.shortcuts import compiled_lsrk45_step
-
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     IsothermalWallBoundary,
@@ -524,7 +522,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     plot_gradients = True
 
     # default timestepping control
-    integrator = "compiled_lsrk45"
+#    integrator = "compiled_lsrk45"
+    integrator = "ssprk43"
     current_dt = 2.5e-6
     t_final = 2.0
 
@@ -567,8 +566,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return compiled_lsrk45_step(actx, state, t, dt, rhs)
         
     if integrator == "compiled_lsrk45":
+        from grudge.shortcuts import compiled_lsrk45_step
         timestepper = _compiled_stepper_wrapper
         force_eval = False
+
+    if integrator == "ssprk43":
+        from mirgecom.integrators.ssprk import ssprk43_step
+        timestepper = ssprk43_step
+        force_eval = True
 
     if rank == 0:
         print("\n#### Simulation control data: ####")
@@ -2077,7 +2082,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                       istep=current_step, dt=dt,
                       t=t, t_final=t_final,
                       max_steps=niter, local_dt=local_dt,
-                      #force_eval=force_eval,
+                      force_eval=force_eval,
                       state=stepper_state)
 
     current_cv, tseed, current_wv = stepper_state
