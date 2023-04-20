@@ -1808,9 +1808,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         source_ox_dom = + ox_diff*grad_ox[0]
         source_ox_sng = 0.0
         source_ox = actx.np.where( solid_nodes_are_off_axis,
-                          source_ox_dom/solid_nodes[0], source_ox_sng )    
-
-        source_ox = source_ox*0.0
+                          source_ox_dom/solid_nodes[0], source_ox_sng )
 
         source_rhoE_dom = - qr
         source_rhoE_sng = 0.0 #- dqrdr
@@ -2076,8 +2074,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             wdv.oxygen_diffusivity, wall_ox_boundaries, wv.ox_mass,
             return_grad_u=True, penalty_amount=wall_penalty_amount, quadrature_tag=quadrature_tag, 
             dd=dd_vol_solid, comm_tag=_WallOxDiffCommTag)
-
-        wall_ox_mass_rhs = wall_ox_mass_rhs*0.0
 
         solid_rhs = wall_time_scale * WallVars(mass=wall_mass_rhs,
             energy=wall_energy_rhs, ox_mass=wall_ox_mass_rhs)
