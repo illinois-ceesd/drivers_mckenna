@@ -146,8 +146,9 @@ class Burner2D_Reactive:
                  state_minus=None, time=None):
 
         if x_vec.shape != (self._dim,):
-            raise ValueError(f"Position vector has unexpected dimensionality,"
-                             f" expected {self._dim}.")
+            raise ValueError(
+                f"Position vector has unexpected dimensionality,"
+                f" expected {self._dim}.")
 
         actx = x_vec[0].array_context
 
@@ -162,7 +163,7 @@ class Burner2D_Reactive:
         mass_srd = self._mass_srd
         mass_atm = self._mass_atm
 
-        upper_bnd = 0.120
+        upper_bnd = 0.105
 
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
         _sigma = self._sigma*(
@@ -190,7 +191,7 @@ class Burner2D_Reactive:
         atmosphere = 1.0 - (shroud + core)
              
         #~~~ after combustion products
-        upper_atm = 0.5*(1.0 + actx.np.tanh( 1.0/(15.0*self._sigma)*(x_vec[1] - upper_bnd)))
+        upper_atm = 0.5*(1.0 + actx.np.tanh( 1.0/(3.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
         if solve_the_flame:
 
@@ -458,12 +459,10 @@ class WallModel:
 
     def dependent_vars(self, wv):
         temperature = self.temperature(wv)
-        kappa = self.thermal_conductivity(wv.mass, temperature)
-        oxygen_diffusivity = self.oxygen_diffusivity(temperature)
         return WallDependentVars(
-            thermal_conductivity=kappa,
             temperature=temperature,
-            oxygen_diffusivity=oxygen_diffusivity)
+            thermal_conductivity=self.thermal_conductivity(wv.mass, temperature),
+            oxygen_diffusivity=self.oxygen_diffusivity(temperature))
 
 
 @dataclass_array_container
@@ -506,7 +505,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_07m_40mm_025um_wall-v2.msh"
+    mesh_filename = "mesh_08m_10mm_025um_wall-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -514,7 +513,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
-    nviz = 25000
+    nviz = 1
     nrestart = 25000
     nhealth = 1
     nstatus = 100
@@ -724,11 +723,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     print(f"Y = {y_shroud}")
     print(f"W = {mmw_shroud}")
 
-    # Averaging from https://www.azom.com/properties.aspx?ArticleID=1630
-    # for graphite
-    wall_insert_rho = 1625
-    wall_insert_cp = 770
-    wall_insert_kappa = 247.5
+    # Fiber
+    wall_insert_rho = 1600 * 0.1
+    wall_insert_cp = 1400.0
+#    wall_insert_kappa = 247.5
 
     # Averaging from https://www.azom.com/properties.aspx?ArticleID=52
     # for alumina
@@ -933,7 +931,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     ref_state = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
         sigma_flame=0.00001, temperature=temp_ignition, pressure=101325.0,
-        flame_loc=0.1050, speedup_factor=speedup_factor,
+        flame_loc=0.1030, speedup_factor=speedup_factor,
         mass_rate=rhoU_int,
         mass_atm=rho_atmosphere, mass_srd=rho_shroud,
         mass_burned=rho_burned, mass_unburned=rho_unburned,
@@ -1006,6 +1004,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
     solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
+
+    fluid_zeros = force_evaluation(actx, fluid_nodes[0]*0.0)
+    solid_zeros = force_evaluation(actx, solid_nodes[0]*0.0)
 
     #~~~~~~~~~~
 
@@ -1415,7 +1416,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         fluid_sources=None, solid_sources=None, smoothness=None, fluid_rhs=None,
         wall_rhs=None, grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None):
 
-        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
+#        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
 
         fluid_viz_fields = [
             ("CV_rho", fluid_state.cv.mass),
@@ -1429,9 +1430,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("sponge", sponge_sigma),
             ("smoothness", 1.0 - theta_factor*smoothness),
             ("RR", chem_rate*reaction_rates_damping),
-            ("grad_t_fluid", grad_t_fluid),
-            ("kappa_fluid", fluid_state.tv.thermal_conductivity),
-            ("heat_rls", heat_rls),
+#            ("grad_t_fluid", grad_t_fluid),
+#            ("kappa_fluid", fluid_state.tv.thermal_conductivity),
+#            ("heat_rls", heat_rls),
         ]
 
 #        if fluid_rhs is not None:
@@ -1982,8 +1983,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 interface_radiation=use_radiation, wall_epsilon=emissivity, return_gradients=True
             )
 
-        #~~~~~~~~~~~~~
-
         chem_rhs = chemical_source_term(fluid_state.cv, fluid_state.temperature)
 
         fluid_sources = (
@@ -1991,6 +1990,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + gravity_source_terms(fluid_state.cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, grad_cv_fluid, grad_t_fluid)
         )
+
+        fluid_rhs = fluid_rhs + chem_rhs + fluid_sources
 
         #~~~~~~~~~~~~~
 
@@ -2023,10 +2024,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             wdv.temperature, wdv.thermal_conductivity, grad_t_solid,
             wv.ox_mass, wdv.oxygen_diffusivity, grad_ox_solid)
 
+        wall_rhs = wall_rhs + solid_sources
+
+#        wall_rhs = WallVars(mass=solid_zeros,
+#            energy=solid_zeros, ox_mass=solid_zeros)
+
         #~~~~~~~~~~~~~
 
-        fluid_rhs = fluid_rhs + chem_rhs + fluid_sources
-        wall_rhs = wall_rhs + solid_sources
 
         return make_obj_array([fluid_rhs, fluid_state.temperature*0.0, wall_rhs])
 
@@ -2051,9 +2055,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     stepper_state = make_obj_array([current_state.cv,
                                     current_state.temperature, current_wv])
-
-    fluid_zeros = force_evaluation(actx, fluid_nodes[0]*0.0)
-    solid_zeros = force_evaluation(actx, solid_nodes[0]*0.0)
 
     if local_dt == True:
         dt_fluid = force_evaluation(actx, actx.np.minimum(
