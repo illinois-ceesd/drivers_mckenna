@@ -577,8 +577,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##########################################################################
     
-    current_step = 0
-    current_t = 0.0
     dim = 2
 
     def _compiled_stepper_wrapper(state, t, dt, rhs):
@@ -948,7 +946,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 ##############################################################################
 
     restart_step = None
-    if restart_file is None:        
+    if restart_file is None:
+
+        current_step = 0
+        first_step = current_step + 0
+        current_t = 0.0
+
         if rank == 0:
             print(f"Reading mesh from {mesh_filename}")
 
@@ -973,6 +976,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         volume_to_local_mesh_data = restart_data["volume_to_local_mesh_data"]
         global_nelements = restart_data["global_nelements"]
         restart_order = int(restart_data["order"])
+        first_step = restart_step+0
 
         assert comm.Get_size() == restart_data["num_parts"]
 
@@ -2091,7 +2095,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_post_step(step, t, dt, state):
 
-        if step == 1:
+        if step == first_step + 1:
             with gc_timer.start_sub_timer():
                 import gc
                 gc.collect()
