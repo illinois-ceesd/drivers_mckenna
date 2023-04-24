@@ -1192,9 +1192,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
 
     # ~~~~~~~~ Oxygen
-    # FIXME assuming fixed diffusivity for now...
+    # FIXME modify Pyrometheus to get a single self-diffusivity
     def _complicated_function_to_give_ox_diffusivity(temperature):
-        return 1.0e-4
+        return pyrometheus_mechanism.get_species_binary_mass_diffusivities(temperature)[idx_O2,idx_O2]
 
     def _get_oxygen_diffusivity(temperature):
         return _complicated_function_to_give_ox_diffusivity(temperature) * wall_sample_mask
