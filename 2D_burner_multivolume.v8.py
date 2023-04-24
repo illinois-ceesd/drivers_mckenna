@@ -517,7 +517,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_08m_10mm_025um_wall-v2.msh"
+    mesh_filename = "mesh_09m_10mm_025um_holder-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -525,7 +525,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
-    nviz = 1
+    nviz = 2500
     nrestart = 25000
     nhealth = 1
     nstatus = 100
@@ -535,7 +535,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # default timestepping control
 #    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
-    current_dt = 1.0e-6
+    current_dt = 1.0e-5
     t_final = 2.0
 
     niter = 4000001
@@ -563,12 +563,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     #transport = "PowerLaw"
 
     temp_wall = 300
-    wall_insert_rho = 1600 * 0.1  # do not account for porous volume
+    wall_sample_rho = 1600 * 0.1  # do not account for porous volume
 
     # Averaging from https://www.azom.com/properties.aspx?ArticleID=52 for alumina
-    wall_surround_rho = 3500.0
-    wall_surround_cp = 700.0
-    wall_surround_kappa = 25.00
+    wall_alumina_rho = 3500.0
+    wall_alumina_cp = 700.0
+    wall_alumina_kappa = 25.00
+
+    # Averaging from https://www.azom.com/article.aspx?ArticleID=1630 for graphite
+    wall_graphite_rho = 1625
+    wall_graphite_cp = 770
+    wall_graphite_kappa = 247.5  # XXX this big number can be a problem!
 
     use_radiation = True
     emissivity = 0.85
@@ -631,7 +636,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     air = "O2:0.21,N2:0.79"
     fuel = "C2H4:1"
-    cantera_soln.set_equivalence_ratio(phi=equiv_ratio, fuel=fuel, oxidizer=air)
+    cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
+                                       fuel=fuel, oxidizer=air)
     x_unburned = cantera_soln.X
     pres_unburned = cantera.one_atm
 
@@ -970,7 +976,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 return_tag_to_elements_map=True)
             volume_to_tags = {
                 "fluid": ["fluid"],
-                "solid": ["wall_insert", "wall_surround"]
+                "solid": ["wall_sample", "wall_alumina", "wall_graphite"]
                 }
             return mesh, tag_to_elements, volume_to_tags
 
@@ -1016,10 +1022,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     wall_vol_discr = dcoll.discr_from_dd(dd_vol_solid)
     wall_tag_to_elements = volume_to_local_mesh_data["solid"][1]
-    wall_insert_mask = mask_from_elements(
-        wall_vol_discr, actx, wall_tag_to_elements["wall_insert"])
-    wall_surround_mask = mask_from_elements(
-        wall_vol_discr, actx, wall_tag_to_elements["wall_surround"])
+    wall_sample_mask = mask_from_elements(
+        wall_vol_discr, actx, wall_tag_to_elements["wall_sample"])
+    wall_alumina_mask = mask_from_elements(
+        wall_vol_discr, actx, wall_tag_to_elements["wall_alumina"])
+    wall_graphite_mask = mask_from_elements(
+        wall_vol_discr, actx, wall_tag_to_elements["wall_graphite"])
 
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
     solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
@@ -1108,7 +1116,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     idx_O2 = cantera_soln.species_index("O2")
 
-    # ~~~~~~~~ energy-related properties
+    # ~~~~~~~~ fiber conductivity
     def experimental_kappa(temperature):
         return (
             1.766e-10 * temperature**3
@@ -1132,34 +1140,51 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def _get_wall_kappa_fiber(mass, temperature):
         mass_loss_frac = (
-            (wall_insert_rho - mass)/wall_insert_rho * wall_insert_mask
+            (wall_sample_rho - mass)/wall_sample_rho * wall_sample_mask
         )
-        scaled_insert_kappa = (
+        scaled_sample_kappa = (
             experimental_kappa(temperature)
             * puma_kappa(mass_loss_frac) / puma_kappa(0)
         )
-        return (scaled_insert_kappa * wall_insert_mask
-            + wall_surround_kappa * wall_surround_mask)
+        return (
+            scaled_sample_kappa * wall_sample_mask
+            + wall_alumina_kappa * wall_alumina_mask
+            + wall_graphite_kappa * wall_graphite_mask
+            )
 
     def _get_wall_kappa_inert(mass, temperature):
         return (
-            wall_insert_kappa * wall_insert_mask
-            + wall_surround_kappa * wall_surround_mask)
+            wall_sample_kappa * wall_sample_mask
+            + wall_alumina_kappa * wall_alumina_mask
+            + wall_graphite_kappa * wall_graphite_mask
+        )
 
     # ~~~~~~~~ energy-related properties
     # FIXME assuming linear enthalpy/fixed cp for now...
-    def _get_wall_enthalpy(temperature):
-        wall_insert_cp = 1400.0
-        wall_insert_h = wall_insert_cp * temperature
-        wall_surround_h = wall_surround_cp * temperature
-        return (wall_insert_h * wall_insert_mask
-            + wall_surround_h * wall_surround_mask)
+    def _get_wall_cp_fiber(temperature):
+        return temperature*0.0 + 1400.0
 
     # FIXME assuming linear enthalpy/fixed cp for now...
+    def _get_wall_enthalpy_fiber(temperature):
+        return temperature*1400.0
+
+    def _get_wall_enthalpy(temperature):
+        wall_sample_h = _get_wall_enthalpy_fiber(temperature)
+        wall_alumina_h = wall_alumina_cp * temperature
+        wall_graphite_h = wall_graphite_cp * temperature
+        return (
+            wall_sample_h * wall_sample_mask
+            + wall_alumina_h * wall_alumina_mask
+            + wall_graphite_h * wall_graphite_mask
+        )
+
     def _get_wall_heat_capacity(temperature):
-        wall_insert_cp = 1400.0
-        return (wall_insert_cp * wall_insert_mask
-            + wall_surround_cp * wall_surround_mask)
+        wall_sample_cp = _get_wall_cp_fiber(temperature)
+        return (
+            wall_sample_cp * wall_sample_mask
+            + wall_alumina_cp * wall_alumina_mask
+            + wall_graphite_cp * wall_graphite_mask
+        )
 
     # ~~~~~~~~ Oxygen
     # FIXME assuming fixed diffusivity for now...
@@ -1167,13 +1192,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return 1e-4
 
     def _get_oxygen_diffusivity(temperature):
-        return _complicated_function_to_give_ox_diffusivity(temperature) * wall_insert_mask
+        return _complicated_function_to_give_ox_diffusivity(temperature) * wall_sample_mask
 
     # ~~~~~~~~ Mass loss
     def _get_wall_effective_surface_area_fiber(mass):
         mass_loss_frac = (
-            (wall_insert_rho - mass)/wall_insert_rho * wall_insert_mask)
-        return puma_effective_surface_area(mass_loss_frac) * wall_insert_mask
+            (wall_sample_rho - mass)/wall_sample_rho * wall_sample_mask)
+        return puma_effective_surface_area(mass_loss_frac) * wall_sample_mask
 
     def _mass_loss_rate_fiber(mass, ox_mass, temperature, eff_surf_area):
         actx = mass.array_context
@@ -1205,26 +1230,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_cv = flow_init(fluid_nodes, eos, flow_rate=flow_rate,
                                solve_the_flame=solve_the_flame)
 
-        tseed = force_evaluation(actx, 1000.0 + fluid_nodes[0]*0.0)
+        tseed = force_evaluation(actx, 1000.0 + fluid_zeros)
 
+#        # FIXME
         wall_mass = (
-            wall_insert_rho * wall_insert_mask
-            + wall_surround_rho * wall_surround_mask
+            wall_sample_rho * wall_sample_mask
+            + wall_alumina_rho * wall_alumina_mask
+            + wall_graphite_rho * wall_graphite_mask
         )
 
-        # FIXME
-        wall_insert_cp = 1400
-        wall_cp = (
-            wall_insert_cp * wall_insert_mask
-            + wall_surround_cp * wall_surround_mask
-        )
+        wall_cp = _get_wall_heat_capacity(temp_wall + solid_zeros)
 
         current_wv = WallVars(
             mass=wall_mass,
             energy=wall_mass * wall_cp * temp_wall,
-            ox_mass=0*wall_mass)
+            ox_mass=solid_zeros)
 
-        wv_tseed = force_evaluation(actx, temp_wall + solid_nodes[0]*0.0)
+        wv_tseed = force_evaluation(actx, temp_wall + solid_zeros)
 
     else:
         current_step = restart_step
@@ -1451,9 +1473,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #########################################################################
 
     def my_write_viz(step, t, dt, fluid_state, wv, wdv,
-        fluid_sources=None, solid_sources=None, smoothness=None,
-        fluid_rhs=None, wall_rhs=None, grad_cv_fluid=None, grad_t_fluid=None,
-        grad_t_solid=None, wall_tseed=None):
+        smoothness=None, fluid_rhs=None, wall_rhs=None,
+        grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None,
+        fluid_sources=None, solid_sources=None,):
 
 #        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
 
@@ -1469,8 +1491,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("sponge", sponge_sigma),
             ("smoothness", 1.0 - theta_factor*smoothness),
             ("RR", chem_rate*reaction_rates_damping),
-            ("grad_t_fluid", grad_t_fluid),
-            ("kappa_fluid", fluid_state.tv.thermal_conductivity),
+#            ("grad_t_fluid", grad_t_fluid),
+#            ("kappa_fluid", fluid_state.tv.thermal_conductivity),
 #            ("heat_rls", heat_rls),
         ]
 
@@ -1485,28 +1507,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                ("axi_sources", fluid_sources)
 #            ))
 
-#        solid_viz_fields = [
-#            ("WV_fiber", wv * wall_insert_mask),
-#            ("WV_holder", wv * wall_surround_mask),
-#            ("wdv_fiber_kappa", wdv.thermal_conductivity * wall_insert_mask),
-#            ("wdv_holder_kappa", wdv.thermal_conductivity * wall_surround_mask),
-##            ("wall_alpha", wall_model.thermal_diffusivity(
-##                            wv.mass, wdv.temperature,
-##                            thermal_conductivity=wdv.thermal_conductivity)),
-#            ("wdv_fiber_ox_diff", wdv.oxygen_diffusivity * wall_insert_mask),
-#            ("wdv_holder_ox_diff", wdv.oxygen_diffusivity * wall_surround_mask),
-#            ("wdv_fiber_temperature", wdv.temperature * wall_insert_mask),
-#            ("wdv_holder_temperature", wdv.temperature * wall_surround_mask),
-#            ("grad_T_fiber", grad_t_solid * wall_insert_mask),
-#            ("grad_T_holder", grad_t_solid * wall_surround_mask),
-#            ("dt", dt[2] if local_dt else None),
-#            #("axi_sources", solid_sources)
-#        ]
-
-
         solid_viz_fields = [
             ("wv", wv),
-            ("wall_tseed", wall_tseed),
             ("wall_kappa", wdv.thermal_conductivity),
 #            ("wall_alpha", wall_model.thermal_diffusivity(
 #                            wv.mass, wdv.temperature,
@@ -1905,37 +1907,41 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             logmgr.tick_before()
 
         cv, tseed, wv, wv_tseed = state
+
         cv = force_evaluation(actx, cv)
         tseed = force_evaluation(actx, tseed)
         wv = force_evaluation(actx, wv)
         wv_tseed = force_evaluation(actx, wv_tseed)
 
-        smoothness = force_evaluation(actx, smooth_region + sponge_sigma/sponge_amp)
+        # include both outflow and sponge in the damping region
+        smoothness = force_evaluation(actx,
+            smooth_region + sponge_sigma/sponge_amp)
 
+        # damp the outflow
         cv = drop_order_cv(cv, smoothness, theta_factor)
+
+        # construct species-limited fluid state
         fluid_state = get_fluid_state(cv, tseed)
 
+        # make sure we get the limited state
         cv = fluid_state.cv
         wdv = create_wall_dependent_vars_compiled(wv, wv_tseed)
 
         if local_dt:
             t = force_evaluation(actx, t)
-            dt_fluid = force_evaluation(actx, actx.np.minimum(
-                current_dt, 
-                my_get_timestep_fluid(current_state, t, dt[0])
-                )
-            )
-            dt_wall = force_evaluation(actx, actx.np.minimum(
-                current_dt,
-                my_get_timestep_wall(wv, wdv, t, dt[2])
-                )
-            )
 
-            dt = make_obj_array([dt_fluid, dt_fluid*0.0, dt_wall, dt_wall*0.0])
+            dt_fluid = force_evaluation(actx, actx.np.minimum(
+                current_dt, my_get_timestep_fluid(current_state, t, dt[0])))
+
+            dt_wall = force_evaluation(actx, actx.np.minimum(
+                current_dt, my_get_timestep_wall(wv, wdv, t, dt[2])))
+
+            dt = make_obj_array([dt_fluid, dt_fluid*0., dt_wall, dt_wall*0.])
         else:
             if constant_cfl:
                 dt = get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl,
-                                      t_final, constant_cfl, local_dt, dd_vol_fluid)
+                                      t_final, constant_cfl, local_dt,
+                                      dd_vol_fluid)
 
         try:
             do_viz = check_step(step=step, interval=nviz)
@@ -1952,7 +1958,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             state = make_obj_array([fluid_state.cv, fluid_state.temperature,
                                     wv, wdv.temperature])
-            #wv = get_wv(wv)
 
             file_exists = os.path.exists('write_solution')
             if file_exists:
@@ -1983,14 +1988,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 grad_t_fluid = None
                 grad_t_solid = None
 
-                fluid_rhs, wall_energy_rhs, grad_cv_fluid, grad_t_fluid, grad_t_solid = \
-                    coupled_ns_heat_operator(
-                        dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
-                        fluid_boundaries, solid_boundaries,
-                        fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                        time=t, quadrature_tag=quadrature_tag,
-                        return_gradients=True
-                    )
+#                fluid_rhs, wall_energy_rhs, grad_cv_fluid, grad_t_fluid, grad_t_solid = \
+#                    coupled_ns_heat_operator(
+#                        dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
+#                        fluid_boundaries, solid_boundaries,
+#                        fluid_state, wdv.thermal_conductivity, wdv.temperature,
+#                        time=t, quadrature_tag=quadrature_tag,
+#                        return_gradients=True
+#                    )
 #    
 #                fluid_sources = axisym_source_fluid(actx, dcoll, fluid_state, grad_cv_fluid, grad_t_fluid)
 #                solid_sources = axisym_source_solid(actx, dcoll, wdv.thermal_conductivity, wdv.temperature, grad_t_solid)
@@ -1998,9 +2003,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     wv=wv, wdv=wdv, smoothness=smoothness,
                     #fluid_rhs=fluid_rhs, wall_rhs=wall_energy_rhs, grad_cv_fluid=grad_cv_fluid,
-                    grad_t_fluid=grad_t_fluid, grad_t_solid=grad_t_solid,
+                    #grad_t_fluid=grad_t_fluid, grad_t_solid=grad_t_solid,
                     #fluid_sources=fluid_sources, solid_sources=solid_sources,
-                    wall_tseed=wv_tseed
                 )
 
         except MyRuntimeError:
