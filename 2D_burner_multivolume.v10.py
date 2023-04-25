@@ -516,7 +516,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
-    nviz = 2500
+    nviz = 25000
     nrestart = 25000
     nhealth = 1
     nstatus = 100
@@ -533,7 +533,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     local_dt = True
     constant_cfl = True
-    current_cfl = 0.4
+    current_cfl = 0.2
     
     # discretization and model control
     order = 2
@@ -791,8 +791,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #############################################################################
 
     def reaction_damping(dcoll, nodes, **kwargs):
-
-        #actx = field.array_context
         ypos = nodes[1]
 
         y_max = 0.25
@@ -811,10 +809,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #############################################################################
 
-    from mirgecom.artificial_viscosity import smoothness_indicator
     def smoothness_region(dcoll, nodes):
-        
-        #actx = nodes.array_context
         xpos = nodes[0]
         ypos = nodes[1]
 
@@ -842,7 +837,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def drop_order(dcoll: DiscretizationCollection, field, theta,
                    positivity_preserving=False, dd=None):
-        #actx = field.array_context
 
         # Compute cell averages of the state
         def cancel_polynomials(grp):
@@ -877,9 +871,33 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         cell_avgs = nodal_map(filtered_modal_field)
 
         if positivity_preserving:
-            cell_avgs = actx.np.where(actx.np.greater(cell_avgs, 1e-13), cell_avgs, 1e-13)    
+            cell_avgs = actx.np.where(actx.np.greater(cell_avgs, 1e-13),
+                                      cell_avgs, 1e-13)    
 
         return theta*(field - cell_avgs) + cell_avgs
+
+
+    def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
+
+        smoothness = 1.0 - theta_factor*flipped_smoothness
+
+        density_lim = drop_order(dcoll, cv.mass, smoothness)
+        momentum_lim = make_obj_array([
+            drop_order(dcoll, cv.momentum[0], smoothness),
+            drop_order(dcoll, cv.momentum[1], smoothness)])
+        energy_lim = drop_order(dcoll, cv.energy, smoothness)
+
+        # limit species
+        spec_lim = make_obj_array([
+            drop_order(dcoll, cv.species_mass[i], smoothness)
+            for i in range(nspecies)
+        ])
+
+        # make a new CV with the limited variables
+        return make_conserved(dim=dim, mass=density_lim, energy=energy_lim,
+            momentum=momentum_lim, species_mass=spec_lim)
+
+    drop_order_cv = actx.compile(_drop_order_cv)
 
 
     def _limit_fluid_cv(cv, pressure, temperature, dd=None):
@@ -913,28 +931,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # make a new CV with the limited variables
         return cv
 
+    def _get_fluid_state(cv, temp_seed):
+        return make_fluid_state(cv=cv, gas_model=gas_model,
+            temperature_seed=temp_seed, limiter_func=_limit_fluid_cv,
+            limiter_dd=dd_vol_fluid)
 
-    def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
-
-        smoothness = 1.0 - theta_factor*flipped_smoothness
-
-        density_lim = drop_order(dcoll, cv.mass, smoothness)
-        momentum_lim = make_obj_array([
-            drop_order(dcoll, cv.momentum[0], smoothness),
-            drop_order(dcoll, cv.momentum[1], smoothness)])
-        energy_lim = drop_order(dcoll, cv.energy, smoothness)
-
-        # limit species
-        spec_lim = make_obj_array([
-            drop_order(dcoll, cv.species_mass[i], smoothness)
-            for i in range(nspecies)
-        ])
-
-        # make a new CV with the limited variables
-        return make_conserved(dim=dim, mass=density_lim, energy=energy_lim,
-            momentum=momentum_lim, species_mass=spec_lim)
-
-    drop_order_cv = actx.compile(_drop_order_cv)
+    get_fluid_state = actx.compile(_get_fluid_state)
 
 ##################################
 
@@ -997,7 +999,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
           volume_to_local_mesh_data["fluid"][0].nelements
         + volume_to_local_mesh_data["solid"][0].nelements)
 
-    from grudge.dof_desc import DISCR_TAG_QUAD
     from mirgecom.discretization import create_discretization_collection
     dcoll = create_discretization_collection(
         actx,
@@ -1005,7 +1006,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             vol: mesh
             for vol, (mesh, _) in volume_to_local_mesh_data.items()},
         order=order)
-
 
     from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
     if use_overintegration:
@@ -1036,37 +1036,22 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     #~~~~~~~~~~
 
-    from grudge.dt_utils import characteristic_lengthscales
-    char_length_fluid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid)
-    char_length_solid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid)
+#    from grudge.dt_utils import characteristic_lengthscales
+#    char_length_fluid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid)
+#    char_length_solid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid)
 
-#####################################################################################
+#    def vol_min(dd_vol, x):
+#        return actx.to_numpy(nodal_min(dcoll, dd_vol, x,
+#                                       initial=np.inf))[()]
 
-    #~~~~~~~~~~~~~~~~~~
+#    def vol_max(dd_vol, x):
+#        return actx.to_numpy(nodal_max(dcoll, dd_vol, x,
+#                                       initial=-np.inf))[()]
 
-    smooth_region = force_evaluation(actx, smoothness_region(dcoll, fluid_nodes))
+##############################################################################
 
-    reaction_rates_damping = force_evaluation(actx, reaction_damping(dcoll, fluid_nodes))
+##############################################################################
 
-    def _get_fluid_state(cv, temp_seed):
-        return make_fluid_state(cv=cv, gas_model=gas_model,
-            temperature_seed=temp_seed, limiter_func=_limit_fluid_cv,
-            limiter_dd=dd_vol_fluid,
-        )
-
-    get_fluid_state = actx.compile(_get_fluid_state)
-
-#####################################################################################
-
-    def vol_min(dd_vol, x):
-        return actx.to_numpy(nodal_min(dcoll, dd_vol, x,
-                                       initial=np.inf))[()]
-
-    def vol_max(dd_vol, x):
-        return actx.to_numpy(nodal_max(dcoll, dd_vol, x,
-                                       initial=-np.inf))[()]
-
-#########################################################################
 
     original_casename = casename
     casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
@@ -1306,6 +1291,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
+    smooth_region = force_evaluation(
+        actx, smoothness_region(dcoll, fluid_nodes))
+
+    reaction_rates_damping = force_evaluation(
+        actx, reaction_damping(dcoll, fluid_nodes))
+
+##############################################################################
+
     # initialize the sponge field
     sponge_x_thickness = 0.055
     sponge_y_thickness = 0.055
@@ -1316,8 +1309,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sponge_init = InitSponge(amplitude=sponge_amp,
         x_max=xMaxLoc, y_min=yMinLoc,
         x_thickness=sponge_x_thickness,
-        y_thickness=sponge_y_thickness
-    )
+        y_thickness=sponge_y_thickness)
 
     sponge_sigma = force_evaluation(actx, sponge_init(x_vec=fluid_nodes))
     ref_cv = force_evaluation(actx,
@@ -1336,16 +1328,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             flow_rate=flow_rate, solve_the_flame=solve_the_flame,
             state_minus=state_minus)
         return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-            temperature_seed=300.0,
-        )
+            temperature_seed=300.0)
 
     from mirgecom.inviscid import inviscid_flux
     from mirgecom.flux import num_flux_central
     from mirgecom.viscous import viscous_flux
 
-    """
-    """
-    from mirgecom.fluid import species_mass_fraction_gradient
     class MyPrescribedBoundary(PrescribedFluidBoundary):
         r"""My prescribed boundary function. """
 
@@ -1357,20 +1345,19 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             inviscid_flux_func=self.inviscid_wall_flux,
             viscous_flux_func=self.viscous_wall_flux,
             boundary_temperature_func=temperature_func,
-            boundary_gradient_cv_func=self.grad_cv_bc,
-            )
+            boundary_gradient_cv_func=self.grad_cv_bc)
 
         def prescribed_state_for_advection(self, dcoll, dd_bdry, gas_model,
                                            state_minus, **kwargs):
             state_plus = self.bnd_state_func(dcoll, dd_bdry, gas_model,
-                                           state_minus, **kwargs)
+                                             state_minus, **kwargs)
 
-            mom_x = -state_minus.cv.momentum[0]
-            mom_y = 2.0*state_plus.cv.momentum[1] - state_minus.cv.momentum[1]
-            mom_plus = make_obj_array([ mom_x, mom_y])
+            mom_x = - state_minus.cv.momentum[0]
+            mom_y = - state_minus.cv.momentum[1] + 2.0*state_plus.cv.momentum[1]
+            mom_plus = make_obj_array([mom_x, mom_y])
 
-            kin_energy_ref = 0.5*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)/state_plus.cv.mass
-            kin_energy_mod = 0.5*np.dot(mom_plus, mom_plus)/state_plus.cv.mass
+            kin_energy_ref = 0.5/state_plus.cv.mass*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)
+            kin_energy_mod = 0.5/state_plus.cv.mass*np.dot(mom_plus, mom_plus)
             energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
 
             cv = make_conserved(dim=2, mass=state_plus.cv.mass, energy=energy_plus,
@@ -1541,7 +1528,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if solid_sources is not None:
             solid_viz_fields.append(("solid_sources", solid_sources))
 
-#        print('Writing solution file...')
         write_visfile(dcoll, fluid_viz_fields, fluid_visualizer,
             vizname=vizname+"-fluid", step=step, t=t,
             overwrite=True, comm=comm)
@@ -1593,49 +1579,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-#    from mirgecom.flux import num_flux_central
-#    from grudge.dof_desc import as_dofdesc
-
-#    def coupled_gradient_operator(dcoll, gas_model, fluid_dd, wall_dd,
-#        fluid_boundaries, wall_boundaries, fluid_field, wall_field,
-#        wall_kappa, *, time=0., fluid_numerical_flux_func=num_flux_central,
-#        quadrature_tag=DISCR_TAG_BASE, _kappa_inter_vol_tpairs=None,
-#        _temperature_inter_vol_tpairs=None, _fluid_operator_states_quad=None):
-
-#        fluid_boundaries = {
-#            as_dofdesc(bdtag).domain_tag: bdry
-#            for bdtag, bdry in fluid_boundaries.items()}
-#        wall_boundaries = {
-#            as_dofdesc(bdtag).domain_tag: bdry
-#            for bdtag, bdry in wall_boundaries.items()}
-
-#        fluid_interface_boundaries_no_grad, wall_interface_boundaries_no_grad = \
-#            get_interface_boundaries(dcoll, gas_model, fluid_dd, wall_dd,
-#                fluid_state, wall_kappa, wall_temp,
-#                _kappa_inter_vol_tpairs=_kappa_inter_vol_tpairs,
-#                _temperature_inter_vol_tpairs=_temperature_inter_vol_tpairs)
-
-#        fluid_all_boundaries_no_grad = {}
-#        fluid_all_boundaries_no_grad.update(fluid_boundaries)
-#        fluid_all_boundaries_no_grad.update(fluid_interface_boundaries_no_grad)
-
-#        wall_all_boundaries_no_grad = {}
-#        wall_all_boundaries_no_grad.update(wall_boundaries)
-#        wall_all_boundaries_no_grad.update(wall_interface_boundaries_no_grad)
-
-#        return (
-#            my_derivative_function(actx, dcoll, fluid_field,
-#                fluid_all_boundaries_no_grad, dd_vol_fluid, 'replicate'), #XXX
-#            my_derivative_function(actx, dcoll,  wall_field,
-#                 wall_all_boundaries_no_grad, dd_vol_solid, 'replicate')  #XXX
-#        )
-
-#    def _coupled_grad_t_operator(dcoll, fluid_boundaries, wall_boundaries, fluid_state, wall_kappa, wall_temperature):
-#        return coupled_grad_t_operator(dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
-#            fluid_boundaries, wall_boundaries, fluid_state, wall_kappa, wall_temperature)
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
     from mirgecom.boundary import DummyBoundary
     from mirgecom.diffusion import DiffusionBoundary, diffusion_facial_flux
     class DummyDiffusionBoundary(DiffusionBoundary):
@@ -1649,10 +1592,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from arraycontext import outer
     from grudge.trace_pair import interior_trace_pairs, tracepair_with_discr_tag
-    from grudge import op
     from meshmode.discretization.connection import FACE_RESTR_ALL
 
-    from grudge.trace_pair import inter_volume_trace_pairs
     class _MyGradTag:
         pass
 
@@ -1929,19 +1870,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def _get_rhs(t, state):
         cv, tseed, wv, wv_tseed = state
 
-        smoothness = smooth_region + sponge_sigma/sponge_amp #
-        #smoothness = smoothness_indicator(dcoll, cv.mass)
+        cv = force_evaluation(actx, cv)
+        tseed = force_evaluation(actx, tseed)
+        wv = force_evaluation(actx, wv)
+        wv_tseed = force_evaluation(actx, wv_tseed)
 
-        cv = _drop_order_cv(cv, smoothness, theta_factor) # apply outflow damping
+        # include both outflow and sponge in the damping region
+        smoothness = force_evaluation(actx,
+            smooth_region + sponge_sigma/sponge_amp)
 
-        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-            temperature_seed=tseed, limiter_func=_limit_fluid_cv,
-            limiter_dd=dd_vol_fluid
-        )
+        # apply outflow damping
+        cv = drop_order_cv(cv, smoothness, theta_factor)
 
-        cv = fluid_state.cv # get species-limited cv
+        # construct species-limited fluid state
+        fluid_state = get_fluid_state(cv, tseed)
 
-        wdv = wall_model.dependent_vars(wv, wv_tseed)
+        # make sure we get the limited state
+        cv = fluid_state.cv
+
+        # wall variables
+        wdv = create_wall_dependent_vars_compiled(wv, wv_tseed)
 
         #~~~~~~~~~~~~~
         fluid_rhs, wall_energy_rhs, grad_cv_fluid, grad_t_fluid, grad_t_solid = \
@@ -1953,8 +1901,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         chem_rhs = chemical_source_term(fluid_state.cv, fluid_state.temperature)
 
         fluid_sources = (
-            sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
-            + gravity_source_terms(fluid_state.cv)
+            sponge_func(cv=cv, cv_ref=ref_cv, sigma=sponge_sigma)
+            + gravity_source_terms(cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, grad_cv_fluid, grad_t_fluid))
 
         #~~~~~~~~~~~~~
@@ -1992,10 +1940,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         fluid_rhs = fluid_rhs + chem_rhs + fluid_sources
         solid_rhs = solid_rhs + solid_sources
 
-        return make_obj_array([fluid_rhs, solid_rhs, grad_cv_fluid,
-            grad_t_fluid, grad_t_solid, grad_ox_solid])
-
-#    get_rhs = actx.compile(_get_rhs)
+        return make_obj_array([fluid_rhs, solid_rhs,
+            fluid_sources, solid_sources,
+            grad_cv_fluid, grad_t_fluid, grad_t_solid, grad_ox_solid])
 
 ##############################################################################
 
@@ -2016,7 +1963,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         smoothness = force_evaluation(actx,
             smooth_region + sponge_sigma/sponge_amp)
 
-        # damp the outflow
+        # apply outflow damping
         cv = drop_order_cv(cv, smoothness, theta_factor)
 
         # construct species-limited fluid state
@@ -2092,22 +2039,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 fluid_sources = None
                 solid_sources = None
 
-    ## FIXME THIS IS NOT WORKING WITH LAZY
+                import datetime
+                print(datetime.datetime.now())
 
-#                fluid_rhs, solid_rhs, grad_cv_fluid, grad_t_fluid, grad_t_solid, grad_ox_solid = _get_rhs(t, state)
-#                fluid_rhs = force_evaluation(actx, fluid_rhs)
-#                solid_rhs = force_evaluation(actx, solid_rhs)
-#                grad_cv_fluid = force_evaluation(actx, grad_cv_fluid)
-#                grad_t_fluid = force_evaluation(actx, grad_t_fluid)
-#                grad_t_solid = force_evaluation(actx, grad_t_solid)
-#                grad_ox_solid = force_evaluation(actx, grad_ox_solid)
+                fluid_rhs, solid_rhs, fluid_sources, solid_sources, \
+                    grad_cv_fluid, grad_t_fluid, grad_t_solid, \
+                    grad_ox_solid = _get_rhs(t, state)
 
-#                fluid_sources = axisym_source_fluid(actx, dcoll, fluid_state,
-#                    grad_cv_fluid, grad_t_fluid)
-
-#                solid_sources = axisym_source_solid(actx, dcoll,
-#                    wdv.temperature, wdv.thermal_conductivity, grad_t_solid,
-#                    wv.ox_mass, wdv.oxygen_diffusivity, grad_ox_solid)
+                fluid_rhs = force_evaluation(actx, fluid_rhs)
+                solid_rhs = force_evaluation(actx, solid_rhs)
+                fluid_sources = force_evaluation(actx, fluid_sources)
+                solid_sources = force_evaluation(actx, solid_sources)
+                grad_cv_fluid = force_evaluation(actx, grad_cv_fluid)
+                grad_t_fluid = force_evaluation(actx, grad_t_fluid)
+                grad_t_solid = force_evaluation(actx, grad_t_solid)
+                grad_ox_solid = force_evaluation(actx, grad_ox_solid)
 
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     wv=wv, wdv=wdv, smoothness=smoothness,
@@ -2115,6 +2061,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     grad_cv_fluid=grad_cv_fluid,
                     grad_t_fluid=grad_t_fluid, grad_t_solid=grad_t_solid,
                     fluid_sources=fluid_sources, solid_sources=solid_sources)
+
+                print(datetime.datetime.now())
 
             if do_restart:
                 my_write_restart(step, t, state)
@@ -2142,33 +2090,40 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def my_rhs(t, state):
         cv, tseed, wv, wv_tseed = state
 
-        smoothness = smooth_region + sponge_sigma/sponge_amp #
-        #smoothness = smoothness_indicator(dcoll, cv.mass)
+        # include both outflow and sponge in the damping region
+        smoothness = smooth_region + sponge_sigma/sponge_amp
 
-        cv = _drop_order_cv(cv, smoothness, theta_factor) # apply outflow damping
+        # apply outflow damping
+        cv = _drop_order_cv(cv, smoothness, theta_factor)
 
+        # construct species-limited fluid state
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
             temperature_seed=tseed, limiter_func=_limit_fluid_cv,
-            limiter_dd=dd_vol_fluid
-        )
+            limiter_dd=dd_vol_fluid)
 
-        cv = fluid_state.cv # get species-limited cv
+        # make sure we get the limited state
+        cv = fluid_state.cv
 
+        # wall variables
         wdv = wall_model.dependent_vars(wv, wv_tseed)
 
         #~~~~~~~~~~~~~
         fluid_rhs, wall_energy_rhs, grad_cv_fluid, grad_t_fluid, grad_t_solid = \
             coupled_ns_heat_operator(
-                dcoll, gas_model, dd_vol_fluid, dd_vol_solid, fluid_boundaries, solid_boundaries,
-                fluid_state, wdv.thermal_conductivity, wdv.temperature, time=t, quadrature_tag=quadrature_tag,
-                interface_radiation=use_radiation, wall_epsilon=emissivity, return_gradients=True)
+                dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
+                fluid_boundaries, solid_boundaries, fluid_state,
+                wdv.thermal_conductivity, wdv.temperature, time=t,
+                quadrature_tag=quadrature_tag, 
+                interface_radiation=use_radiation, wall_epsilon=emissivity,
+                return_gradients=True)
 
-        chem_rhs = chemical_source_term(fluid_state.cv, fluid_state.temperature)
+        chem_rhs = chemical_source_term(cv, fluid_state.temperature)
 
         fluid_sources = (
             sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
             + gravity_source_terms(fluid_state.cv)
-            + axisym_source_fluid(actx, dcoll, fluid_state, grad_cv_fluid, grad_t_fluid))
+            + axisym_source_fluid(actx, dcoll, fluid_state,
+                                  grad_cv_fluid, grad_t_fluid))
 
         #~~~~~~~~~~~~~
         wall_mass_rhs = -wall_model.mass_loss_rate(mass=wv.mass,
@@ -2244,7 +2199,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dt_wall = force_evaluation(actx, actx.np.minimum(
             1.0e-8, my_get_timestep_wall(current_wv, current_wdv,
                             force_evaluation(actx, current_t + solid_zeros),
-                            force_evaluation(actx, current_dt + solid_zeros))
+                            force_evaluation(actx, 1.0e-8 + solid_zeros))
             )
         )
 
