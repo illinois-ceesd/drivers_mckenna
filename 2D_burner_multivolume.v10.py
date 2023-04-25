@@ -23,14 +23,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
-import yaml
+
 import logging
 import sys
 import numpy as np
 import pyopencl as cl
-import pyopencl.array as cla  # noqa
-import pyopencl.tools as cl_tools
+
 from functools import partial
+
 from dataclasses import dataclass, fields
 
 from arraycontext import (
@@ -39,10 +39,16 @@ from arraycontext import (
 )
 
 from meshmode.dof_array import DOFArray
+
+from grudge import op
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import (
     DOFDesc, as_dofdesc, DISCR_TAG_BASE, BoundaryDomainTag, VolumeDomainTag
+)
+from grudge.trace_pair import (
+    TracePair,
+    inter_volume_trace_pairs
 )
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
@@ -55,7 +61,6 @@ from mirgecom.simutil import (
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
-
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     IsothermalWallBoundary,
@@ -65,7 +70,6 @@ from mirgecom.boundary import (
     AdiabaticNoslipWallBoundary,
     LinearizedOutflowBoundary
 )
-
 from mirgecom.fluid import (
     velocity_gradient, species_mass_fraction_gradient, make_conserved
 )
@@ -76,31 +80,23 @@ from mirgecom.transport import (
 import cantera
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.gas_model import GasModel, make_fluid_state
-
-from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
     logmgr_set_time,
     logmgr_add_device_memory_usage,
 )
-
-from pytools.obj_array import make_obj_array
-
 from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
     coupled_grad_t_operator,
     coupled_ns_heat_operator
 )
-
 from mirgecom.diffusion import (
     diffusion_operator, DirichletDiffusionBoundary, NeumannDiffusionBoundary
 )
 
-from grudge.trace_pair import (
-    TracePair,
-    inter_volume_trace_pairs
-)
+from logpyle import IntervalTimer, set_dt
 
+from pytools.obj_array import make_obj_array
 
 #########################################################################
 
@@ -1036,9 +1032,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     #~~~~~~~~~~
 
-#    from grudge.dt_utils import characteristic_lengthscales
-#    char_length_fluid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid)
-#    char_length_solid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid)
+    from grudge.dt_utils import characteristic_lengthscales
+    char_length_fluid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid)
+    char_length_solid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid)
 
 #    def vol_min(dd_vol, x):
 #        return actx.to_numpy(nodal_min(dcoll, dd_vol, x,
@@ -1049,9 +1045,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                                       initial=-np.inf))[()]
 
 ##############################################################################
-
-##############################################################################
-
 
     original_casename = casename
     casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
@@ -1360,10 +1353,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             kin_energy_mod = 0.5/state_plus.cv.mass*np.dot(mom_plus, mom_plus)
             energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
 
-            cv = make_conserved(dim=2, mass=state_plus.cv.mass, energy=energy_plus,
-                momentum=mom_plus, species_mass=state_plus.cv.species_mass)
+            cv = make_conserved(dim=2, mass=state_plus.cv.mass,
+                energy=energy_plus, momentum=mom_plus,
+                species_mass=state_plus.cv.species_mass)
 
-            return make_fluid_state(cv=cv, gas_model=gas_model, temperature_seed=300.0)
+            return make_fluid_state(cv=cv, gas_model=gas_model,
+                                    temperature_seed=300.0)
 
         def prescribed_state_for_diffusion(self, dcoll, dd_bdry, gas_model,
                                            state_minus, **kwargs):
@@ -1461,7 +1456,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if rank == 0:
         logger.info(init_message)
 
-#########################################################################
+##############################################################################
 
     def my_write_viz(step, t, dt, fluid_state, wv, wdv,
         smoothness=None, fluid_rhs=None, solid_rhs=None,
@@ -1591,7 +1586,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     from arraycontext import outer
-    from grudge.trace_pair import interior_trace_pairs, tracepair_with_discr_tag
+    from grudge.trace_pair import (
+        interior_trace_pairs, tracepair_with_discr_tag)
     from meshmode.discretization.connection import FACE_RESTR_ALL
 
     class _MyGradTag:
@@ -1635,7 +1631,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                               bnd_tpair_quad.ext),
                              normal_quad)
 
-            return op.project(dcoll, dd_trace_quad, dd_allfaces_quad, flux_int)
+            return op.project(dcoll, dd_trace_quad, dd_allfaces_quad,
+                              flux_int)
 
         def boundary_flux(bdtag, bdry):
             dd_bdry_quad = dd_vol_quad.with_domain_tag(bdtag)
@@ -1723,8 +1720,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         dtaurydr = dmudr*dudy + mu*d2udrdy + dmudr*dvdr + mu*d2vdr2
 
-        """
-        """
+        #~~~~~~
         source_mass_dom = - cv.momentum[0]
 
         source_rhoU_dom = - cv.momentum[0]*u \
@@ -1743,9 +1739,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                           + u*v*dbetady + u*beta*dvdy + v*beta*dudy
 
         source_spec_dom = - cv.species_mass*u + d_ij*dyidr
-        """
-        """
 
+        #~~~~~~
         source_mass_sng = - drhoudr
         source_rhoU_sng = 0.0  # mu*d2udr2 + 0.5*beta*d2udr2  #XXX
         source_rhoV_sng = - v*drhoudr + dtaurydr + beta*d2udrdy + dudr*dbetady
@@ -1757,8 +1752,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                 + v*beta*d2udrdy
         source_spec_sng = - cv.species_mass*dudr #+ d_ij*dyi2dr2
         
-        """
-        """
+        #~~~~~~
         source_mass = actx.np.where( fluid_nodes_are_off_axis,
                           source_mass_dom/fluid_nodes[0], source_mass_sng )
         source_rhoU = actx.np.where( fluid_nodes_are_off_axis,
