@@ -1,19 +1,20 @@
 import numpy as np
 import cantera as ct
+import sys
 
 fator = 1.0 #7.5 #1.0/0.117892786
 
 print(fator)
 
-r_int = 0.03
-r_ext = 0.035
+r_int = 2.38*25.4/2000 #radius, actually
+r_ext = 2.89*25.4/2000 #radius, actually
 
 
 for rxnmech in ['uiuc_sharp']:
 
     gas = ct.Solution(rxnmech+".yaml")
     air = "O2:0.21,N2:0.79"
-    gas.set_equivalence_ratio(phi=1.0, fuel="C2H4:1", oxidizer=air)
+    gas.set_equivalence_ratio(phi=0.7, fuel="C2H4:1", oxidizer=air)
 
     gas.TP = 300, ct.one_atm
 
@@ -21,11 +22,13 @@ for rxnmech in ['uiuc_sharp']:
 
     x = gas.X
 
-print(x[0])
-print(np.sum(x[1:]))
+gas()
 
-mass_unb = 25*fator/np.sum(x[1:])
-mass_shr = 20*fator
+for ii in range(gas.n_species):
+    print(gas.species_name(ii), x[ii]*25)
+
+mass_unb = 25*fator/np.sum(x[:])
+mass_shr = 11.85*fator
 
 
 A_int = np.pi*r_int**2
