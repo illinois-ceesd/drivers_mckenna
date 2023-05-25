@@ -259,13 +259,9 @@ class Burner2D_Reactive:
             flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
 
             #~~~ species
-            #if state_minus is None:
-            if True:
-                yf = (flame*self._yb + (1.0-flame)*self._yu)*(1.0-upper_atm) + self._ya*upper_atm
-                ys = self._ya*upper_atm + (1.0 - upper_atm)*self._ys
-                y = atmosphere*self._ya + shroud*ys + core*yf
-            else:
-                y = state_minus.species_mass_fractions
+            yf = (flame*self._yb + (1.0-flame)*self._yu)*(1.0-upper_atm) + self._ya*upper_atm
+            ys = self._ya*upper_atm + (1.0 - upper_atm)*self._ys
+            y = atmosphere*self._ya + shroud*ys + core*yf
 
             #~~~ temperature and EOS
             temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
@@ -341,7 +337,6 @@ class InitSponge:
 
     def __init__(self, *, x_min=None, x_max=None, y_min=None, y_max=None,
                  x_thickness=None, y_thickness=None, amplitude):
-        """ """
         self._x_min = x_min
         self._x_max = x_max
         self._y_min = y_min
@@ -351,7 +346,6 @@ class InitSponge:
         self._amplitude = amplitude
 
     def __call__(self, x_vec):
-        """ """
         xpos = x_vec[0]
         ypos = x_vec[1]
         actx = xpos.array_context
@@ -643,7 +637,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # default timestepping control
 #    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
-    maximum_fluid_dt = 1.0e-8 #order == 2
+    maximum_fluid_dt = 1.0e-6 #order == 2
     maximum_solid_dt = 1.0e-8
     t_final = 2.0
 
@@ -789,21 +783,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     fluid_zeros = force_evaluation(actx, fluid_nodes[0]*0.0)
     sample_zeros = force_evaluation(actx, sample_nodes[0]*0.0)
     holder_zeros = force_evaluation(actx, holder_nodes[0]*0.0)
-
-    #~~~~~~~~~~
-
-    from grudge.dt_utils import characteristic_lengthscales
-    char_length_fluid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid)
-    char_length_sample = characteristic_lengthscales(actx, dcoll, dd=dd_vol_sample)
-    char_length_holder = characteristic_lengthscales(actx, dcoll, dd=dd_vol_holder)
-
-#    def vol_min(dd_vol, x):
-#        return actx.to_numpy(nodal_min(dcoll, dd_vol, x,
-#                                       initial=np.inf))[()]
-
-#    def vol_max(dd_vol, x):
-#        return actx.to_numpy(nodal_max(dcoll, dd_vol, x,
-#                                       initial=-np.inf))[()]
 
     #~~~~~~~~~~
     wall_vol_discr = dcoll.discr_from_dd(dd_vol_holder)
@@ -963,31 +942,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # {{{ Initialize wall model
 
-    from mirgecom.wall_model import (
-        WallEOS, WallDependentVars
-    )
+    from mirgecom.wall_model import WallEOS, WallDependentVars
     import mirgecom.materials.carbon_fiber as my_material
 
     fiber = my_material.SolidProperties()
-    oxidation = Y3_Oxidation_Model(fiber)
-
-    # TODO this seems pretty useless now. Simplify the model...
-    def _get_fiber_enthalpy(temperature, tau):
-        return fiber.enthalpy(temperature, tau)
-
-    # TODO this seems pretty useless now. Simplify the model...
-    def _get_fiber_heat_capacity(temperature, tau):
-        return fiber.heat_capacity(temperature, tau)
-
-    # TODO this seems pretty useless now. Simplify the model...
-    def _get_fiber_thermal_conductivity(temperature, tau):
-        return fiber.thermal_conductivity(temperature, tau)
-
-    sample_degradation_model = WallEOS(
-        wall_material=fiber,
-        enthalpy_func=_get_fiber_enthalpy,
-        heat_capacity_func=_get_fiber_heat_capacity,
-        thermal_conductivity_func=_get_fiber_thermal_conductivity)
+    oxidation = Y3_Oxidation_Model(wall_material=fiber)
+    sample_degradation_model = WallEOS(wall_material=fiber)
 
     # }}}
 
@@ -1231,8 +1191,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     get_sample_state = actx.compile(_get_sample_state)
 
 
-    def _create_sample_dependent_vars(wall_density, temperature):
-        gas_model_solid.wall.dependent_vars(wall_density, temperature)
+    def _create_sample_dependent_vars(wall_density):
+        gas_model_solid.wall.dependent_vars(wall_density)
 
     create_sample_dependent_vars = actx.compile(_create_sample_dependent_vars)
 
@@ -1711,8 +1671,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
 
-        wdv = gas_model_sample.wall.dependent_vars(sample_state.dv.wall_density,
-                                                   sample_state.dv.temperature)
+        wdv = gas_model_sample.wall.dependent_vars(sample_state.dv.wall_density)
 
         fluid_viz_fields = [
             ("rho_g", fluid_state.cv.mass),
@@ -1820,7 +1779,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-    """
     from mirgecom.boundary import DummyBoundary
     from mirgecom.diffusion import DiffusionBoundary
     class DummyDiffusionBoundary(DiffusionBoundary):
@@ -2060,7 +2018,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dv = state.dv
 
         mu = state.tv.viscosity
-        beta = physical_transport.volume_viscosity(cv, dv, gas_model_solid.eos)
+        beta = physical_transport.volume_viscosity(cv, dv, gas_model_sample.eos)
         kappa = state.tv.thermal_conductivity
         d_ij = state.tv.species_diffusivity
 
@@ -2077,18 +2035,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         
         drhoudr = (grad_cv.momentum[0])[0]
 
-        d2udr2   = my_derivative_function(actx, dcoll, dudr, solid_boundaries,
+        d2udr2   = my_derivative_function(actx, dcoll, dudr, sample_boundaries,
                                           dd_vol_sample, 'replicate')[0] #XXX
-        d2vdr2   = my_derivative_function(actx, dcoll, dvdr, solid_boundaries,
+        d2vdr2   = my_derivative_function(actx, dcoll, dvdr, sample_boundaries,
                                           dd_vol_sample, 'replicate')[0] #XXX
-        d2udrdy  = my_derivative_function(actx, dcoll, dudy, solid_boundaries,
+        d2udrdy  = my_derivative_function(actx, dcoll, dudy, sample_boundaries,
                                           dd_vol_sample, 'replicate')[0] #XXX
 
-        dmudr    = my_derivative_function(actx, dcoll,   mu, solid_boundaries,
+        dmudr    = my_derivative_function(actx, dcoll,   mu, sample_boundaries,
                                           dd_vol_sample, 'replicate')[0]
-        dbetadr  = my_derivative_function(actx, dcoll, beta, solid_boundaries,
+        dbetadr  = my_derivative_function(actx, dcoll, beta, sample_boundaries,
                                           dd_vol_sample, 'replicate')[0]
-        dbetady  = my_derivative_function(actx, dcoll, beta, solid_boundaries,
+        dbetady  = my_derivative_function(actx, dcoll, beta, sample_boundaries,
                                           dd_vol_sample, 'replicate')[1]
 
         qr_temp = - kappa*grad_t[0]
@@ -2102,7 +2060,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         tau_rr = 2.0*mu*dudr + beta*(dudr + dvdy)
         tau_yy = 2.0*mu*dvdy + beta*(dudr + dvdy)
         tau_tt = beta*(dudr + dvdy) + 2.0*mu*actx.np.where(
-                              solid_nodes_are_off_axis, u/sample_nodes[0], dudr )
+                              sample_nodes_are_off_axis, u/sample_nodes[0], dudr )
 
         dtaurydr = dmudr*dudy + mu*d2udrdy + dmudr*dvdr + mu*d2vdr2
 
@@ -2113,7 +2071,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                           + tau_rr - tau_tt \
                           + u*dbetadr + beta*dudr \
                           + beta*actx.np.where(
-                              solid_nodes_are_off_axis, -u/sample_nodes[0], -dudr )
+                              sample_nodes_are_off_axis, -u/sample_nodes[0], -dudr )
 
         source_rhoV_dom = - cv.momentum[0]*v \
                           + tau_ry \
@@ -2164,7 +2122,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def axisym_source_holder(actx, dcoll, state, grad_t):
         dkappadr = 0.0*holder_nodes[0]
         
-        kappa = state.thermal_conductivity
+        kappa = state.dv.thermal_conductivity
 
         qr = - kappa*grad_t[0]
 #        d2Tdr2  = my_derivative_function(actx, dcoll, grad_t[0], 
@@ -2181,7 +2139,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return HolderWallVars(mass=source_mass, energy=source_rhoE)
 
     compiled_axisym_source_holder = actx.compile(axisym_source_holder)
-    """
 
     # ~~~~~~~
     def gravity_source_terms(cv):
@@ -2505,29 +2462,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dd=dd_vol_holder, grad_u=holder_grad_temperature,
             comm_tag=_HolderOperatorTag)
 
-#        fluid_sources = (
-#            chemical_source_term(fluid_cv, fluid_state.temperature)
-#            + sponge_func(cv=fluid_cv, cv_ref=ref_cv, sigma=sponge_sigma)
-#            + gravity_source_terms(fluid_cv)
-#            + axisym_source_fluid(actx, dcoll, fluid_state,
-#                                  fluid_grad_cv, fluid_grad_temperature)
-#        )
+        fluid_sources = (
+            chemical_source_term(fluid_cv, fluid_state.temperature)
+            + sponge_func(cv=fluid_cv, cv_ref=ref_cv, sigma=sponge_sigma)
+            + gravity_source_terms(fluid_cv)
+            + axisym_source_fluid(actx, dcoll, fluid_state,
+                                  fluid_grad_cv, fluid_grad_temperature)
+        )
 
-#        #~~~~~~~~~~~~~
+        #~~~~~~~~~~~~~
+
 #        sample_mass_rhs = oxidation.get_source_terms()
-#        sample_sources = (
-#            eos.get_species_source_terms(solid_cv, solid_state.temperature)
-#            + axisym_source_sample(actx, dcoll, solid_state,
-#                                   sample_grad_cv, sample_grad_temperature))
-
-#        #~~~~~~~~~~~~~
-#        holder_sources = axisym_source_holder(actx, dcoll, holder_state,
-#                                              holder_grad_temperature)
-
-        fluid_sources = fluid_zeros
         sample_mass_rhs = sample_zeros
-        sample_sources = 0.0
-        holder_sources = 0.0
+
+        sample_sources = (
+            eos.get_species_source_terms(sample_cv, sample_state.temperature)
+            + axisym_source_sample(actx, dcoll, sample_state,
+                                   sample_grad_cv, sample_grad_temperature))
+
+        #~~~~~~~~~~~~~
+        holder_sources = axisym_source_holder(actx, dcoll, holder_state,
+                                              holder_grad_temperature)
 
         #~~~~~~~~~~~~~
         return make_obj_array([
