@@ -1,4 +1,4 @@
-""" Fri 10 Mar 2023 02:22:21 PM CST """
+""" Sat 27 May 2023 03:19:49 PM CDT """
 
 __copyright__ = """
 Copyright (C) 2023 University of Illinois Board of Trustees
@@ -781,7 +781,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_09m_10mm_025um_3domains-v2.msh"
+    mesh_filename = "mesh_10m_10mm_025um_3domains-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -789,7 +789,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
-    nviz = 5000
+    nviz = 25000
     nrestart = 25000
     nhealth = 1
     nstatus = 100
@@ -818,7 +818,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     equiv_ratio = 0.7
     speedup_factor = 1.0
-    chem_rate = 1.0
+    chem_rate = 0.25
     flow_rate = 25.0
     shroud_rate = 11.85
     Twall = 300.0
@@ -834,7 +834,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_penalty_amount = 1.0
     wall_time_scale = 1 #speedup_factor
 
-    use_radiation = False #True
+    use_radiation = True
     emissivity = 0.85
 
     restart_iterations = False
@@ -1715,142 +1715,142 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def my_write_viz(
         step, t, dt, fluid_state, sample_state, holder_state, smoothness=None):
 
-        time = t
-        fluid_all_boundaries_no_grad, sample_all_boundaries_no_grad = \
-            add_multiphysics_interface_boundaries_no_grad(
-                dcoll, dd_vol_fluid, dd_vol_sample,
-                fluid_state, sample_state,
-                fluid_boundaries, sample_boundaries,
-                interface_noslip=True, interface_radiation=use_radiation,
-                use_kappa_weighted_grad_flux_in_fluid=False,
-                wall_penalty_amount=wall_penalty_amount)
+#        time = t
+#        fluid_all_boundaries_no_grad, sample_all_boundaries_no_grad = \
+#            add_multiphysics_interface_boundaries_no_grad(
+#                dcoll, dd_vol_fluid, dd_vol_sample,
+#                fluid_state, sample_state,
+#                fluid_boundaries, sample_boundaries,
+#                interface_noslip=True, interface_radiation=use_radiation,
+#                use_kappa_weighted_grad_flux_in_fluid=False,
+#                wall_penalty_amount=wall_penalty_amount)
 
-        fluid_all_boundaries_no_grad, holder_all_boundaries_no_grad = \
-            add_thermal_interface_boundaries_no_grad(
-                dcoll,
-                dd_vol_fluid, dd_vol_holder,
-                fluid_state, holder_state.dv.thermal_conductivity,
-                holder_state.dv.temperature,
-                fluid_all_boundaries_no_grad, holder_boundaries,
-                interface_noslip=True, interface_radiation=use_radiation,
-                use_kappa_weighted_grad_flux_in_fluid=False)
+#        fluid_all_boundaries_no_grad, holder_all_boundaries_no_grad = \
+#            add_thermal_interface_boundaries_no_grad(
+#                dcoll,
+#                dd_vol_fluid, dd_vol_holder,
+#                fluid_state, holder_state.dv.thermal_conductivity,
+#                holder_state.dv.temperature,
+#                fluid_all_boundaries_no_grad, holder_boundaries,
+#                interface_noslip=True, interface_radiation=use_radiation,
+#                use_kappa_weighted_grad_flux_in_fluid=False)
 
-        sample_all_boundaries_no_grad, holder_all_boundaries_no_grad = \
-            add_thermal_interface_boundaries_no_grad(
-                dcoll,
-                dd_vol_sample, dd_vol_holder,
-                sample_state, holder_state.dv.thermal_conductivity,
-                holder_state.dv.temperature,
-                sample_all_boundaries_no_grad, holder_all_boundaries_no_grad,
-                interface_noslip=True, interface_radiation=False,
-                use_kappa_weighted_grad_flux_in_fluid=False)
+#        sample_all_boundaries_no_grad, holder_all_boundaries_no_grad = \
+#            add_thermal_interface_boundaries_no_grad(
+#                dcoll,
+#                dd_vol_sample, dd_vol_holder,
+#                sample_state, holder_state.dv.thermal_conductivity,
+#                holder_state.dv.temperature,
+#                sample_all_boundaries_no_grad, holder_all_boundaries_no_grad,
+#                interface_noslip=True, interface_radiation=False,
+#                use_kappa_weighted_grad_flux_in_fluid=False)
 
-        # ~~~~~~~~~~~~~~
+#        # ~~~~~~~~~~~~~~
 
-        fluid_operator_states_quad = make_operator_fluid_states(
-            dcoll, fluid_state, gas_model_fluid, fluid_all_boundaries_no_grad,
-            quadrature_tag, dd=dd_vol_fluid, comm_tag=_FluidOpStatesTag,
-            limiter_func=_limit_fluid_cv)
+#        fluid_operator_states_quad = make_operator_fluid_states(
+#            dcoll, fluid_state, gas_model_fluid, fluid_all_boundaries_no_grad,
+#            quadrature_tag, dd=dd_vol_fluid, comm_tag=_FluidOpStatesTag,
+#            limiter_func=_limit_fluid_cv)
 
-        sample_operator_states_quad = make_operator_fluid_states(
-            dcoll, sample_state, gas_model_sample, sample_all_boundaries_no_grad,
-            quadrature_tag, dd=dd_vol_sample, comm_tag=_WallOpStatesTag,
-            limiter_func=_limit_sample_cv)
+#        sample_operator_states_quad = make_operator_fluid_states(
+#            dcoll, sample_state, gas_model_sample, sample_all_boundaries_no_grad,
+#            quadrature_tag, dd=dd_vol_sample, comm_tag=_WallOpStatesTag,
+#            limiter_func=_limit_sample_cv)
 
-        # ~~~~~~~~~~~~~~
+#        # ~~~~~~~~~~~~~~
 
-        # fluid grad CV
-        fluid_grad_cv = grad_cv_operator(
-            dcoll, gas_model_fluid, fluid_all_boundaries_no_grad, fluid_state,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
-            operator_states_quad=fluid_operator_states_quad,
-            comm_tag=_FluidGradCVTag)
+#        # fluid grad CV
+#        fluid_grad_cv = grad_cv_operator(
+#            dcoll, gas_model_fluid, fluid_all_boundaries_no_grad, fluid_state,
+#            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+#            operator_states_quad=fluid_operator_states_quad,
+#            comm_tag=_FluidGradCVTag)
 
-        # fluid grad T
-        fluid_grad_temperature = grad_t_operator(
-            dcoll, gas_model_fluid, fluid_all_boundaries_no_grad, fluid_state,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
-            operator_states_quad=fluid_operator_states_quad,
-            comm_tag=_FluidGradTempTag)
+#        # fluid grad T
+#        fluid_grad_temperature = grad_t_operator(
+#            dcoll, gas_model_fluid, fluid_all_boundaries_no_grad, fluid_state,
+#            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+#            operator_states_quad=fluid_operator_states_quad,
+#            comm_tag=_FluidGradTempTag)
 
-        # sample grad CV
-        sample_grad_cv = grad_cv_operator(
-            dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-            operator_states_quad=sample_operator_states_quad,
-            comm_tag=_SampleGradCVTag)
+#        # sample grad CV
+#        sample_grad_cv = grad_cv_operator(
+#            dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
+#            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+#            operator_states_quad=sample_operator_states_quad,
+#            comm_tag=_SampleGradCVTag)
 
-        # sample grad T
-        sample_grad_temperature = grad_t_operator(
-            dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-            operator_states_quad=sample_operator_states_quad,
-            comm_tag=_SampleGradTempTag)
+#        # sample grad T
+#        sample_grad_temperature = grad_t_operator(
+#            dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
+#            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+#            operator_states_quad=sample_operator_states_quad,
+#            comm_tag=_SampleGradTempTag)
 
-        # holder grad T
-        holder_grad_temperature = wall_grad_t_operator(
-            dcoll, holder_state.dv.thermal_conductivity,
-            holder_all_boundaries_no_grad, holder_state.dv.temperature,
-            quadrature_tag=quadrature_tag, dd=dd_vol_holder,
-            comm_tag=_HolderGradTempTag)
+#        # holder grad T
+#        holder_grad_temperature = wall_grad_t_operator(
+#            dcoll, holder_state.dv.thermal_conductivity,
+#            holder_all_boundaries_no_grad, holder_state.dv.temperature,
+#            quadrature_tag=quadrature_tag, dd=dd_vol_holder,
+#            comm_tag=_HolderGradTempTag)
 
-        # ~~~~~~~~~~~~~~~~~
+#        # ~~~~~~~~~~~~~~~~~
 
-        fluid_all_boundaries, sample_all_boundaries = \
-            add_multiphysics_interface_boundaries(
-                dcoll, dd_vol_fluid, dd_vol_sample,
-                fluid_state, sample_state,
-                fluid_grad_cv, sample_grad_cv,
-                fluid_grad_temperature, sample_grad_temperature,
-                fluid_boundaries, sample_boundaries,
-                interface_noslip=True, interface_radiation=use_radiation,
-                wall_emissivity=emissivity, sigma=5.67e-8, ambient_temperature=300.0,
-                use_kappa_weighted_grad_flux_in_fluid=False,
-                wall_penalty_amount=wall_penalty_amount)
+#        fluid_all_boundaries, sample_all_boundaries = \
+#            add_multiphysics_interface_boundaries(
+#                dcoll, dd_vol_fluid, dd_vol_sample,
+#                fluid_state, sample_state,
+#                fluid_grad_cv, sample_grad_cv,
+#                fluid_grad_temperature, sample_grad_temperature,
+#                fluid_boundaries, sample_boundaries,
+#                interface_noslip=True, interface_radiation=use_radiation,
+#                wall_emissivity=emissivity, sigma=5.67e-8, ambient_temperature=300.0,
+#                use_kappa_weighted_grad_flux_in_fluid=False,
+#                wall_penalty_amount=wall_penalty_amount)
 
-        fluid_all_boundaries, holder_all_boundaries = \
-            add_thermal_interface_boundaries(
-                dcoll, dd_vol_fluid, dd_vol_holder,
-                fluid_all_boundaries, holder_boundaries,
-                fluid_state, holder_state.dv.thermal_conductivity, holder_state.dv.temperature,
-                fluid_grad_temperature, holder_grad_temperature,
-                interface_noslip=True, interface_radiation=use_radiation,
-                use_kappa_weighted_grad_flux_in_fluid=False,
-                wall_emissivity=emissivity, sigma=5.67e-8, ambient_temperature=300.0,
-                wall_penalty_amount=wall_penalty_amount)
+#        fluid_all_boundaries, holder_all_boundaries = \
+#            add_thermal_interface_boundaries(
+#                dcoll, dd_vol_fluid, dd_vol_holder,
+#                fluid_all_boundaries, holder_boundaries,
+#                fluid_state, holder_state.dv.thermal_conductivity, holder_state.dv.temperature,
+#                fluid_grad_temperature, holder_grad_temperature,
+#                interface_noslip=True, interface_radiation=use_radiation,
+#                use_kappa_weighted_grad_flux_in_fluid=False,
+#                wall_emissivity=emissivity, sigma=5.67e-8, ambient_temperature=300.0,
+#                wall_penalty_amount=wall_penalty_amount)
 
-        sample_all_boundaries, holder_all_boundaries = \
-            add_thermal_interface_boundaries(
-                dcoll, dd_vol_sample, dd_vol_holder,
-                sample_all_boundaries, holder_all_boundaries,
-                sample_state, holder_state.dv.thermal_conductivity, holder_state.dv.temperature,
-                sample_grad_temperature, holder_grad_temperature,
-                interface_noslip=True, interface_radiation=False,
-                use_kappa_weighted_grad_flux_in_fluid=False,
-                wall_penalty_amount=wall_penalty_amount)
+#        sample_all_boundaries, holder_all_boundaries = \
+#            add_thermal_interface_boundaries(
+#                dcoll, dd_vol_sample, dd_vol_holder,
+#                sample_all_boundaries, holder_all_boundaries,
+#                sample_state, holder_state.dv.thermal_conductivity, holder_state.dv.temperature,
+#                sample_grad_temperature, holder_grad_temperature,
+#                interface_noslip=True, interface_radiation=False,
+#                use_kappa_weighted_grad_flux_in_fluid=False,
+#                wall_penalty_amount=wall_penalty_amount)
 
-        #~~~~~~~~~~~~~
+#        #~~~~~~~~~~~~~
 
-        fluid_rhs = ns_operator(
-            dcoll, gas_model_fluid, fluid_state, fluid_all_boundaries,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
-            operator_states_quad=fluid_operator_states_quad,
-            grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
-            comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
+#        fluid_rhs = ns_operator(
+#            dcoll, gas_model_fluid, fluid_state, fluid_all_boundaries,
+#            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+#            operator_states_quad=fluid_operator_states_quad,
+#            grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
+#            comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
 
-        sample_rhs = ns_operator(
-            dcoll, gas_model_sample, sample_state, sample_all_boundaries,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-            operator_states_quad=sample_operator_states_quad,
-            grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
-            comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
+#        sample_rhs = ns_operator(
+#            dcoll, gas_model_sample, sample_state, sample_all_boundaries,
+#            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+#            operator_states_quad=sample_operator_states_quad,
+#            grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
+#            comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
 
-        holder_rhs = diffusion_operator(
-            dcoll, holder_state.dv.thermal_conductivity, holder_all_boundaries,
-            holder_state.dv.temperature,
-            penalty_amount=wall_penalty_amount, quadrature_tag=quadrature_tag,
-            dd=dd_vol_holder, grad_u=holder_grad_temperature,
-            comm_tag=_HolderOperatorTag)
+#        holder_rhs = diffusion_operator(
+#            dcoll, holder_state.dv.thermal_conductivity, holder_all_boundaries,
+#            holder_state.dv.temperature,
+#            penalty_amount=wall_penalty_amount, quadrature_tag=quadrature_tag,
+#            dd=dd_vol_holder, grad_u=holder_grad_temperature,
+#            comm_tag=_HolderOperatorTag)
 
 
 
