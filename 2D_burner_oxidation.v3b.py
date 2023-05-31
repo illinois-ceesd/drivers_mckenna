@@ -195,19 +195,168 @@ class SampleInitializer:
             momentum=eps_rhoU_g, energy=energy, species_mass=eps_rhoY_g)
 
 
+#class Burner2D_Reactive:
+
+#    def __init__(self, *, dim=2, nspecies=7, sigma=1e-3, sigma_flame=2e-4,
+#        flame_loc=None, pressure, temperature, speedup_factor,
+#        mass_rate_burner, mass_rate_shroud,
+#        species_unburn, species_burned, species_shroud, species_atm):
+
+#        self._dim = dim
+#        self._nspecies = nspecies 
+#        self._sigma = sigma
+#        self._sigma_flame = sigma_flame
+#        self._pres = pressure
+#        self._speedup_factor = speedup_factor
+#        self._yu = species_unburn
+#        self._yb = species_burned
+#        self._ys = species_shroud
+#        self._ya = species_atm
+#        self._temp = temperature
+#        self._flaLoc = flame_loc
+
+#        self._mass_rate_burner = mass_rate_burner
+#        self._mass_rate_shroud = mass_rate_shroud        
+
+#        if (flame_loc is None):
+#            raise ValueError(f"Specify flame_loc")
+
+#    def __call__(self, x_vec, eos, flow_rate, solve_the_flame=True,
+#                 state_minus=None, time=None):
+
+#        if x_vec.shape != (self._dim,):
+#            raise ValueError(f"Position vector has unexpected dimensionality,"
+#                             f" expected {self._dim}.")
+
+#        actx = x_vec[0].array_context
+
+#        _ya = self._ya
+#        _yb = self._yb
+#        _ys = self._ys
+#        _yu = self._yu
+#        cool_temp = 300.0
+
+#        upper_bnd = 0.105
+
+#        sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
+#        _sigma = self._sigma*(
+#            actx.np.where(actx.np.less(x_vec[1], upper_bnd),
+#                              actx.np.where(actx.np.greater(x_vec[1], .10),
+#                                            sigma_factor, 1.0),
+#                              12.0)
+#        )
+##        _sigma = self._sigma
+
+#        int_diam = 2.38*25.4/2000 #radius, actually
+#        ext_diam = 2.89*25.4/2000 #radius, actually
+
+#        #~~~ shroud
+#        S1 = 0.5*(1.0 + actx.np.tanh(1.0/(_sigma)*(x_vec[0] - int_diam)))
+#        S2 = actx.np.where(actx.np.greater(x_vec[0], ext_diam),
+#                 0.0, - actx.np.tanh(1.0/(_sigma)*(x_vec[0] - ext_diam))
+#             )
+#        shroud = S1*S2
+
+#        #~~~ flame ignition
+#        core = 0.5*(1.0 - actx.np.tanh(1.0/_sigma*(x_vec[0] - int_diam)))
+
+#        #~~~ atmosphere
+#        atmosphere = 1.0 - (shroud + core)
+#             
+#        #~~~ after combustion products
+#        upper_atm = 0.5*(1.0 + actx.np.tanh( 1.0/(2.0*self._sigma)*(x_vec[1] - upper_bnd)))
+
+#        if solve_the_flame:
+
+#            #~~~ flame ignition
+#            flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
+
+#            #~~~ species
+#            yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
+#            ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
+#            y = atmosphere*_ya + shroud*ys + core*yf
+
+#            #~~~ temperature and EOS
+#            temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
+#            temperature = temp*core + 300.0*(1.0 - core)
+#            
+#            if state_minus is None:
+#                pressure = self._pres + 0.0*x_vec[0]
+#                mass = eos.get_density(pressure, temperature, species_mass_fractions=y)
+#            else:
+#                mass = state_minus.cv.mass
+
+#            #~~~ velocity and/or momentum
+#            mom_burner = self._mass_rate_burner*self._speedup_factor
+#            mom_shroud = self._mass_rate_shroud*self._speedup_factor
+#            smoothY = mom_burner*(1.0-upper_atm) + 0.0*upper_atm
+#            mom_x = 0.0*x_vec[0]
+#            mom_y = core*smoothY + shroud*mom_shroud*(1.0-upper_atm)
+#            momentum = make_obj_array([mom_x, mom_y])
+#            velocity = momentum/mass
+
+#            #~~~ 
+#            specmass = mass * y
+
+#            #~~~ 
+#            internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
+#            kinetic_energy = 0.5 * np.dot(velocity, velocity)
+#            energy = mass * (internal_energy + kinetic_energy)
+
+#        else:
+
+#            #~~~ flame ignition
+#            flame = 1.0
+
+#            #~~~ species
+#            yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
+#            ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
+#            y = atmosphere*_ya + shroud*ys + core*yf
+
+#            #~~~ temperature and EOS
+#            temp = self._temp*(1.0-upper_atm) + 300.0*upper_atm
+#            temperature = temp*core + 300.0*(1.0 - core)
+
+#            if state_minus is None:
+#                pressure = self._pres + 0.0*x_vec[0]
+#                mass = eos.get_density(pressure, temperature, species_mass_fractions=y)
+#            else:
+#                mass = state_minus.cv.mass
+
+#            #~~~ velocity
+#            mom_inlet = self._mass_rate*self._speedup_factor
+#            mom_shroud = 0.0
+#            smoothY = mom_inlet*(1.0-upper_atm) + 0.0*upper_atm
+#            mom_x = 0.0*x_vec[0]
+#            mom_y = core*smoothY + shroud*mom_shroud*(1.0-upper_atm)
+#            momentum = make_obj_array([mom_x, mom_y])
+#            velocity = momentum/mass
+
+#            #~~~ 
+#            specmass = mass * y
+
+#            #~~~ 
+#            internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
+#            kinetic_energy = 0.5 * np.dot(velocity, velocity)
+#            energy = mass * (internal_energy + kinetic_energy)
+
+#        return make_conserved(dim=self._dim, mass=mass, energy=energy,
+#                momentum=mass*velocity, species_mass=specmass)
+
+
 class Burner2D_Reactive:
 
-    def __init__(self, *, dim=2, nspecies=7, sigma=1e-3, sigma_flame=2e-4,
-        flame_loc=None, pressure, temperature, speedup_factor,
-        mass_rate_burner, mass_rate_shroud,
-        species_unburn, species_burned, species_shroud, species_atm):
+    def __init__(self, flame_loc, pressure, temperature, speedup_factor,
+        mixture_velocity, shroud_velocity,
+        species_unburn, species_burned, species_shroud, species_atm, *,
+        sigma=1e-3, sigma_flame=2e-4):
 
-        self._dim = dim
-        self._nspecies = nspecies 
         self._sigma = sigma
         self._sigma_flame = sigma_flame
         self._pres = pressure
         self._speedup_factor = speedup_factor
+        self._v_mixture = mixture_velocity
+        self._v_shroud = shroud_velocity
         self._yu = species_unburn
         self._yb = species_burned
         self._ys = species_shroud
@@ -215,25 +364,12 @@ class Burner2D_Reactive:
         self._temp = temperature
         self._flaLoc = flame_loc
 
-        self._mass_rate_burner = mass_rate_burner
-        self._mass_rate_shroud = mass_rate_shroud        
-
-        if (flame_loc is None):
-            raise ValueError(f"Specify flame_loc")
-
-    def __call__(self, x_vec, eos, flow_rate, solve_the_flame=True,
+    def __call__(self, x_vec, gas_model, solve_the_flame=True,
                  state_minus=None, time=None):
 
-        if x_vec.shape != (self._dim,):
-            raise ValueError(f"Position vector has unexpected dimensionality,"
-                             f" expected {self._dim}.")
-
         actx = x_vec[0].array_context
+        eos = gas_model.eos
 
-        _ya = self._ya
-        _yb = self._yb
-        _ys = self._ys
-        _yu = self._yu
         cool_temp = 300.0
 
         upper_bnd = 0.105
@@ -272,9 +408,9 @@ class Burner2D_Reactive:
             flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
 
             #~~~ species
-            yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
-            ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
-            y = atmosphere*_ya + shroud*ys + core*yf
+            yf = (flame*self._yb + (1.0-flame)*self._yu)*(1.0-upper_atm) + self._ya*upper_atm
+            ys = self._ya*upper_atm + (1.0 - upper_atm)*self._ys
+            y = atmosphere*self._ya + shroud*ys + core*yf
 
             #~~~ temperature and EOS
             temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
@@ -287,12 +423,11 @@ class Burner2D_Reactive:
                 mass = state_minus.cv.mass
 
             #~~~ velocity and/or momentum
-            mom_burner = self._mass_rate_burner*self._speedup_factor
-            mom_shroud = self._mass_rate_shroud*self._speedup_factor
-            smoothY = mom_burner*(1.0-upper_atm) + 0.0*upper_atm
-            mom_x = 0.0*x_vec[0]
-            mom_y = core*smoothY + shroud*mom_shroud*(1.0-upper_atm)
-            momentum = make_obj_array([mom_x, mom_y])
+            mom_inlet = mass*self._v_mixture*self._speedup_factor
+            smoothY = mom_inlet*(1.0-upper_atm) + 0.0*upper_atm
+            mom_shroud = mass*self._v_shroud*self._speedup_factor
+            momentum = make_obj_array([
+                0.0*x_vec[0], core*smoothY + shroud*mom_shroud*(1.0-upper_atm)])
             velocity = momentum/mass
 
             #~~~ 
@@ -309,9 +444,9 @@ class Burner2D_Reactive:
             flame = 1.0
 
             #~~~ species
-            yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
-            ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
-            y = atmosphere*_ya + shroud*ys + core*yf
+            yf = (flame*self._yb + (1.0-flame)*self._yu)*(1.0-upper_atm) + self._ya*upper_atm
+            ys = self._ya*upper_atm + (1.0 - upper_atm)*self._ys
+            y = atmosphere*self._ya + shroud*ys + core*yf
 
             #~~~ temperature and EOS
             temp = self._temp*(1.0-upper_atm) + 300.0*upper_atm
@@ -324,12 +459,11 @@ class Burner2D_Reactive:
                 mass = state_minus.cv.mass
 
             #~~~ velocity
-            mom_inlet = self._mass_rate*self._speedup_factor
-            mom_shroud = 0.0
+            mom_inlet = mass*self._v_mixture*self._speedup_factor
             smoothY = mom_inlet*(1.0-upper_atm) + 0.0*upper_atm
-            mom_x = 0.0*x_vec[0]
-            mom_y = core*smoothY + shroud*mom_shroud*(1.0-upper_atm)
-            momentum = make_obj_array([mom_x, mom_y])
+            mom_shroud = mass*self._v_shroud*self._speedup_factor
+            momentum = make_obj_array([
+                0.0*x_vec[0], core*smoothY + shroud*mom_shroud*(1.0-upper_atm)])
             velocity = momentum/mass
 
             #~~~ 
@@ -340,142 +474,8 @@ class Burner2D_Reactive:
             kinetic_energy = 0.5 * np.dot(velocity, velocity)
             energy = mass * (internal_energy + kinetic_energy)
 
-        return make_conserved(dim=self._dim, mass=mass, energy=energy,
+        return make_conserved(dim=2, mass=mass, energy=energy,
                 momentum=mass*velocity, species_mass=specmass)
-
-
-#class Burner2D_Reactive:
-#
-#    def __init__(self, flame_loc, pressure, temperature, speedup_factor,
-#        mixture_velocity, shroud_velocity,
-#        species_unburn, species_burned, species_shroud, species_atm, *,
-#        sigma=1e-3, sigma_flame=2e-4):
-#
-#        self._sigma = sigma
-#        self._sigma_flame = sigma_flame
-#        self._pres = pressure
-#        self._speedup_factor = speedup_factor
-#        self._v_mixture = mixture_velocity
-#        self._v_shroud = shroud_velocity
-#        self._yu = species_unburn
-#        self._yb = species_burned
-#        self._ys = species_shroud
-#        self._ya = species_atm
-#        self._temp = temperature
-#        self._flaLoc = flame_loc
-#
-#    def __call__(self, x_vec, gas_model, solve_the_flame=True,
-#                 state_minus=None, time=None):
-#
-#        actx = x_vec[0].array_context
-#        eos = gas_model.eos
-#
-#        cool_temp = 300.0
-#
-#        upper_bnd = 0.105
-#
-#        sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
-#        _sigma = self._sigma*(
-#            actx.np.where(actx.np.less(x_vec[1], upper_bnd),
-#                              actx.np.where(actx.np.greater(x_vec[1], .10),
-#                                            sigma_factor, 1.0),
-#                              12.0)
-#        )
-##        _sigma = self._sigma
-#
-#        int_diam = 2.38*25.4/2000 #radius, actually
-#        ext_diam = 2.89*25.4/2000 #radius, actually
-#
-#        #~~~ shroud
-#        S1 = 0.5*(1.0 + actx.np.tanh(1.0/(_sigma)*(x_vec[0] - int_diam)))
-#        S2 = actx.np.where(actx.np.greater(x_vec[0], ext_diam),
-#                 0.0, - actx.np.tanh(1.0/(_sigma)*(x_vec[0] - ext_diam))
-#             )
-#        shroud = S1*S2
-#
-#        #~~~ flame ignition
-#        core = 0.5*(1.0 - actx.np.tanh(1.0/_sigma*(x_vec[0] - int_diam)))
-#
-#        #~~~ atmosphere
-#        atmosphere = 1.0 - (shroud + core)
-#             
-#        #~~~ after combustion products
-#        upper_atm = 0.5*(1.0 + actx.np.tanh( 1.0/(2.0*self._sigma)*(x_vec[1] - upper_bnd)))
-#
-#        if solve_the_flame:
-#
-#            #~~~ flame ignition
-#            flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
-#
-#            #~~~ species
-#            yf = (flame*self._yb + (1.0-flame)*self._yu)*(1.0-upper_atm) + self._ya*upper_atm
-#            ys = self._ya*upper_atm + (1.0 - upper_atm)*self._ys
-#            y = atmosphere*self._ya + shroud*ys + core*yf
-#
-#            #~~~ temperature and EOS
-#            temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
-#            temperature = temp*core + 300.0*(1.0 - core)
-#            
-#            if state_minus is None:
-#                pressure = self._pres + 0.0*x_vec[0]
-#                mass = eos.get_density(pressure, temperature, species_mass_fractions=y)
-#            else:
-#                mass = state_minus.cv.mass
-#
-#            #~~~ velocity and/or momentum
-#            mom_inlet = mass*self._v_mixture*self._speedup_factor
-#            smoothY = mom_inlet*(1.0-upper_atm) + 0.0*upper_atm
-#            mom_shroud = mass*self._v_shroud*self._speedup_factor
-#            momentum = make_obj_array([
-#                0.0*x_vec[0], core*smoothY + shroud*mom_shroud*(1.0-upper_atm)])
-#            velocity = momentum/mass
-#
-#            #~~~ 
-#            specmass = mass * y
-#
-#            #~~~ 
-#            internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
-#            kinetic_energy = 0.5 * np.dot(velocity, velocity)
-#            energy = mass * (internal_energy + kinetic_energy)
-#
-#        else:
-#
-#            #~~~ flame ignition
-#            flame = 1.0
-#
-#            #~~~ species
-#            yf = (flame*self._yb + (1.0-flame)*self._yu)*(1.0-upper_atm) + self._ya*upper_atm
-#            ys = self._ya*upper_atm + (1.0 - upper_atm)*self._ys
-#            y = atmosphere*self._ya + shroud*ys + core*yf
-#
-#            #~~~ temperature and EOS
-#            temp = self._temp*(1.0-upper_atm) + 300.0*upper_atm
-#            temperature = temp*core + 300.0*(1.0 - core)
-#
-#            if state_minus is None:
-#                pressure = self._pres + 0.0*x_vec[0]
-#                mass = eos.get_density(pressure, temperature, species_mass_fractions=y)
-#            else:
-#                mass = state_minus.cv.mass
-#
-#            #~~~ velocity
-#            mom_inlet = mass*self._v_mixture*self._speedup_factor
-#            smoothY = mom_inlet*(1.0-upper_atm) + 0.0*upper_atm
-#            mom_shroud = mass*self._v_shroud*self._speedup_factor
-#            momentum = make_obj_array([
-#                0.0*x_vec[0], core*smoothY + shroud*mom_shroud*(1.0-upper_atm)])
-#            velocity = momentum/mass
-#
-#            #~~~ 
-#            specmass = mass * y
-#
-#            #~~~ 
-#            internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
-#            kinetic_energy = 0.5 * np.dot(velocity, velocity)
-#            energy = mass * (internal_energy + kinetic_energy)
-#
-#        return make_conserved(dim=2, mass=mass, energy=energy,
-#                momentum=mass*velocity, species_mass=specmass)
 
 
 def sponge_func(cv, cv_ref, sigma):
@@ -1361,37 +1361,37 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#    fluid_init = Burner2D_Reactive(sigma=0.00020, sigma_flame=0.00005,
-#        temperature=temp_ignition, pressure=101325.0, flame_loc=0.10025,
-#        speedup_factor=speedup_factor,
-#        mixture_velocity=u_int, shroud_velocity=u_ext,
-#        species_shroud=y_shroud, species_atm=y_atmosphere,
-#        species_unburn=y_unburned, species_burned=y_burned)
-
-#    ref_state = Burner2D_Reactive(sigma=0.00020, sigma_flame=0.00001,
-#        temperature=temp_ignition, pressure=101325.0, flame_loc=0.1050,
-#        speedup_factor=speedup_factor,
-#        mixture_velocity=u_int, shroud_velocity=u_ext,
-#        species_shroud=y_shroud, species_atm=y_atmosphere,
-#        species_unburn=y_unburned, species_burned=y_burned)
-
-    fluid_init = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
-        sigma_flame=0.00005, temperature=temp_ignition, pressure=101325.0,
-        flame_loc=0.10025, speedup_factor=speedup_factor,
-        mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
-#        mass_atm=rho_atmosphere, mass_srd=rho_shroud,
-#        mass_burned=rho_burned, mass_unburned=rho_unburned,
+    fluid_init = Burner2D_Reactive(sigma=0.00020, sigma_flame=0.00005,
+        temperature=temp_ignition, pressure=101325.0, flame_loc=0.10025,
+        speedup_factor=speedup_factor,
+        mixture_velocity=u_int, shroud_velocity=u_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
         species_unburn=y_unburned, species_burned=y_burned)
 
-    ref_state = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
-        sigma_flame=0.00001, temperature=temp_ignition, pressure=101325.0,
-        flame_loc=0.1050, speedup_factor=speedup_factor,
-        mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
-#        mass_atm=rho_atmosphere, mass_srd=rho_shroud,
-#        mass_burned=rho_burned, mass_unburned=rho_unburned,
+    ref_state = Burner2D_Reactive(sigma=0.00020, sigma_flame=0.00001,
+        temperature=temp_ignition, pressure=101325.0, flame_loc=0.1050,
+        speedup_factor=speedup_factor,
+        mixture_velocity=u_int, shroud_velocity=u_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
         species_unburn=y_unburned, species_burned=y_burned)
+
+#    fluid_init = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
+#        sigma_flame=0.00005, temperature=temp_ignition, pressure=101325.0,
+#        flame_loc=0.10025, speedup_factor=speedup_factor,
+#        mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
+##        mass_atm=rho_atmosphere, mass_srd=rho_shroud,
+##        mass_burned=rho_burned, mass_unburned=rho_unburned,
+#        species_shroud=y_shroud, species_atm=y_atmosphere,
+#        species_unburn=y_unburned, species_burned=y_burned)
+
+#    ref_state = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
+#        sigma_flame=0.00001, temperature=temp_ignition, pressure=101325.0,
+#        flame_loc=0.1050, speedup_factor=speedup_factor,
+#        mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
+##        mass_atm=rho_atmosphere, mass_srd=rho_shroud,
+##        mass_burned=rho_burned, mass_unburned=rho_unburned,
+#        species_shroud=y_shroud, species_atm=y_atmosphere,
+#        species_unburn=y_unburned, species_burned=y_burned)
 
     sample_init = SampleInitializer(pressure=101325.0, temperature=300.0,
                                     species_atm=y_atmosphere)
@@ -1408,10 +1408,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         sample_tseed = temp_wall*1.0
         holder_tseed = temp_wall*1.0
 
-#        fluid_cv = fluid_init(fluid_nodes, gas_model_fluid,
-#                              solve_the_flame=solve_the_flame)
-        fluid_cv = fluid_init(fluid_nodes, eos, flow_rate=flow_rate,
-                               solve_the_flame=solve_the_flame)
+        fluid_cv = fluid_init(fluid_nodes, gas_model_fluid,
+                              solve_the_flame=solve_the_flame)
+#        fluid_cv = fluid_init(fluid_nodes, eos, flow_rate=flow_rate,
+#                               solve_the_flame=solve_the_flame)
 
         sample_density = 0.1*1600.0 + sample_zeros
         sample_cv = sample_init(sample_nodes, gas_model_sample, sample_density)
@@ -1548,10 +1548,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         y_thickness=sponge_y_thickness)
 
     sponge_sigma = force_evaluation(actx, sponge_init(x_vec=fluid_nodes))
-#    ref_cv = force_evaluation(actx,
-#        ref_state(fluid_nodes, gas_model_fluid, solve_the_flame))
     ref_cv = force_evaluation(actx,
-        ref_state(fluid_nodes, eos, flow_rate, solve_the_flame))
+        ref_state(fluid_nodes, gas_model_fluid, solve_the_flame))
+#    ref_cv = force_evaluation(actx,
+#        ref_state(fluid_nodes, eos, flow_rate, solve_the_flame))
 
 ##############################################################################
 
@@ -1563,11 +1563,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return inflow_temperature
 
     def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-#        inflow_cv_cond = ref_state(x_vec=inflow_nodes, gas_model=gas_model,
-#            solve_the_flame=solve_the_flame, state_minus=state_minus)
-        inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
-            flow_rate=flow_rate, solve_the_flame=solve_the_flame,
-            state_minus=state_minus)
+        inflow_cv_cond = ref_state(x_vec=inflow_nodes, gas_model=gas_model,
+            solve_the_flame=solve_the_flame, state_minus=state_minus)
+#        inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
+#            flow_rate=flow_rate, solve_the_flame=solve_the_flame,
+#            state_minus=state_minus)
         return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
             temperature_seed=300.0)
 
