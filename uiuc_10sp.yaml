@@ -1,5 +1,7 @@
-description: |- Davis2005_10sp
-  "an optimized reaction model of H2/CO combustion
+description: |-
+  "Davis2005_10sp
+
+   an optimized reaction model of H2/CO combustion
    http://ignis.usc.edu/Mechanisms/H2-CO/mech.txt"
 
 generator: cti2yaml
