@@ -804,6 +804,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sponge_amp = 400.0
     theta_factor = 0.02
 
+    my_mechanism = "uiuc_7sp"
     equiv_ratio = 0.7
     speedup_factor = 7.5
     chem_rate = 3.75
@@ -817,6 +818,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     transport = "PowerLaw"
 
     # wall stuff
+    ignore_wall = True
     temp_wall = 300
 
     wall_penalty_amount = 1.0
@@ -948,7 +950,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Use Cantera for initialization
     import os
     current_path = os.path.abspath(os.getcwd()) + "/"
-    mechanism_file = current_path + "uiuc_sharp"
+    mechanism_file = current_path + my_mechanism
 
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
@@ -1490,7 +1492,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
                                mode="wo", mpi_comm=comm)
-                               
+                          
+    from contextlib import nullcontext
+    gc_timer = nullcontext()
+     
     vis_timer = None
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
@@ -1516,8 +1521,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-        gc_timer = IntervalTimer("t_gc", "Time spent garbage collecting")
-        logmgr.add_quantity(gc_timer)
+        gc_timer_init = IntervalTimer("t_gc", "Time spent garbage collecting")
+        logmgr.add_quantity(gc_timer_init)
+        gc_timer = gc_timer_init.get_sub_timer()
 
 ##############################################################################
 
@@ -2291,7 +2297,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             do_health = check_step(step=step, interval=nhealth)
 
             if do_garbage:
-                with gc_timer.start_sub_timer():
+                with gc_timer:
                     from warnings import warn
                     warn("Running gc.collect() to work around memory growth issue ")
                     import gc
@@ -2386,15 +2392,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 interface_noslip=True, interface_radiation=use_radiation,
                 use_kappa_weighted_grad_flux_in_fluid=False)
 
-        sample_all_boundaries_no_grad, holder_all_boundaries_no_grad = \
-            add_thermal_interface_boundaries_no_grad(
-                dcoll,
-                dd_vol_sample, dd_vol_holder,
-                sample_state, holder_state.dv.thermal_conductivity,
-                holder_state.dv.temperature,
-                sample_all_boundaries_no_grad, holder_all_boundaries_no_grad,
-                interface_noslip=True, interface_radiation=False,
-                use_kappa_weighted_grad_flux_in_fluid=False)
+        if True:
+            sample_all_boundaries_no_grad, holder_all_boundaries_no_grad = \
+                add_thermal_interface_boundaries_no_grad(
+                    dcoll,
+                    dd_vol_sample, dd_vol_holder,
+                    sample_state, holder_state.dv.thermal_conductivity,
+                    holder_state.dv.temperature,
+                    sample_all_boundaries_no_grad, holder_all_boundaries_no_grad,
+                    interface_noslip=True, interface_radiation=False,
+                    use_kappa_weighted_grad_flux_in_fluid=False)
 
         # ~~~~~~~~~~~~~~
 
@@ -2426,29 +2433,30 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             #comm_tag=_FluidGradTempTag
         )
 
-        # sample grad CV
-        sample_grad_cv = grad_cv_operator(
-            dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-            operator_states_quad=sample_operator_states_quad,
-            #comm_tag=_SampleGradCVTag
-        )
+        if True:
+            # sample grad CV
+            sample_grad_cv = grad_cv_operator(
+                dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
+                time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+                operator_states_quad=sample_operator_states_quad,
+                #comm_tag=_SampleGradCVTag
+            )
 
-        # sample grad T
-        sample_grad_temperature = grad_t_operator(
-            dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-            operator_states_quad=sample_operator_states_quad,
-            #comm_tag=_SampleGradTempTag
-        )
+            # sample grad T
+            sample_grad_temperature = grad_t_operator(
+                dcoll, gas_model_sample, sample_all_boundaries_no_grad, sample_state,
+                time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+                operator_states_quad=sample_operator_states_quad,
+                #comm_tag=_SampleGradTempTag
+            )
 
-        # holder grad T
-        holder_grad_temperature = wall_grad_t_operator(
-            dcoll, holder_state.dv.thermal_conductivity,
-            holder_all_boundaries_no_grad, holder_state.dv.temperature,
-            quadrature_tag=quadrature_tag, dd=dd_vol_holder,
-            #comm_tag=_HolderGradTempTag
-        )
+            # holder grad T
+            holder_grad_temperature = wall_grad_t_operator(
+                dcoll, holder_state.dv.thermal_conductivity,
+                holder_all_boundaries_no_grad, holder_state.dv.temperature,
+                quadrature_tag=quadrature_tag, dd=dd_vol_holder,
+                #comm_tag=_HolderGradTempTag
+            )
 
         # ~~~~~~~~~~~~~~~~~
 
@@ -2468,45 +2476,33 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             add_thermal_interface_boundaries(
                 dcoll, dd_vol_fluid, dd_vol_holder,
                 fluid_all_boundaries, holder_boundaries,
-                fluid_state, holder_state.dv.thermal_conductivity, holder_state.dv.temperature,
+                fluid_state, holder_state.dv.thermal_conductivity,
+                holder_state.dv.temperature,
                 fluid_grad_temperature, holder_grad_temperature,
                 interface_noslip=True, interface_radiation=use_radiation,
                 use_kappa_weighted_grad_flux_in_fluid=False,
                 wall_emissivity=emissivity, sigma=5.67e-8, ambient_temperature=300.0,
                 wall_penalty_amount=wall_penalty_amount)
 
-        sample_all_boundaries, holder_all_boundaries = \
-            add_thermal_interface_boundaries(
-                dcoll, dd_vol_sample, dd_vol_holder,
-                sample_all_boundaries, holder_all_boundaries,
-                sample_state, holder_state.dv.thermal_conductivity, holder_state.dv.temperature,
-                sample_grad_temperature, holder_grad_temperature,
-                interface_noslip=True, interface_radiation=False,
-                use_kappa_weighted_grad_flux_in_fluid=False,
-                wall_penalty_amount=wall_penalty_amount)
+        if ignore_wall is False:
+            sample_all_boundaries, holder_all_boundaries = \
+                add_thermal_interface_boundaries(
+                    dcoll, dd_vol_sample, dd_vol_holder,
+                    sample_all_boundaries, holder_all_boundaries,
+                    sample_state, holder_state.dv.thermal_conductivity,
+                    holder_state.dv.temperature,
+                    sample_grad_temperature, holder_grad_temperature,
+                    interface_noslip=True, interface_radiation=False,
+                    use_kappa_weighted_grad_flux_in_fluid=False,
+                    wall_penalty_amount=wall_penalty_amount)
 
         #~~~~~~~~~~~~~
-
         fluid_rhs = ns_operator(
             dcoll, gas_model_fluid, fluid_state, fluid_all_boundaries,
             time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
             operator_states_quad=fluid_operator_states_quad,
             grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
             comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
-
-        sample_rhs = ns_operator(
-            dcoll, gas_model_sample, sample_state, sample_all_boundaries,
-            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-            operator_states_quad=sample_operator_states_quad,
-            grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
-            comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
-
-        holder_rhs = diffusion_operator(
-            dcoll, holder_state.dv.thermal_conductivity, holder_all_boundaries,
-            holder_state.dv.temperature,
-            penalty_amount=wall_penalty_amount, quadrature_tag=quadrature_tag,
-            dd=dd_vol_holder, grad_u=holder_grad_temperature,
-            comm_tag=_HolderOperatorTag)
 
         fluid_sources = (
             chemical_source_term(fluid_cv, fluid_state.temperature)
@@ -2517,18 +2513,48 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
 
         #~~~~~~~~~~~~~
+        if ignore_wall:
 
-#        sample_mass_rhs = oxidation.get_source_terms()
-        sample_mass_rhs = sample_zeros
+            sample_rhs = 0.0
+            sample_sources = 0.0
+            sample_mass_rhs = 0.0
 
-        sample_sources = (
-            eos.get_species_source_terms(sample_cv, sample_state.temperature)
-            + axisym_source_sample(actx, dcoll, sample_state,
-                                   sample_grad_cv, sample_grad_temperature))
+        else:
+
+            sample_rhs = ns_operator(
+                dcoll, gas_model_sample, sample_state, sample_all_boundaries,
+                time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+                operator_states_quad=sample_operator_states_quad,
+                grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
+                comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
+
+#            sample_mass_rhs = oxidation.get_source_terms()
+            sample_mass_rhs = sample_zeros
+
+            sample_sources = (
+                eos.get_species_source_terms(sample_cv, sample_state.temperature)
+                + axisym_source_sample(actx, dcoll, sample_state,
+                                       sample_grad_cv, sample_grad_temperature))
 
         #~~~~~~~~~~~~~
-        holder_sources = axisym_source_holder(actx, dcoll, holder_state,
-                                              holder_grad_temperature)
+        if ignore_wall:
+
+            holder_rhs = 0.0
+            holder_sources = 0.0
+
+        else:
+
+            holder_rhs = HolderWallVars(mass=holder_zeros, energy=holder_zeros) 
+
+            holder_energy_rhs = diffusion_operator(
+                dcoll, holder_state.dv.thermal_conductivity, holder_all_boundaries,
+                holder_state.dv.temperature,
+                penalty_amount=wall_penalty_amount, quadrature_tag=quadrature_tag,
+                dd=dd_vol_holder, grad_u=holder_grad_temperature,
+                comm_tag=_HolderOperatorTag)
+
+            holder_sources = axisym_source_holder(actx, dcoll, holder_state,
+                                                  holder_grad_temperature)
 
         #~~~~~~~~~~~~~
         return make_obj_array([
@@ -2539,7 +2565,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_post_step(step, t, dt, state):
         if step == first_step + 1:
-            with gc_timer.start_sub_timer():
+            with gc_timer:
                 import gc
                 gc.collect()
                 # Freeze the objects that are still alive so they will not
