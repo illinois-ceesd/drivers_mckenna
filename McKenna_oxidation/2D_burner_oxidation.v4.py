@@ -901,7 +901,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     transport = "PowerLaw"
 
     # wall stuff
-    ignore_wall = True
+    ignore_wall = False
     temp_wall = 300
 
     wall_penalty_amount = 1.0
