@@ -204,13 +204,14 @@ class HolderInitializer:
 
 class FiberSampleInitializer:
 
-    def __init__(self, pressure, temperature, species):
+    def __init__(self, pressure, temperature, species, wall_density):
 
         self._pres = pressure
         self._y = species
         self._temp = temperature
+        self._wall_density = wall_density
 
-    def __call__(self, actx, x_vec, gas_model, wall_density):
+    def __call__(self, actx, x_vec, gas_model):
 
         eos = gas_model.eos
         zeros = x_vec[0]*0.0
@@ -231,7 +232,7 @@ class FiberSampleInitializer:
         eps_rhoU_g = eps_rho_g * velocity
         eps_rhoY_g = eps_rho_g * y
 
-        eps_rho_s = wall_density + zeros
+        eps_rho_s = self._wall_density + zeros
         enthalpy_s = gas_model.wall.enthalpy(temperature=temperature, tau=tau)
 
         energy = eps_rho_g * int_energy + eps_rho_s * enthalpy_s
@@ -742,12 +743,13 @@ class Y3_Oxidation_Model():
         .. math::
             \tau = \frac{m}{m_0} = \frac{\pi r^2/L}{\pi r_0^2/L} = \frac{r^2}{r_0^2}
         """
+        actx =tau.array_context
+
         original_fiber_radius = 5e-6  # half the diameter
         fiber_radius = original_fiber_radius*actx.np.sqrt(tau)
 
-        epsilon_0 = self._material.solid_volume_fraction(tau=1.0)
-        S_f = 2.0*epsilon_0/original_fiber_radius**2*fiber_radius
-        return 
+        epsilon_0 = self._material.volume_fraction(tau=1.0)
+        return 2.0*epsilon_0/original_fiber_radius**2*fiber_radius
 
     def get_source_terms(self, temperature, tau, cv) -> DOFArray:
         r"""Return the effective source terms for the oxidation.
@@ -776,9 +778,11 @@ class Y3_Oxidation_Model():
 
         k_f = 1.0e5*actx.np.exp(-120000.0/(univ_gas_const*temperature))
 
-        m_dot_c = - cv.species_mass/mw_o2 * mw_c * eff_surf_area * k_f
-        m_dot_o2 = - cv.species_mass/mw_o2 * mw_o2 * eff_surf_area * k_f
-        m_dot_co2 = + cv.species_mass/mw_o2 * mw_co2 * eff_surf_area * k_f
+        rho_o2 = cv.species_mass[1] #FIXME
+
+        m_dot_c = - rho_o2/mw_o2 * mw_c * eff_surf_area * k_f
+        m_dot_o2 = - rho_o2/mw_o2 * mw_o2 * eff_surf_area * k_f
+        m_dot_co2 = + rho_o2/mw_o2 * mw_co2 * eff_surf_area * k_f
 
         return m_dot_c, m_dot_o2, m_dot_co2
 
@@ -1488,7 +1492,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wall_density = 0.1*1600.0 + sample_zeros
 
         sample_init = FiberSampleInitializer(pressure=101325.0, temperature=300.0,
-                                             species=y_atmosphere)
+            species=y_atmosphere, wall_density=wall_density)
 
     if my_material == "composite":
         # soln setup and init
@@ -1499,7 +1503,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wall_density[2] = 160. + sample_zeros
 
         sample_init = TACOTSampleInitializer(pressure=101325.0, temperature=300.0,
-                species=y_atmosphere, wall_density=wall_density)
+            species=y_atmosphere, wall_density=wall_density)
 
     eps_rho_solid = gas_model_sample.wall.solid_density(wall_density)
     initial_mass = integral(dcoll, dd_vol_sample,
@@ -2663,12 +2667,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
                 comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
 
-            sample_mass_rhs = decomposition.get_source_terms(
-                sample_state.temperature, tau, sample_state.cv)
-#            sample_mass_rhs = sample_zeros
+            tau = gas_model_sample.wall.decomposition_progress(
+                sample_state.dv.wall_density)
+
+            sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
+                decomposition.get_source_terms(
+                    sample_state.temperature, tau, sample_state.cv)
+
+            source_species = sample_state.cv.species_mass*0.0
+            source_species[cantera_soln.species_index("O2")] = sample_source_O2
+            source_species[cantera_soln.species_index("CO2")] = sample_source_CO2
+
+            sample_heterogeneous_source = make_conserved(dim=2,
+                mass=sample_source_O2 + sample_source_CO2,
+                energy=sample_zeros,
+                momentum=make_obj_array([sample_zeros, sample_zeros]),
+                species_mass=source_species
+            )
 
             sample_sources = (
-                eos.get_species_source_terms(sample_cv, sample_state.temperature)
+                #eos.get_species_source_terms(sample_cv, sample_state.temperature)
+                + sample_heterogeneous_source
                 + axisym_source_sample(actx, dcoll, sample_state,
                                        sample_grad_cv, sample_grad_temperature))
 
@@ -2680,8 +2699,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         else:
 
-            holder_rhs = HolderWallVars(mass=holder_zeros, energy=holder_zeros) 
-
             holder_energy_rhs = diffusion_operator(
                 dcoll, holder_state.dv.thermal_conductivity, holder_all_boundaries,
                 holder_state.dv.temperature,
@@ -2689,10 +2706,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 dd=dd_vol_holder, grad_u=holder_grad_temperature,
                 comm_tag=_HolderOperatorTag)
 
+            holder_rhs = HolderWallVars(mass=holder_zeros, energy=holder_energy_rhs)
+
             holder_sources = axisym_source_holder(actx, dcoll, holder_state,
                                                   holder_grad_temperature)
 
         #~~~~~~~~~~~~~
+
         return make_obj_array([
             fluid_rhs + fluid_sources, fluid_zeros,
             sample_rhs + sample_sources, sample_zeros, sample_mass_rhs,
