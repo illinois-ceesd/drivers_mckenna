@@ -74,6 +74,7 @@ from mirgecom.transport import (
     MixtureAveragedTransport
 )
 import cantera
+from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.gas_model import (
     GasModel,
@@ -90,23 +91,23 @@ from mirgecom.logging_quantities import (
 
 from pytools.obj_array import make_obj_array
 
-from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
-    coupled_grad_t_operator,
-    coupled_ns_heat_operator
-)
-#from mirgecom.navierstokes import (
-#    grad_t_operator,
-#    grad_cv_operator,
-#    ns_operator
-#)
-#from mirgecom.multiphysics.multiphysics_coupled_fluid_wall import (
-#    add_interface_boundaries as add_multiphysics_interface_boundaries,
-#    add_interface_boundaries_no_grad as add_multiphysics_interface_boundaries_no_grad
-#)
 #from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
-#    add_interface_boundaries as add_thermal_interface_boundaries,
-#    add_interface_boundaries_no_grad as add_thermal_interface_boundaries_no_grad
+#    coupled_grad_t_operator,
+#    coupled_ns_heat_operator
 #)
+from mirgecom.navierstokes import (
+    grad_t_operator,
+    grad_cv_operator,
+    ns_operator
+)
+from mirgecom.multiphysics.multiphysics_coupled_fluid_wall import (
+    add_interface_boundaries as add_multiphysics_interface_boundaries,
+    add_interface_boundaries_no_grad as add_multiphysics_interface_boundaries_no_grad
+)
+from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
+    add_interface_boundaries as add_thermal_interface_boundaries,
+    add_interface_boundaries_no_grad as add_thermal_interface_boundaries_no_grad
+)
 from mirgecom.diffusion import (
     diffusion_operator,
     grad_operator as wall_grad_t_operator,
@@ -169,8 +170,8 @@ class _MyGradTag_6:
 class Burner2D_Reactive:
 
     def __init__(self, *, sigma, sigma_flame, flame_loc, pressure,
-        temperature, speedup_factor, mass_rate_burner, mass_rate_shroud,
-        species_unburn, species_burned, species_shroud, species_atm):
+                 temperature, speedup_factor, mass_rate_burner, mass_rate_shroud,
+                 species_unburn, species_burned, species_shroud, species_atm):
 
         self._sigma = sigma
         self._sigma_flame = sigma_flame
@@ -202,42 +203,41 @@ class Burner2D_Reactive:
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
         _sigma = self._sigma*(
             actx.np.where(actx.np.less(x_vec[1], upper_bnd),
-                              actx.np.where(actx.np.greater(x_vec[1], .10),
-                                            sigma_factor, 1.0),
-                              12.0)
+                          actx.np.where(actx.np.greater(x_vec[1], .10),
+                                        sigma_factor, 1.0),
+                          12.0)
         )
 #        _sigma = self._sigma
 
-        int_diam = 2.38*25.4/2000.0 #radius, actually
-        ext_diam = 2.89*25.4/2000.0 #radius, actually
+        int_diam = 2.38*25.4/2000.0  # radius, actually
+        ext_diam = 2.89*25.4/2000.0  # radius, actually
 
-        #~~~ shroud
+        # ~~~ shroud
         S1 = 0.5*(1.0 + actx.np.tanh(1.0/(_sigma)*(x_vec[0] - int_diam)))
         S2 = actx.np.where(actx.np.greater(x_vec[0], ext_diam),
-                 0.0, - actx.np.tanh(1.0/(_sigma)*(x_vec[0] - ext_diam))
-             )
+                           0.0, - actx.np.tanh(1.0/(_sigma)*(x_vec[0] - ext_diam)))
         shroud = S1*S2
 
-        #~~~ flame ignition
+        # ~~~ flame ignition
         core = 0.5*(1.0 - actx.np.tanh(1.0/_sigma*(x_vec[0] - int_diam)))
 
-        #~~~ atmosphere
+        # ~~~ atmosphere
         atmosphere = 1.0 - (shroud + core)
              
-        #~~~ after combustion products
-        upper_atm = 0.5*(1.0 + actx.np.tanh( 1.0/(2.0*self._sigma)*(x_vec[1] - upper_bnd)))
+        # ~~~ after combustion products
+        upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(2.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
         if solve_the_flame:
 
-            #~~~ flame ignition
+            # ~~~ flame ignition
             flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
 
-            #~~~ species
+            # ~~~ species
             yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
             ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
             y = atmosphere*_ya + shroud*ys + core*yf
 
-            #~~~ temperature and EOS
+            # ~~~ temperature and EOS
             temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
             temperature = temp*core + 300.0*(1.0 - core)
             
@@ -247,7 +247,7 @@ class Burner2D_Reactive:
             else:
                 mass = state_minus.cv.mass
 
-            #~~~ velocity and/or momentum
+            # ~~~ velocity and/or momentum
             mom_burner = self._mass_rate_burner*self._speedup_factor
             mom_shroud = self._mass_rate_shroud*self._speedup_factor
             smoothY = mom_burner*(1.0-upper_atm) + 0.0*upper_atm
@@ -256,10 +256,10 @@ class Burner2D_Reactive:
             momentum = make_obj_array([mom_x, mom_y])
             velocity = momentum/mass
 
-            #~~~ 
+            # ~~~
             specmass = mass * y
 
-            #~~~ 
+            # ~~~
             internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
             kinetic_energy = 0.5 * np.dot(velocity, velocity)
             energy = mass * (internal_energy + kinetic_energy)
@@ -302,7 +302,7 @@ class Burner2D_Reactive:
 #            energy = mass * (internal_energy + kinetic_energy)
 
         return make_conserved(dim=2, mass=mass, energy=energy,
-                momentum=mass*velocity, species_mass=specmass)
+                              momentum=mass*velocity, species_mass=specmass)
 
 
 class SingleLevelFilter(logging.Filter):
@@ -317,15 +317,15 @@ class SingleLevelFilter(logging.Filter):
             return (record.levelno == self.passlevel)
 
 
-#h1 = logging.StreamHandler(sys.stdout)
-#f1 = SingleLevelFilter(logging.INFO, False)
-#h1.addFilter(f1)
-#root_logger = logging.getLogger()
-#root_logger.addHandler(h1)
-#h2 = logging.StreamHandler(sys.stderr)
-#f2 = SingleLevelFilter(logging.INFO, True)
-#h2.addFilter(f2)
-#root_logger.addHandler(h2)
+# h1 = logging.StreamHandler(sys.stdout)
+# f1 = SingleLevelFilter(logging.INFO, False)
+# h1.addFilter(f1)
+# root_logger = logging.getLogger()
+# root_logger.addHandler(h1)
+# h2 = logging.StreamHandler(sys.stderr)
+# f2 = SingleLevelFilter(logging.INFO, True)
+# h2.addFilter(f2)
+# root_logger.addHandler(h2)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -359,52 +359,47 @@ class InitSponge:
         xpos = x_vec[0]
         ypos = x_vec[1]
         actx = xpos.array_context
-        zeros = 0*xpos
 
         sponge_x = xpos*0.0
         sponge_y = xpos*0.0
 
         if (self._y_max is not None):
-          y0 = (self._y_max - self._y_thickness)
-          dy = +((ypos - y0)/self._y_thickness)
-          sponge_y = sponge_y + self._amplitude * actx.np.where(
-              actx.np.greater(ypos, y0),
-                  actx.np.where(actx.np.greater(ypos, self._y_max),
-                                1.0, 3.0*dy**2 - 2.0*dy**3),
-                  0.0
-          )
+            y0 = (self._y_max - self._y_thickness)
+            dy = +((ypos - y0)/self._y_thickness)
+            sponge_y = sponge_y + self._amplitude * actx.np.where(
+                actx.np.greater(ypos, y0),
+                actx.np.where(actx.np.greater(ypos, self._y_max),
+                              1.0, 3.0*dy**2 - 2.0*dy**3),
+                0.0)
 
         if (self._y_min is not None):
-          y0 = (self._y_min + self._y_thickness)
-          dy = -((ypos - y0)/self._y_thickness)
-          sponge_y = sponge_y + self._amplitude * actx.np.where(
-              actx.np.less(ypos, y0),
-                  actx.np.where(actx.np.less(ypos, self._y_min),
-                                1.0, 3.0*dy**2 - 2.0*dy**3),
-              0.0
-          )
+            y0 = (self._y_min + self._y_thickness)
+            dy = -((ypos - y0)/self._y_thickness)
+            sponge_y = sponge_y + self._amplitude * actx.np.where(
+                actx.np.less(ypos, y0),
+                actx.np.where(actx.np.less(ypos, self._y_min),
+                              1.0, 3.0*dy**2 - 2.0*dy**3),
+                0.0)
 
         if (self._x_max is not None):
-          x0 = (self._x_max - self._x_thickness)
-          dx = +((xpos - x0)/self._x_thickness)
-          sponge_x = sponge_x + self._amplitude * actx.np.where(
-              actx.np.greater(xpos, x0),
-                  actx.np.where(actx.np.greater(xpos, self._x_max),
-                                1.0, 3.0*dx**2 - 2.0*dx**3),
-                  0.0
-          )
+            x0 = (self._x_max - self._x_thickness)
+            dx = +((xpos - x0)/self._x_thickness)
+            sponge_x = sponge_x + self._amplitude * actx.np.where(
+                actx.np.greater(xpos, x0),
+                actx.np.where(actx.np.greater(xpos, self._x_max),
+                              1.0, 3.0*dx**2 - 2.0*dx**3),
+                0.0)
 
         if (self._x_min is not None):
-          x0 = (self._x_min + self._x_thickness)
-          dx = -((xpos - x0)/self._x_thickness)
-          sponge_x = sponge_x + self._amplitude * actx.np.where(
-              actx.np.less(xpos, x0),
-                  actx.np.where(actx.np.less(xpos, self._x_min),
-                                1.0, 3.0*dx**2 - 2.0*dx**3),
-              0.0
-          )
+            x0 = (self._x_min + self._x_thickness)
+            dx = -((xpos - x0)/self._x_thickness)
+            sponge_x = sponge_x + self._amplitude * actx.np.where(
+                actx.np.less(xpos, x0),
+                actx.np.where(actx.np.less(xpos, self._x_min),
+                              1.0, 3.0*dx**2 - 2.0*dx**3),
+                0.0)
 
-        return actx.np.maximum(sponge_x,sponge_y)
+        return actx.np.maximum(sponge_x, sponge_y)
 
 
 
@@ -447,14 +442,14 @@ class WallVars:
     def __reduce__(self):
         """Return a tuple reproduction of self for pickling."""
         return (WallVars, tuple(getattr(self, f.name)
-                                    for f in fields(WallVars)))
+                                for f in fields(WallVars)))
 
 
 class WallModel:
     """Model for calculating wall quantities."""
     def __init__(self, enthalpy_func, heat_capacity_func,
-            thermal_conductivity_func, oxygen_diffusivity_func,
-            effective_surface_area_func, mass_loss_func):
+                 thermal_conductivity_func, oxygen_diffusivity_func,
+                 effective_surface_area_func, mass_loss_func):
         self._enthalpy_func = enthalpy_func
         self._heat_capacity_func = heat_capacity_func
         self._oxygen_diffusivity_func = oxygen_diffusivity_func
@@ -498,14 +493,19 @@ class WallModel:
             temp = temp - (h - wv.energy/wv.mass)/cp
         return temp
 
-    def dependent_vars(self, wv, tseed):
+    def dependent_vars(self, wv, tseed, time_scale):
         temperature = self.eval_temperature(wv, tseed)
-        kappa = self.thermal_conductivity(wv.mass, temperature)
-        oxygen_diffusivity = self.oxygen_diffusivity(temperature)
+        kappa = time_scale * self.thermal_conductivity(wv.mass, temperature)
+        oxygen_diffusivity = time_scale*self.oxygen_diffusivity(temperature)
+        heat_capacity = self.heat_capacity(temperature)
+        enthalpy = self.enthalpy(temperature)
         return WallDependentVars(
             thermal_conductivity=kappa,
             temperature=temperature,
-            oxygen_diffusivity=oxygen_diffusivity)
+            oxygen_diffusivity=oxygen_diffusivity,
+            heat_capacity=heat_capacity,
+            enthalpy=enthalpy
+        )
 
 
 @dataclass_array_container
@@ -514,6 +514,8 @@ class WallDependentVars:
     thermal_conductivity: DOFArray
     oxygen_diffusivity: DOFArray
     temperature: DOFArray
+    heat_capacity: DOFArray
+    enthalpy: DOFArray
 
 
 @mpi_entry_point
@@ -556,41 +558,36 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
-    nviz = 2500
+    nviz = 25000
     nrestart = 25000
     nhealth = 1
     nstatus = 100
 
-    plot_gradients = True
-
     # default timestepping control
 #    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
-    current_dt = 2.5e-6 #order == 2
+    current_dt = 2.5e-6  # order == 2
     t_final = 2.0
-
     niter = 4000001
-
     local_dt = True
     constant_cfl = True
-    current_cfl = 0.4
+    current_cfl = 0.2
     
     # discretization and model control
-    order = 2
+    order = 3
     use_overintegration = False
 
     x0_sponge = 0.150
     sponge_amp = 400.0
     theta_factor = 0.02
+    speedup_factor = 7.5
 
     my_mechanism = "uiuc_7sp"
     equiv_ratio = 0.7
-    speedup_factor = 7.5
-    chem_rate = 7.5
+    chem_rate = 1.0
     flow_rate = 25.0
     shroud_rate = 11.85
-    Twall = 300.0
-    T_products = 2000.0
+    temp_products = 2000.0
     solve_the_flame = True
 
 #    transport = "Mixture"
@@ -599,25 +596,25 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # wall stuff
     ignore_wall = False
 
-    temp_wall = 300
-    wall_sample_rho = 1600 * 0.1  # do not account for porous volume
+    temp_wall = 300.0
+    wall_sample_rho = 1600.0 * 0.1  # do not account for porous volume
 
     wall_penalty_amount = 1.0
-    wall_time_scale = 2500 #speedup_factor
+    wall_time_scale = 100.0  # wall speed-up
 
-    # Averaging from https://www.azom.com/properties.aspx?ArticleID=52 for alumina
+    # Average from https://www.azom.com/properties.aspx?ArticleID=52 for alumina
     wall_alumina_rho = 3500.0
     wall_alumina_cp = 700.0
     wall_alumina_kappa = 25.00
 
-    # Averaging from https://www.azom.com/article.aspx?ArticleID=1630 for graphite
+    # Average from https://www.azom.com/article.aspx?ArticleID=1630 for graphite
     # FIXME There is a table with the temperature-dependent data for graphite
-    wall_graphite_rho = 1625
-    wall_graphite_cp = 770
+    wall_graphite_rho = 1625.0
+    wall_graphite_cp = 770.0
     wall_graphite_kappa = 50.0
 
     use_radiation = True
-    emissivity = 0.85
+    emissivity = 0.85*speedup_factor
 
     restart_iterations = False
 
@@ -645,7 +642,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         print(f"\tnhealth = {nhealth}")
         print(f"\tnstatus = {nstatus}")
         print(f"\tcurrent_dt = {current_dt}")
-        if (constant_cfl == False):
+        if constant_cfl is False:
             print(f"\tt_final = {t_final}")
         else:
             print(f"\tconstant_cfl = {constant_cfl}")
@@ -673,19 +670,19 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Initial temperature, pressure, and mixture mole fractions are needed to
     # set up the initial state in Cantera.
     temp_unburned = 300.0
-    temp_ignition = T_products
+    temp_ignition = temp_products
 
     air = "O2:0.21,N2:0.79"
     fuel = "C2H4:1"
     cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
                                        fuel=fuel, oxidizer=air)
     x_unburned = cantera_soln.X
-    pres_unburned = cantera.one_atm
+    pres_unburned = 101325.0
 
     rho_int = cantera_soln.density
 
-    r_int = 2.38*25.4/2000 #radius, actually
-    r_ext = 2.89*25.4/2000 #radius, actually
+    r_int = 2.38*25.4/2000.0
+    r_ext = 2.89*25.4/2000.0
     
     mass_react = flow_rate*1.0
     mass_shroud = shroud_rate*1.0
@@ -696,20 +693,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     u_ext = mass_shroud*lmin_to_m3s/A_ext
     rhoU_int = rho_int*u_int
 
-    rho_ext = 101325/((8314/cantera_soln.molecular_weights[-1])*300.)
-    mdot_ext = rho_ext*u_ext*A_ext
+    rho_ext = 101325.0/((8314.46/cantera_soln.molecular_weights[-1])*300.)
+#    mdot_ext = rho_ext*u_ext*A_ext
     rhoU_ext = rho_ext*u_ext
 
-    print("V_dot=",mass_react,"(L/min)")
-    print(f"{A_int= }","(m^2)")
-    print(f"{A_ext= }","(m^2)")
-    print(f"{u_int= }","(m/s)")
-    print(f"{u_ext= }","(m/s)")
-    print(f"{rho_int= }","(kg/m^3)")
-    print(f"{rho_ext= }","(kg/m^3)")
+    print("V_dot=", mass_react, "(L/min)")
+    print(f"{A_int= }", "(m^2)")
+    print(f"{A_ext= }", "(m^2)")
+    print(f"{u_int= }", "(m/s)")
+    print(f"{u_ext= }", "(m/s)")
+    print(f"{rho_int= }", "(kg/m^3)")
+    print(f"{rho_ext= }", "(kg/m^3)")
     print(f"{rhoU_int= }")
     print(f"{rhoU_ext= }")
-    print("ratio=",u_ext/u_int)
+    print("ratio=", u_ext/u_int)
 
     # Let the user know about how Cantera is being initilized
     print(f"Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x_unburned}")
@@ -724,7 +721,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     cantera_soln.TPX = temp_ignition, pres_unburned, x_unburned
     cantera_soln.equilibrate("TP")
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
-    pres_burned = cantera_soln.P
+#    pres_burned = cantera_soln.P
     mmw_burned = cantera_soln.mean_molecular_weight
 
     # Pull temperature, density, mass fractions, and pressure from Cantera
@@ -737,14 +734,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     dummy, rho_atmosphere, y_atmosphere = cantera_soln.TDY
     cantera_soln.equilibrate("TP")
     temp_atmosphere, rho_atmosphere, y_atmosphere = cantera_soln.TDY
-    pres_atmosphere = cantera_soln.P
+#    pres_atmosphere = cantera_soln.P
     mmw_atmosphere = cantera_soln.mean_molecular_weight
-    
+
     # Pull temperature, density, mass fractions, and pressure from Cantera
     y_shroud = y_atmosphere*0.0
-    y_shroud[cantera_soln.species_index("N2")] = 0.98
-    y_shroud[cantera_soln.species_index("CO2")] = 0.01
-    y_shroud[cantera_soln.species_index("CO")] = 0.01
+    y_shroud[cantera_soln.species_index("N2")] = 1.0
 
     cantera_soln.TPY = 300.0, 101325.0, y_shroud
     temp_shroud, rho_shroud = cantera_soln.TD
@@ -755,7 +750,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{ Create Pyrometheus thermochemistry object & EOS
 
     # Import Pyrometheus EOS
-    from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
     pyrometheus_mechanism = get_pyrometheus_wrapper_class_from_cantera(
                                 cantera_soln, temperature_niter=3)(actx.np)
 
@@ -769,12 +763,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     
     # {{{ Initialize transport model
     if transport == "Mixture":
-        physical_transport = MixtureAveragedTransport(
-            pyrometheus_mechanism, lewis=np.ones((nspecies,)), factor=speedup_factor)
+        physical_transport = \
+            MixtureAveragedTransport(pyrometheus_mechanism,
+                                     lewis=np.ones(nspecies,),
+                                     factor=speedup_factor)
     else:
         if transport == "PowerLaw":
-            physical_transport = PowerLawTransport(lewis=np.ones((nspecies,)),
-               beta=4.093e-7*speedup_factor)
+            physical_transport = \
+                PowerLawTransport(lewis=np.ones((nspecies,)),
+                                  beta=4.093e-7*speedup_factor)
         else:
             print('No transport class defined..')
             print('Use one of "Mixture" or "PowerLaw"')
@@ -783,25 +780,25 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     gas_model = GasModel(eos=eos, transport=physical_transport)
 
     print(f"Pyrometheus mechanism species names {species_names}")
-    print(f"Unburned:")
+    print("Unburned:")
     print(f"T = {temp_unburned}")
     print(f"D = {rho_unburned}")
     print(f"Y = {y_unburned}")
     print(f"W = {mmw_unburned}")
-    print(f" ")
-    print(f"Burned:")
+    print(" ")
+    print("Burned:")
     print(f"T = {temp_burned}")
     print(f"D = {rho_burned}")
     print(f"Y = {y_burned}")
     print(f"W = {mmw_burned}")
-    print(f" ")
-    print(f"Atmosphere:")
+    print(" ")
+    print("Atmosphere:")
     print(f"T = {temp_atmosphere}")
     print(f"D = {rho_atmosphere}")
     print(f"Y = {y_atmosphere}")
     print(f"W = {mmw_atmosphere}")
-    print(f" ")
-    print(f"Shroud:")
+    print(" ")
+    print("Shroud:")
     print(f"T = {temp_shroud}")
     print(f"D = {rho_shroud}")
     print(f"Y = {y_shroud}")
@@ -841,7 +838,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def reaction_damping(dcoll, nodes, **kwargs):
 
-        #actx = field.array_context
         ypos = nodes[1]
 
         y_max = 0.25
@@ -851,20 +847,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dy = +((ypos - y0)/y_thickness)
         damping = actx.np.where(
             actx.np.greater(ypos, y0),
-                actx.np.where(actx.np.greater(ypos, y_max),
-                              0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
-                1.0
+            actx.np.where(actx.np.greater(ypos, y_max),
+                          0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
+            1.0
         )
 
         return damping
 
 #############################################################################
 
-    from mirgecom.artificial_viscosity import smoothness_indicator
     def smoothness_region(dcoll, nodes):
-        
-        #actx = nodes.array_context
-        xpos = nodes[0]
         ypos = nodes[1]
 
         y_max = 0.55
@@ -874,9 +866,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dy = +((ypos - y0)/y_thickness)
         region = actx.np.where(
             actx.np.greater(ypos, y0),
-                actx.np.where(actx.np.greater(ypos, y_max),
-                              1.0, 3.0*dy**2 - 2.0*dy**3),
-                0.0
+            actx.np.where(actx.np.greater(ypos, y_max),
+                          1.0, 3.0*dy**2 - 2.0*dy**3),
+            0.0
         )
 
         return region
@@ -891,8 +883,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def drop_order(dcoll: DiscretizationCollection, field, theta,
                    positivity_preserving=False, dd=None):
-        #actx = field.array_context
-
         # Compute cell averages of the state
         def cancel_polynomials(grp):
             return actx.from_numpy(np.asarray([1 if sum(mode_id) == 0
@@ -930,13 +920,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return theta*(field - cell_avgs) + cell_avgs
 
-
     def _limit_fluid_cv(cv, pressure, temperature, dd=None):
 
         # limit species
         spec_lim = make_obj_array([
             bound_preserving_limiter(dcoll, cv.species_mass_fractions[i], 
-                mmin=0.0, mmax=1.0, modify_average=True, dd=dd)
+                                     mmin=0.0, mmax=1.0, modify_average=True,
+                                     dd=dd)
             for i in range(nspecies)
         ])
 
@@ -1237,9 +1227,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
 
     # ~~~~~~~~ Oxygen
-    # FIXME modify Pyrometheus to get a single self-diffusivity
     def _complicated_function_to_give_ox_diffusivity(temperature):
-        return pyrometheus_mechanism.get_species_binary_mass_diffusivities(temperature)[idx_O2,idx_O2]
+        return 0.0
+        #return pyrometheus_mechanism.get_species_binary_mass_diffusivities(temperature)[idx_O2,idx_O2]
 
     def _get_oxygen_diffusivity(temperature):
         return _complicated_function_to_give_ox_diffusivity(temperature) * wall_sample_mask
@@ -1267,10 +1257,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         mass_loss_func=_mass_loss_rate_fiber,
         oxygen_diffusivity_func=_get_oxygen_diffusivity)
 
-    def _create_wall_derived(wv, wv_tseed):
-        return wall_model.dependent_vars(wv, wv_tseed)
+    def _create_wall_dependent_vars(wv, wv_tseed):
+        return wall_model.dependent_vars(wv, wv_tseed, wall_time_scale)
 
-    create_wall_derived_compiled = actx.compile(_create_wall_derived)
+    create_wall_dependent_vars_compiled = actx.compile(
+        _create_wall_dependent_vars)
 
 ##############################################################################
 
@@ -1347,7 +1338,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     current_wv = force_evaluation(actx, current_wv)
     wv_tseed = force_evaluation(actx, wv_tseed)
-    current_wdv = create_wall_derived_compiled(current_wv, wv_tseed)
+    current_wdv = create_wall_dependent_vars_compiled(current_wv, wv_tseed)
 
 ##############################################################################
 
@@ -1491,9 +1482,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dd_vol_fluid.trace("inlet").domain_tag:
             MyPrescribedBoundary(bnd_state_func=inlet_bnd_state_func, 
                                  temperature_func=bnd_temperature_func),
-        dd_vol_fluid.trace("symmetry").domain_tag: AdiabaticSlipBoundary(),
-        dd_vol_fluid.trace("burner").domain_tag: AdiabaticNoslipWallBoundary(),
-        dd_vol_fluid.trace("linear").domain_tag: linear_bnd,
+        dd_vol_fluid.trace("symmetry").domain_tag:
+            AdiabaticSlipBoundary(),
+        dd_vol_fluid.trace("burner").domain_tag:
+            AdiabaticNoslipWallBoundary(),
+        dd_vol_fluid.trace("linear").domain_tag:
+            linear_bnd,
         dd_vol_fluid.trace("outlet").domain_tag:
             PressureOutflowBoundary(boundary_pressure=101325.0),
     }
@@ -1567,6 +1561,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         solid_viz_fields = [
             ("wv", wv),
+            ("wall_h", wdv.enthalpy),
+            ("wall_cp", wdv.heat_capacity),
             ("wall_kappa", wdv.thermal_conductivity),
             ("wall_alpha", wall_model.thermal_diffusivity(
                             wv.mass, wdv.temperature,
@@ -1864,6 +1860,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     compiled_axisym_source_solid = actx.compile(axisym_source_solid)
 
     # ~~~~~~~
+    #FIXME do I have to increase the gravity by speedup_factor?
     def gravity_source_terms(cv):
         """Gravity."""
         delta_rho = cv.mass - rho_atmosphere
@@ -1875,25 +1872,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~
     def chemical_source_term(cv, temperature):
         if solve_the_flame:
-            return chem_rate*reaction_rates_damping*(
+            return chem_rate*speedup_factor*reaction_rates_damping*(
                 eos.get_species_source_terms(cv, temperature))
         else:
             return zeros
 
 ##############################################################################
 
-    def _create_wall_dependent_vars(wv, wv_tseed):
-        return wall_model.dependent_vars(wv, wv_tseed)
-
-    create_wall_dependent_vars_compiled = actx.compile(
-        _create_wall_dependent_vars)
-
     from grudge.dof_desc import DD_VOLUME_ALL
     def my_get_wall_timestep(wv, wdv):
         wall_diffusivity = wall_model.thermal_diffusivity(wv.mass,
             wdv.temperature, wdv.thermal_conductivity)
-        return char_length_solid**2/(wall_time_scale * actx.np.maximum(
-            wall_diffusivity, wdv.oxygen_diffusivity))
+        return char_length_solid**2/(actx.np.maximum(wall_diffusivity, wdv.oxygen_diffusivity))
 
     def _my_get_timestep_wall(wv, wdv, t, dt):
 
@@ -1911,7 +1901,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return mydt
 
-
     def _my_get_timestep_fluid(fluid_state, t, dt):
 
         if not constant_cfl:
@@ -1923,79 +1912,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     my_get_timestep_wall = actx.compile(_my_get_timestep_wall)
     my_get_timestep_fluid = actx.compile(_my_get_timestep_fluid)
-
-##############################################################################
-
-#    def _get_rhs(t, state):
-#        cv, tseed, wv, wv_tseed = state
-
-#        smoothness = smooth_region + sponge_sigma/sponge_amp #
-#        #smoothness = smoothness_indicator(dcoll, cv.mass)
-
-#        cv = _drop_order_cv(cv, smoothness, theta_factor) # apply outflow damping
-
-#        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-#            temperature_seed=tseed, limiter_func=_limit_fluid_cv,
-#            limiter_dd=dd_vol_fluid
-#        )
-
-#        cv = fluid_state.cv # get species-limited cv
-
-#        wdv = wall_model.dependent_vars(wv, wv_tseed)
-
-#        #~~~~~~~~~~~~~
-#        fluid_rhs, wall_energy_rhs, grad_cv_fluid, grad_t_fluid, grad_t_solid = \
-#            coupled_ns_heat_operator(
-#                dcoll, gas_model, dd_vol_fluid, dd_vol_solid, fluid_boundaries, solid_boundaries,
-#                fluid_state, wdv.thermal_conductivity, wdv.temperature, time=t, quadrature_tag=quadrature_tag,
-#                interface_radiation=use_radiation, wall_epsilon=emissivity, return_gradients=True)
-
-#        chem_rhs = chemical_source_term(fluid_state.cv, fluid_state.temperature)
-
-#        fluid_sources = (
-#            sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
-#            + gravity_source_terms(fluid_state.cv)
-#            + axisym_source_fluid(actx, dcoll, fluid_state, grad_cv_fluid, grad_t_fluid))
-
-#        #~~~~~~~~~~~~~
-#        wall_mass_rhs = -wall_model.mass_loss_rate(mass=wv.mass,
-#            ox_mass=wv.ox_mass, temperature=wdv.temperature)
-
-#        fluid_ox_mass = cv.species_mass[idx_O2]
-
-#        pairwise_ox = {(dd_vol_fluid, dd_vol_solid): (fluid_ox_mass, wv.ox_mass)}
-#        pairwise_ox_tpairs = inter_volume_trace_pairs(
-#            dcoll, pairwise_ox, comm_tag=_OxCommTag)
-#        ox_tpairs = pairwise_ox_tpairs[dd_vol_fluid, dd_vol_solid]
-
-#        wall_ox_boundaries = {
-#            dd_vol_solid.trace("wall_sym").domain_tag:
-#                NeumannDiffusionBoundary(0.0)}
-#        wall_ox_boundaries.update({
-#            tpair.dd.domain_tag: DirichletDiffusionBoundary(tpair.ext)
-#            for tpair in ox_tpairs})
-
-#        wall_ox_mass_rhs, grad_ox_solid = diffusion_operator(dcoll,
-#            wdv.oxygen_diffusivity, wall_ox_boundaries, wv.ox_mass,
-#            return_grad_u=True, penalty_amount=wall_penalty_amount,
-#            quadrature_tag=quadrature_tag, dd=dd_vol_solid,
-#            comm_tag=_WallOxDiffCommTag)
-
-#        solid_rhs = wall_time_scale * WallVars(mass=wall_mass_rhs,
-#            energy=wall_energy_rhs, ox_mass=wall_ox_mass_rhs)
-
-#        solid_sources = axisym_source_solid(actx, dcoll,
-#            wdv.temperature, wdv.thermal_conductivity, grad_t_solid,
-#            wv.ox_mass, wdv.oxygen_diffusivity, grad_ox_solid)
-
-#        #~~~~~~~~~~~~~
-#        fluid_rhs = fluid_rhs + chem_rhs + fluid_sources
-#        solid_rhs = solid_rhs + solid_sources
-
-#        return make_obj_array([fluid_rhs, solid_rhs, grad_cv_fluid,
-#            grad_t_fluid, grad_t_solid, grad_ox_solid])
-
-#    get_rhs = actx.compile(_get_rhs)
 
 ##############################################################################
 
@@ -2082,21 +1998,22 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             if do_viz:
 
-                fluid_rhs = None
-                solid_rhs = None
-                grad_cv_fluid = None
-                grad_t_fluid = None
-                grad_t_solid = None
-                fluid_sources = None
-                solid_sources = None
+#                fluid_rhs = None
+#                solid_rhs = None
+#                grad_cv_fluid = None
+#                grad_t_fluid = None
+#                grad_t_solid = None
+#                fluid_sources = None
+#                solid_sources = None
 
                 print('Writing solution file')
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     wv=wv, wdv=wdv, smoothness=smoothness,
-                    fluid_rhs=fluid_rhs, solid_rhs=solid_rhs,
-                    grad_cv_fluid=grad_cv_fluid,
-                    grad_t_fluid=grad_t_fluid, grad_t_solid=grad_t_solid,
-                    fluid_sources=fluid_sources, solid_sources=solid_sources)
+#                    fluid_rhs=fluid_rhs, solid_rhs=solid_rhs,
+#                    grad_cv_fluid=grad_cv_fluid,
+#                    grad_t_fluid=grad_t_fluid, grad_t_solid=grad_t_solid,
+#                    fluid_sources=fluid_sources, solid_sources=solid_sources
+                )
 
             if do_restart:
                 my_write_restart(step, t, state)
@@ -2118,7 +2035,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         smoothness = smooth_region + sponge_sigma/sponge_amp
 
-        cv = _drop_order_cv(cv, smoothness, theta_factor) # apply outflow damping
+        # apply outflow damping
+        cv = _drop_order_cv(cv, smoothness, theta_factor)
 
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
             temperature_seed=tseed, limiter_func=_limit_fluid_cv,
@@ -2127,80 +2045,75 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         cv = fluid_state.cv # get species-limited cv
 
-        wdv = wall_model.dependent_vars(wv, wv_tseed)
+        wdv = wall_model.dependent_vars(wv, wv_tseed, wall_time_scale)
 
         #~~~~~~~~~~~~~
-        fluid_rhs, solid_energy_rhs, grad_cv_fluid, grad_t_fluid, grad_t_solid = \
-            coupled_ns_heat_operator(
-                dcoll, gas_model, dd_vol_fluid, dd_vol_solid, fluid_boundaries, solid_boundaries,
-                fluid_state, wdv.thermal_conductivity, wdv.temperature, time=t, quadrature_tag=quadrature_tag,
-                interface_radiation=use_radiation, wall_emissivity=emissivity, sigma=5.67e-8, ambient_temperature=300.0,
-                return_gradients=True)
+        fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
+            add_thermal_interface_boundaries_no_grad(
+                dcoll,
+                dd_vol_fluid, dd_vol_solid,
+                fluid_state, wdv.thermal_conductivity, wdv.temperature,
+                fluid_boundaries, solid_boundaries,
+                interface_noslip=True, interface_radiation=use_radiation,
+                use_kappa_weighted_grad_flux_in_fluid=False)
 
-#        fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
-#            add_thermal_interface_boundaries_no_grad(
-#                dcoll,
-#                dd_vol_fluid, dd_vol_solid,
-#                fluid_state, wdv.thermal_conductivity, wdv.temperature,
-#                fluid_boundaries, solid_boundaries,
-#                interface_noslip=True, interface_radiation=use_radiation,
-#                use_kappa_weighted_grad_flux_in_fluid=False)
+        fluid_operator_states_quad = make_operator_fluid_states(
+            dcoll, fluid_state, gas_model, fluid_all_boundaries_no_grad,
+            quadrature_tag, dd=dd_vol_fluid, comm_tag=_FluidOpStatesTag,
+            limiter_func=_limit_fluid_cv)
 
-#        fluid_operator_states_quad = make_operator_fluid_states(
-#            dcoll, fluid_state, gas_model, fluid_all_boundaries_no_grad,
-#            quadrature_tag, dd=dd_vol_fluid, comm_tag=_FluidOpStatesTag,
-#            limiter_func=_limit_fluid_cv)
+        # fluid grad CV
+        fluid_grad_cv = grad_cv_operator(
+            dcoll, gas_model, fluid_all_boundaries_no_grad, fluid_state,
+            time=t, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+            operator_states_quad=fluid_operator_states_quad,
+            comm_tag=_FluidGradCVTag
+        )
 
-#        # fluid grad CV
-#        fluid_grad_cv = grad_cv_operator(
-#            dcoll, gas_model, fluid_all_boundaries_no_grad, fluid_state,
-#            time=t, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
-#            operator_states_quad=fluid_operator_states_quad,
-#            comm_tag=_FluidGradCVTag
-#        )
+        # fluid grad T
+        fluid_grad_temperature = grad_t_operator(
+            dcoll, gas_model, fluid_all_boundaries_no_grad, fluid_state,
+            time=t, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+            operator_states_quad=fluid_operator_states_quad,
+            comm_tag=_FluidGradTempTag
+        )
 
-#        # fluid grad T
-#        fluid_grad_temperature = grad_t_operator(
-#            dcoll, gas_model, fluid_all_boundaries_no_grad, fluid_state,
-#            time=t, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
-#            operator_states_quad=fluid_operator_states_quad,
-#            comm_tag=_FluidGradTempTag
-#        )
+        # solid grad T
+        solid_grad_temperature = wall_grad_t_operator(
+            dcoll, wdv.thermal_conductivity,
+            solid_all_boundaries_no_grad, wdv.temperature,
+            quadrature_tag=quadrature_tag, dd=dd_vol_solid,
+            comm_tag=_SolidGradTempTag
+        )
 
-#        solid_grad_temperature = wall_grad_t_operator(
-#            dcoll, wdv.thermal_conductivity,
-#            solid_all_boundaries_no_grad, wdv.temperature,
-#            quadrature_tag=quadrature_tag, dd=dd_vol_solid,
-#            comm_tag=_SolidGradTempTag
-#        )
+        fluid_all_boundaries, solid_all_boundaries = \
+            add_thermal_interface_boundaries(
+                dcoll, dd_vol_fluid, dd_vol_solid,
+                fluid_boundaries, solid_boundaries,
+                fluid_state, wdv.thermal_conductivity,
+                wdv.temperature,
+                fluid_grad_temperature, solid_grad_temperature,
+                interface_noslip=True, interface_radiation=use_radiation,
+                use_kappa_weighted_grad_flux_in_fluid=False,
+                wall_emissivity=emissivity, sigma=5.67e-8,
+                ambient_temperature=300.0,
+                wall_penalty_amount=wall_penalty_amount)
 
-#        fluid_all_boundaries, solid_all_boundaries = \
-#            add_thermal_interface_boundaries(
-#                dcoll, dd_vol_fluid, dd_vol_solid,
-#                fluid_boundaries, solid_boundaries,
-#                fluid_state, wdv.thermal_conductivity,
-#                wdv.temperature,
-#                fluid_grad_temperature, solid_grad_temperature,
-#                interface_noslip=True, interface_radiation=use_radiation,
-#                use_kappa_weighted_grad_flux_in_fluid=False,
-#                wall_emissivity=emissivity, sigma=5.67e-8, ambient_temperature=300.0,
-#                wall_penalty_amount=wall_penalty_amount)
-
-#        fluid_rhs = ns_operator(
-#            dcoll, gas_model, fluid_state, fluid_all_boundaries,
-#            time=t, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
-#            operator_states_quad=fluid_operator_states_quad,
-#            grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
-#            comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
+        fluid_rhs = ns_operator(
+            dcoll, gas_model, fluid_state, fluid_all_boundaries,
+            time=t, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+            operator_states_quad=fluid_operator_states_quad,
+            grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
+            comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
 
         fluid_sources = (
             chemical_source_term(fluid_state.cv, fluid_state.temperature)
-            + sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
+            + sponge_func(cv=fluid_state.cv, cv_ref=ref_cv,
+                          sigma=sponge_sigma)
             + gravity_source_terms(fluid_state.cv)
-            + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv, fluid_grad_temperature)
+            + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
+                                  fluid_grad_temperature)
         )
-
-        fluid_rhs = fluid_rhs + fluid_sources
 
         #~~~~~~~~~~~~~
         if ignore_wall:
@@ -2231,25 +2144,28 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                quadrature_tag=quadrature_tag, dd=dd_vol_solid,
 #                comm_tag=_WallOxDiffCommTag)
 
-#            solid_energy_rhs = diffusion_operator(
-#                dcoll, wdv.thermal_conductivity, solid_all_boundaries,
-#                wdv.temperature,
-#                penalty_amount=wall_penalty_amount, quadrature_tag=quadrature_tag,
-#                dd=dd_vol_solid, grad_u=solid_grad_temperature,
-#                comm_tag=_SolidOperatorTag)
+            solid_energy_rhs = diffusion_operator(
+                dcoll, wdv.thermal_conductivity, solid_all_boundaries,
+                wdv.temperature,
+                penalty_amount=wall_penalty_amount,
+                quadrature_tag=quadrature_tag,
+                dd=dd_vol_solid,
+                grad_u=solid_grad_temperature,
+                comm_tag=_SolidOperatorTag
+            )
 
             solid_sources = axisym_source_solid(actx, dcoll,
-                wdv.temperature, wdv.thermal_conductivity, solid_grad_temperature,
+                wdv.temperature, wdv.thermal_conductivity,
+                solid_grad_temperature,
                 wv.ox_mass, wdv.oxygen_diffusivity, grad_ox=solid_zeros)
 
             solid_rhs = wall_time_scale * WallVars(mass=solid_zeros,
                 energy=solid_energy_rhs, ox_mass=solid_zeros)
 
-            solid_rhs = solid_rhs + solid_sources
-
         #~~~~~~~~~~~~~
 
-        return make_obj_array([fluid_rhs, fluid_zeros, solid_rhs, solid_zeros])
+        return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                               solid_rhs + solid_sources, solid_zeros])
 
     def my_post_step(step, t, dt, state):
 
