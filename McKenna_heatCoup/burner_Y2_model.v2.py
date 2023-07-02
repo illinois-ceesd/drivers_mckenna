@@ -600,7 +600,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_sample_rho = 1600.0 * 0.1  # do not account for porous volume
 
     wall_penalty_amount = 1.0
-    wall_time_scale = 100.0  # wall speed-up
+    wall_time_scale = 50.0  # wall speed-up
 
     # Average from https://www.azom.com/properties.aspx?ArticleID=52 for alumina
     wall_alumina_rho = 3500.0
@@ -1561,6 +1561,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         solid_viz_fields = [
             ("wv", wv),
+            ("cfl", solid_zeros), #FIXME
             ("wall_h", wdv.enthalpy),
             ("wall_cp", wdv.heat_capacity),
             ("wall_kappa", wdv.thermal_conductivity),
