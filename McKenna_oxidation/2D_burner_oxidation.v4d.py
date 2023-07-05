@@ -326,8 +326,8 @@ class Burner2D_Reactive:
         )
 #        _sigma = self._sigma
 
-        int_diam = 2.38*25.4/2000 #radius, actually
-        ext_diam = 2.89*25.4/2000 #radius, actually
+        int_diam = 2.38*25.4/2000.0 #radius, actually
+        ext_diam = 2.89*25.4/2000.0 #radius, actually
 
         #~~~ shroud
         S1 = 0.5*(1.0 + actx.np.tanh(1.0/(_sigma)*(x_vec[0] - int_diam)))
@@ -378,7 +378,8 @@ class Burner2D_Reactive:
             specmass = mass * y
 
             #~~~ 
-            internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
+            internal_energy = eos.get_internal_energy(
+                temperature, species_mass_fractions=y)
             kinetic_energy = 0.5 * np.dot(velocity, velocity)
             energy = mass * (internal_energy + kinetic_energy)
 
@@ -857,7 +858,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     mesh_filename = "mesh_10m_10mm_020um_3domains-v2.msh"
 
     rst_path = "restart_data/"
-    viz_path = "viz_data_Y3_RR/"
+    viz_path = "viz_data/"
     vizname = viz_path+casename
     rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
@@ -872,7 +873,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
     maximum_fluid_dt = 1.0e-6 #order == 2
-    maximum_solid_dt = 1.0e-8
+    maximum_solid_dt = 1.0e-1
     t_final = 2.0
     niter = 4000001
     local_dt = True
@@ -1057,8 +1058,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     rho_int = cantera_soln.density
 
-    r_int = 2.38*25.4/2000 #radius, actually
-    r_ext = 2.89*25.4/2000 #radius, actually
+    r_int = 2.38*25.4/2000.0
+    r_ext = 2.89*25.4/2000.0
 
     mass_react = flow_rate*1.0
     mass_shroud = shroud_rate*1.0
@@ -1168,7 +1169,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     if transport == "Mixture":
         physical_transport = MixtureAveragedTransport(
-            pyrometheus_mechanism, lewis=np.ones(nspecies,), factor=speedup_factor)
+            pyrometheus_mechanism, lewis=np.ones(nspecies,),
+            factor=speedup_factor)
     else:
         if transport == "PowerLaw":
             physical_transport = PowerLawTransport(lewis=np.ones(nspecies,),
@@ -1178,8 +1180,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             print('Use one of "Mixture" or "PowerLaw"')
             sys.exit()
 
-    #XXX dummy work around for now... Check if viscous-flow is leading to non-zero RHS
-    sample_transport = SimpleTransport(viscosity=0.0, thermal_conductivity=0.1, species_diffusivity=0.0001*np.ones(nspecies,))
+    sample_transport = PowerLawTransport(
+            lewis=np.ones(nspecies,), beta=4.093e-7)
 
     # }}}
 
@@ -1861,11 +1863,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 ##############################################################################
 
     def my_write_viz(
-        step, t, dt, fluid_state, sample_state, holder_state, smoothness=None):
+        step, t, dt, fluid_state, sample_state, holder_state, smoothness=None, rhs=None):
+        if rank == 0:
+            print('Writing solution file...')
+
+        fluid_rhs = rhs[0]
+        sample_rhs = rhs[2]
+        holder_rhs = rhs[5]
 
 #        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
-
-        wdv = gas_model_sample.wall.dependent_vars(sample_state.dv.wall_density)
 
         fluid_viz_fields = [
             ("rho_g", fluid_state.cv.mass),
@@ -1875,20 +1881,33 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("temperature", fluid_state.temperature),
             ("Vx", fluid_state.velocity[0]),
             ("Vy", fluid_state.velocity[1]),
-#            ("grad_t", fluid_grad_temperature),
             ("dt", dt[0] if local_dt else None),
 #            ("sponge", sponge_sigma),
 #            ("smoothness", 1.0 - theta_factor*smoothness),
 #            ("RR", chem_rate*reaction_rates_damping),
 #            ("heat_rls", heat_rls),
+            ("fluid_rhs", fluid_rhs),
         ]
 
         # species mass fractions
         fluid_viz_fields.extend(
             ("Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
                 for i in range(nspecies))
-            
-        sample_mass_rhs, sample_source_O2, sample_source_CO2, eff_surf_area, k_f = \
+
+        write_visfile(dcoll, fluid_viz_fields, fluid_visualizer,
+            vizname=vizname+"-fluid", step=step, t=t, overwrite=True, comm=comm)
+
+        # ~~~ Sample
+        wdv = gas_model_sample.wall.dependent_vars(sample_state.dv.wall_density)
+
+        wall_mass = gas_model_sample.wall.solid_density(sample_state.dv.wall_density)
+        wall_conductivity = material.thermal_conductivity(
+            temperature=sample_state.dv.temperature, tau=wdv.tau)
+        wall_heat_capacity = material.heat_capacity(
+            temperature=sample_state.dv.temperature, tau=wdv.tau)
+        wall_heat_diffusivity = wall_conductivity/(wall_mass * wall_heat_capacity)            
+
+        sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
                 decomposition.get_source_terms(
                     sample_state.temperature, wdv.tau, sample_state.cv)
 
@@ -1905,11 +1924,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("progress", wdv.tau),
             ("permeability", wdv.permeability),
             ("kappa", sample_state.thermal_conductivity),
-#            ("grad_t", sample_grad_temperature),
+            ("alpha", wall_heat_diffusivity),
             ("dt", dt[2] if local_dt else None),
             ("source_C", sample_mass_rhs),
-            ("eff_surf_area", eff_surf_area),
-            ("k_f", k_f),
+            ("sample_rhs", sample_rhs),
         ]
 
         # species mass fractions
@@ -1917,19 +1935,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("Y_"+species_names[i], sample_state.cv.species_mass_fractions[i])
                 for i in range(nspecies))
 
+        write_visfile(dcoll, sample_viz_fields, sample_visualizer,
+            vizname=vizname+"-sample", step=step, t=t, overwrite=True, comm=comm)
+
+        # ~~~ Holder
         holder_viz_fields = [
             ("solid_mass", holder_state.cv.mass),
             ("rhoE_s", holder_state.cv.energy),
             ("temperature", holder_state.dv.temperature),
             ("kappa", holder_state.dv.thermal_conductivity),
-#            ("grad_t", holder_grad_temperature),
             ("dt", dt[5] if local_dt else None),
+            ("holder_rhs", holder_rhs),
         ]
-
-        write_visfile(dcoll, fluid_viz_fields, fluid_visualizer,
-            vizname=vizname+"-fluid", step=step, t=t, overwrite=True, comm=comm)
-        write_visfile(dcoll, sample_viz_fields, sample_visualizer,
-            vizname=vizname+"-sample", step=step, t=t, overwrite=True, comm=comm)
         write_visfile(dcoll, holder_viz_fields, holder_visualizer,
             vizname=vizname+"-holder", step=step, t=t, overwrite=True, comm=comm)
 
@@ -2344,7 +2361,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         gravity = - 9.80665 * speedup_factor 
         delta_rho = cv.mass - rho_atmosphere
         return make_conserved(dim=2, mass=cv.mass*0.0,
-            energy=delta_rho*cv.velocity[1]*gravity,
+            energy=delta_rho * cv.velocity[1] * gravity,
             momentum=make_obj_array([cv.mass*0.0, delta_rho*gravity]),
             species_mass=cv.species_mass*0.0)
 
@@ -2358,11 +2375,64 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-    def _my_get_timestep_sample():
-        return maximum_wall_dt
+    from grudge.dt_utils import characteristic_lengthscales
+    char_length_fluid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid)
+    char_length_sample = characteristic_lengthscales(actx, dcoll, dd=dd_vol_sample)
+    char_length_holder = characteristic_lengthscales(actx, dcoll, dd=dd_vol_holder)
 
-    def _my_get_timestep_holder():
-        return maximum_wall_dt
+    #~~~~~~~~~~
+
+    from mirgecom.viscous import get_local_max_species_diffusivity
+    from grudge.dof_desc import DD_VOLUME_ALL
+    def _my_get_timestep_sample(state):
+        wdv = gas_model_sample.wall.dependent_vars(state.dv.wall_density)
+
+        wall_mass = gas_model_sample.wall.solid_density(state.dv.wall_density)
+        wall_conductivity = material.thermal_conductivity(
+            temperature=state.dv.temperature, tau=wdv.tau)
+        wall_heat_capacity = material.heat_capacity(
+            temperature=state.dv.temperature, tau=wdv.tau)
+
+        wall_heat_diffusivity = wall_conductivity/(wall_mass * wall_heat_capacity)
+        wall_spec_diffusivity = get_local_max_species_diffusivity(actx, state.tv.species_diffusivity)
+        wall_diffusivity = actx.np.maximum(wall_heat_diffusivity, wall_spec_diffusivity)
+
+        timestep = char_length_sample**2/(wall_time_scale * wall_diffusivity)
+
+        if not constant_cfl:
+            return dt
+
+        if local_dt:
+            mydt = maximum_cfl*timestep
+        else:
+            if constant_cfl:
+                mydt = actx.to_numpy(nodal_min(
+                    dcoll, dd_vol_sample, maximum_cfl*timestep, initial=np.inf))[()]
+
+        return mydt
+
+    def _my_get_timestep_holder(state):
+        wdv = state.dv
+
+        wall_mass = holder_wall_model.density()
+        wall_conductivity = holder_wall_model.thermal_conductivity(wdv.temperature)
+        wall_heat_capacity = holder_wall_model.heat_capacity(wdv.temperature)
+
+        wall_heat_diffusivity = wall_conductivity/(wall_mass * wall_heat_capacity)
+
+        timestep = char_length_holder**2/(wall_time_scale * wall_heat_diffusivity)
+
+        if not constant_cfl:
+            return dt
+
+        if local_dt:
+            mydt = maximum_cfl*timestep
+        else:
+            if constant_cfl:
+                mydt = actx.to_numpy(nodal_min(
+                    dcoll, dd_vol_holder, maximum_cfl*timestep, initial=np.inf))[()]
+
+        return mydt
 
     def _my_get_timestep_fluid(fluid_state, t, dt):
 
@@ -2426,9 +2496,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             dt_fluid = force_evaluation(actx, actx.np.minimum(
                 maximum_fluid_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
-
-            dt_sample = force_evaluation(actx, maximum_solid_dt + sample_zeros)
-            dt_holder = force_evaluation(actx, maximum_solid_dt + holder_zeros)
+            dt_sample = force_evaluation(actx, actx.np.minimum(
+                maximum_solid_dt, my_get_timestep_sample(sample_state)))
+            dt_holder = force_evaluation(actx, actx.np.minimum(
+                maximum_solid_dt, my_get_timestep_holder(holder_state)))
 
             dt = make_obj_array([dt_fluid, fluid_zeros,
                                  dt_sample, sample_zeros, dt_sample,
@@ -2478,9 +2549,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     raise MyRuntimeError("Failed simulation health check.")
 
             if do_viz:
+                rhs = my_rhs(t, state)
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     sample_state=sample_state, holder_state=holder_state,
-                    smoothness=smoothness)
+                    smoothness=smoothness, rhs=rhs)
 
             if do_restart:
                 my_write_restart(step, t, fluid_state, sample_state, holder_state)
@@ -2687,7 +2759,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             tau = gas_model_sample.wall.decomposition_progress(
                 sample_state.dv.wall_density)
 
-            sample_mass_rhs, sample_source_O2, sample_source_CO2, _, _ = \
+            sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
                 decomposition.get_source_terms(
                     sample_state.temperature, tau, sample_state.cv)
 
@@ -2770,14 +2842,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if local_dt == True:
         dt_fluid = force_evaluation(actx, actx.np.minimum(
             maximum_fluid_dt,
-            my_get_timestep_fluid(fluid_state,
-                                  force_evaluation(actx, current_t + fluid_zeros),
-                                  force_evaluation(actx, maximum_fluid_dt + fluid_zeros))
-            )
-        )
-
-        dt_sample = force_evaluation(actx, maximum_solid_dt + sample_zeros)
-        dt_holder = force_evaluation(actx, maximum_solid_dt + holder_zeros)
+            my_get_timestep_fluid(
+                fluid_state,
+                force_evaluation(actx, current_t + fluid_zeros),
+                force_evaluation(actx, maximum_fluid_dt + fluid_zeros))))
+        dt_sample = force_evaluation(actx, actx.np.minimum(
+            maximum_solid_dt, my_get_timestep_sample(sample_state)))
+        dt_holder = force_evaluation(actx, actx.np.minimum(
+            maximum_solid_dt, my_get_timestep_holder(holder_state)))
 
         dt = make_obj_array([
             dt_fluid, fluid_zeros, dt_sample, sample_zeros, dt_sample, dt_holder])
