@@ -1,4 +1,4 @@
-""" Fri 23 Jun 2023 10:17:05 AM CDT """
+""" Wed 05 Jul 2023 02:03:43 PM CDT """
 
 __copyright__ = """
 Copyright (C) 2023 University of Illinois Board of Trustees
@@ -873,7 +873,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
     maximum_fluid_dt = 1.0e-6 #order == 2
-    maximum_solid_dt = 1.0e-1
+    maximum_solid_dt = 1.0e-8
     t_final = 2.0
     niter = 4000001
     local_dt = True
@@ -908,7 +908,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     temp_wall = 300
 
     wall_penalty_amount = 1.0
-    wall_time_scale = speedup_factor*50.0
+    wall_time_scale = speedup_factor*100.0
 
     use_radiation = True
     emissivity = 0.85*speedup_factor
@@ -1182,6 +1182,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     sample_transport = PowerLawTransport(
             lewis=np.ones(nspecies,), beta=4.093e-7)
+#    sample_transport = SimpleTransport(viscosity=0.0, thermal_conductivity=0.1,
+#                                       species_diffusivity=0.0001*np.ones(nspecies,))
 
     # }}}
 
@@ -1918,6 +1920,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("pressure", sample_state.pressure),
             ("temperature", sample_state.temperature),
             ("solid_mass", sample_state.dv.wall_density),
+            ("ox_diff", sample_state.tv.species_diffusivity[1]),
             ("Vx", sample_state.velocity[0]),
             ("Vy", sample_state.velocity[1]),
             ("void_fraction", wdv.void_fraction),
@@ -2385,6 +2388,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from mirgecom.viscous import get_local_max_species_diffusivity
     from grudge.dof_desc import DD_VOLUME_ALL
     def _my_get_timestep_sample(state):
+        return maximum_solid_dt
+
         wdv = gas_model_sample.wall.dependent_vars(state.dv.wall_density)
 
         wall_mass = gas_model_sample.wall.solid_density(state.dv.wall_density)
@@ -2412,6 +2417,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return mydt
 
     def _my_get_timestep_holder(state):
+        return maximum_solid_dt
+
         wdv = state.dv
 
         wall_mass = holder_wall_model.density()
