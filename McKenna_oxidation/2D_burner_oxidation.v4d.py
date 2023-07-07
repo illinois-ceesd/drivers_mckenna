@@ -1181,7 +1181,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             sys.exit()
 
     sample_transport = PowerLawTransport(
-            lewis=np.ones(nspecies,), beta=4.093e-7)
+        lewis=np.ones(nspecies,), beta=4.093e-7*speedup_factor)
 #    sample_transport = SimpleTransport(viscosity=0.0, thermal_conductivity=0.1,
 #                                       species_diffusivity=0.0001*np.ones(nspecies,))
 

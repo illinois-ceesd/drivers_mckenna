@@ -185,7 +185,7 @@ class Burner2D_Reactive:
         self._flaLoc = flame_loc
 
         self._mass_rate_burner = mass_rate_burner
-        self._mass_rate_shroud = mass_rate_burner
+        self._mass_rate_shroud = mass_rate_shroud
 
     def __call__(self, x_vec, eos, flow_rate, solve_the_flame=True,
                  state_minus=None, time=None):
