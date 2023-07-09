@@ -92,6 +92,24 @@ from grudge.trace_pair import TracePair
 
 #########################################################################
 
+class _MyGradTag_1:
+    pass
+
+class _MyGradTag_2:
+    pass
+
+class _MyGradTag_3:
+    pass
+
+class _MyGradTag_4:
+    pass
+
+class _MyGradTag_5:
+    pass
+
+class _MyGradTag_6:
+    pass
+
 class Burner2D_Reactive:
 
     def __init__(self, *, dim=2, nspecies, sigma, sigma_flame,
@@ -353,7 +371,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_01_round_10mm_020um_fluid-v2.msh"
+    mesh_filename = "mesh_02_round_10mm_020um_fluid-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -361,7 +379,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
-    nviz = 5000
+    nviz = 10000
     nrestart = 10000
     nhealth = 1
     nstatus = 100
@@ -378,16 +396,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.2
     
     # discretization and model control
-    order = 2
+    order = 3
     use_overintegration = False
 
     x0_sponge = 0.15
     sponge_amp = 400.0
     theta_factor = 0.02
 
-    my_mechanism = "uiuc_7sp"
+    my_mechanism = "Davis2005_expanded_noFallOff"
     equiv_ratio = 0.7
-    speedup_factor = 7.5
+    speedup_factor = 2.0
     chem_rate = 1.0
     flow_rate = 25.0
     shroud_rate = 11.85
@@ -1237,10 +1255,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from meshmode.discretization.connection import FACE_RESTR_ALL
     from mirgecom.flux import num_flux_central
 
-    class _MyGradTag:
-        pass
-
-    def my_derivative_function(actx, dcoll, field, field_bounds, bnd_cond, dd_vol=DD_VOLUME_ALL):    
+    def my_derivative_function(actx, dcoll, field, field_bounds, bnd_cond, comm_tag, dd_vol=DD_VOLUME_ALL):    
 
         dd_vol_quad = dd_vol.with_discr_tag(quadrature_tag)
         dd_allfaces_quad = dd_vol_quad.trace(FACE_RESTR_ALL)
@@ -1275,7 +1290,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, dd_vol,
             op.weak_local_grad(dcoll, dd_vol, field)
             - op.face_mass(dcoll, dd_allfaces_quad,
-                (sum(interior_flux(u_tpair) for u_tpair in interior_trace_pairs(dcoll, field, volume_dd=dd_vol, comm_tag=_MyGradTag))
+                (sum(interior_flux(u_tpair) for u_tpair in interior_trace_pairs(dcoll, field, volume_dd=dd_vol, comm_tag=comm_tag))
                 + sum(boundary_flux(bdtag, bdry) for bdtag, bdry in field_bounds.items())
                 )
             )
@@ -1310,13 +1325,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         
         drhoudr = (grad_cv.momentum[0])[0]
 
-        d2udr2   = my_derivative_function(actx, dcoll,  dudr, boundaries, 'replicate')[0] #XXX
-        d2vdr2   = my_derivative_function(actx, dcoll,  dvdr, boundaries, 'replicate')[0] #XXX
-        d2udrdy  = my_derivative_function(actx, dcoll,  dudy, boundaries, 'replicate')[0] #XXX
+        d2udr2   = my_derivative_function(actx, dcoll,  dudr, boundaries, 'replicate', comm_tag=_MyGradTag_1)[0]
+        d2vdr2   = my_derivative_function(actx, dcoll,  dvdr, boundaries, 'replicate', comm_tag=_MyGradTag_2)[0]
+        d2udrdy  = my_derivative_function(actx, dcoll,  dudy, boundaries, 'replicate', comm_tag=_MyGradTag_3)[0]
                 
-        dmudr    = my_derivative_function(actx, dcoll,    mu, boundaries, 'replicate')[0]
-        dbetadr  = my_derivative_function(actx, dcoll,  beta, boundaries, 'replicate')[0]
-        dbetady  = my_derivative_function(actx, dcoll,  beta, boundaries, 'replicate')[1]
+        dmudr    = my_derivative_function(actx, dcoll,    mu, boundaries, 'replicate', comm_tag=_MyGradTag_4)[0]
+        dbetadr  = my_derivative_function(actx, dcoll,  beta, boundaries, 'replicate', comm_tag=_MyGradTag_5)[0]
+        dbetady  = my_derivative_function(actx, dcoll,  beta, boundaries, 'replicate', comm_tag=_MyGradTag_6)[1]
         
         qr = - kappa*grad_t[0]
         dqrdr = 0.0
@@ -1346,18 +1361,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                           + tau_ry \
                           + u*dbetady + beta*dudy
         
+        # FIXME add species diffusion term
         source_rhoE_dom = -( (cv.energy+dv.pressure)*u + qr ) \
                           + u*tau_rr + v*tau_ry \
                           + u**2*dbetadr + beta*2.0*u*dudr \
                           + u*v*dbetady + u*beta*dvdy + v*beta*dudy
 
-        source_spec_dom = - cv.species_mass*u + d_ij*dyidr
+        source_spec_dom = - cv.species_mass*u + cv.mass*d_ij*dyidr
         """
         """
 
         source_mass_sng = - drhoudr
         source_rhoU_sng = 0.0
         source_rhoV_sng = - v*drhoudr + dtaurydr + beta*d2udrdy + dudr*dbetady
+        # FIXME add species diffusion term
         source_rhoE_sng = -( (cv.energy+dv.pressure)*dudr + dqrdr ) \
                                 + tau_rr*dudr + v*dtaurydr \
                                 + 2.0*beta*dudr**2 \
