@@ -694,8 +694,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # wall stuff
     ignore_wall = False
-    my_material = "fiber"
-#    my_material = "composite"
+#    my_material = "fiber"
+    my_material = "composite"
     temp_wall = 300
 
     wall_penalty_amount = 1.0
@@ -1762,11 +1762,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             temperature=sample_state.dv.temperature, tau=wdv.tau)
         wall_heat_diffusivity = wall_conductivity/(wall_mass * wall_heat_capacity)            
 
-        # FIXME oxidation only!!
-        sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
+        if my_material == "fiber":
+            sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
                 decomposition.get_source_terms(
-                    sample_state.temperature, wdv.tau,
+                    sample_state.temperature, tau,
                     sample_state.cv.species_mass[cantera_soln.species_index("O2")])
+
+            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
+            source_species[cantera_soln.species_index("O2")] = sample_source_O2
+            source_species[cantera_soln.species_index("CO2")] = sample_source_CO2
+
+            sample_source_gas = sample_source_O2 + sample_source_CO2
+
+        if my_material == "composite":
+            sample_mass_rhs = decomposition.get_source_terms(
+                temperature=sample_state.temperature,
+                chi=sample_state.dv.material_densities)
+            
+            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
+            source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
+
+            sample_source_gas = -sum(sample_mass_rhs)
 
         sample_viz_fields = [
             ("rho_g", sample_state.cv.mass),
@@ -1785,7 +1801,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("progress", wdv.tau),
             ("permeability", wdv.permeability),
             ("dt", dt[2] if local_dt else None),
-            ("source_C", sample_mass_rhs),
+            ("source_solid", sample_mass_rhs),
+            ("source_gas", sample_source_gas),
             ("sample_rhs", sample_rhs),
         ]
 
@@ -2236,20 +2253,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             return zeros
 
     # ~~~~~~
+    from grudge.discretization import filter_part_boundaries
     def blowing_velocity(cv, source):
 
         # volume integral of the source terms
         integral_volume_source = \
             integral(dcoll, dd_vol_sample, np.pi*source)
 
+        # FIXME generalize this for multiple returned arguments in the list
+
+        dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_sample,
+        neighbor_volume_dd=dd_vol_fluid)
+
         # restrict to coupled surface 
         surface_density = op.project(dcoll, dd_vol_sample,
-                                     dd_vol_sample.trace('fluid_sample_coupling'),
+                                     #dd_vol_sample.trace('fluid_sample_coupling'),
+                                     dd_list[0],
                                      cv.mass)
 
         # surfece integral of the density
         integral_surface_density = \
-            integral(dcoll, dd_vol_sample, np.pi*surface_density)
+            integral(dcoll, dd_list[0], np.pi*surface_density)
 
         return integral_volume_source/integral_surface_density
 
@@ -2621,7 +2645,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "composite":
             sample_mass_rhs = decomposition.get_source_terms(
-                temperature=temperature,
+                temperature=sample_state.temperature,
                 chi=sample_state.dv.material_densities)
             
             source_species = make_obj_array([sample_zeros for i in range(nspecies)])
@@ -2629,7 +2653,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             sample_source_gas = -sum(sample_mass_rhs)
 
-            boundary_velocity = blowing_velocity(sample_cv, sample_source_gas)
+            # FIXME should this be speedup_factor or wall_timescale?
+            boundary_velocity = \
+                speedup_factor * blowing_velocity(sample_cv, sample_source_gas)
 
         sample_heterogeneous_source = make_conserved(dim=2,
             mass=sample_source_gas,
