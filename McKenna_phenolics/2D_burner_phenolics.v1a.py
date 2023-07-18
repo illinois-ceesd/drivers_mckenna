@@ -671,8 +671,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # discretization and model control
     order = 3
     use_overintegration = False
-    use_soln_filter = True
-    use_rhs_filter = True
+    use_soln_filter = False
+    use_rhs_filter = False
 
     x0_sponge = 0.150
     sponge_amp = 400.0
@@ -2253,7 +2253,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             return zeros
 
     # ~~~~~~
+
     from grudge.discretization import filter_part_boundaries
+    dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_sample,
+                                     neighbor_volume_dd=dd_vol_fluid)
+
+    # FIXME generalize this for multiple returned arguments in the list
+    interface_zeros = op.project(
+        dcoll, dd_vol_sample, dd_list[0], sample_nodes[0])*0.0
+
     def blowing_velocity(cv, source):
 
         # volume integral of the source terms
@@ -2261,21 +2269,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             integral(dcoll, dd_vol_sample, np.pi*source)
 
         # FIXME generalize this for multiple returned arguments in the list
-
         dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_sample,
-        neighbor_volume_dd=dd_vol_fluid)
+                                         neighbor_volume_dd=dd_vol_fluid)
 
         # restrict to coupled surface 
-        surface_density = op.project(dcoll, dd_vol_sample,
-                                     #dd_vol_sample.trace('fluid_sample_coupling'),
-                                     dd_list[0],
-                                     cv.mass)
+        surface_density = op.project(
+            dcoll, dd_vol_sample, dd_list[0], cv.mass)                                   
 
         # surfece integral of the density
         integral_surface_density = \
             integral(dcoll, dd_list[0], np.pi*surface_density)
 
-        return integral_volume_source/integral_surface_density
+        return integral_volume_source/integral_surface_density + interface_zeros
 
 ##############################################################################
 
@@ -2475,7 +2480,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         fluid_cv, fluid_tseed, \
         sample_cv, sample_tseed, sample_density, \
-        holder_cv = state
+        holder_cv, _ = state
 
         fluid_cv = force_evaluation(actx, fluid_cv)
         fluid_tseed = force_evaluation(actx, fluid_tseed)
@@ -2498,7 +2503,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if use_soln_filter:
             sample_cv = filter_sample_cv_compiled(sample_cv)
 
-        sample_state = get_sample_state(sample_cv, sample_density, sample_tseed)
+        sample_state = get_sample_state(sample_cv, sample_density,
+                                        sample_tseed)
         sample_cv = sample_state.cv
 
         # ~~~
@@ -2506,11 +2512,30 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         holder_state = get_holder_state(holder_cv)
 
         # ~~~
-        material_densities = gas_model_sample.wall.solid_density(sample_state.dv.material_densities)
-#        current_mass = integral(dcoll, dd_vol_sample, np.pi*sample_nodes[0]*material_densities)
+        wall_density = gas_model_sample.wall.solid_density(sample_state.dv.material_densities)
+#        current_mass = integral(dcoll, dd_vol_sample, np.pi*sample_nodes[0]*wall_density)
 #        print(current_mass*1000 - initial_mass*1000,'g')
 #        print(current_mass*1000,'g')
 #        print(initial_mass*1000,'g')
+
+        # ~~~
+        tau = gas_model_sample.wall.decomposition_progress(
+            sample_state.dv.material_densities)
+
+        if my_material == "fiber":
+            boundary_velocity = interface_zeros
+
+        if my_material == "composite":
+            sample_mass_rhs = decomposition.get_source_terms(
+                temperature=sample_state.temperature,
+                chi=sample_state.dv.material_densities)
+
+            sample_source_gas = -sum(sample_mass_rhs)
+
+            # FIXME should this be speedup_factor or wall_timescale?
+            # TODO compile this function
+            boundary_velocity = \
+                speedup_factor * blowing_velocity(sample_cv, sample_source_gas)
 
         if local_dt:
             t = force_evaluation(actx, t)
@@ -2521,7 +2546,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             dt = make_obj_array([dt_fluid, fluid_zeros,
                                  dt_sample, sample_zeros, dt_sample,
-                                 dt_holder])
+                                 dt_holder, interface_zeros])
         else:
             if constant_cfl:
                 dt = get_sim_timestep(dcoll, fluid_state, t, dt, maximum_cfl,
@@ -2531,7 +2556,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             state = make_obj_array([
                 fluid_cv, fluid_state.temperature,
                 sample_cv, sample_state.temperature, sample_state.dv.material_densities,
-                holder_cv])
+                holder_cv, boundary_velocity])
 
             do_garbage = check_step(step=step, interval=ngarbage)
             do_viz = check_step(step=step, interval=nviz)
@@ -2589,7 +2614,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         fluid_cv, fluid_tseed, \
         sample_cv, sample_tseed, sample_density, \
-        holder_cv = state
+        holder_cv, boundary_velocity = state
 
         # include both outflow and sponge in the damping region
         # apply outflow damping
@@ -2614,13 +2639,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         holder_state = _get_holder_state(holder_cv)
         holder_cv = holder_state.cv
 
-
-
-
-
-
-
-
         # the blowing velocity must be given in the coupling
         # I dont like to put the source term here, but let's see if it 
         # at least the results are making sense
@@ -2641,8 +2659,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             sample_source_gas = sample_source_O2 + sample_source_CO2
 
-            boundary_velocity = 0.0
-
         if my_material == "composite":
             sample_mass_rhs = decomposition.get_source_terms(
                 temperature=sample_state.temperature,
@@ -2652,10 +2668,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
 
             sample_source_gas = -sum(sample_mass_rhs)
-
-            # FIXME should this be speedup_factor or wall_timescale?
-            boundary_velocity = \
-                speedup_factor * blowing_velocity(sample_cv, sample_source_gas)
 
         sample_heterogeneous_source = make_conserved(dim=2,
             mass=sample_source_gas,
@@ -2679,8 +2691,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     fluid_boundaries, sample_boundaries,
                     interface_noslip=True,
                     interface_radiation=use_radiation,
-                    boundary_velocity=boundary_velocity,
-                    wall_penalty_amount=wall_penalty_amount)
+                    boundary_velocity=boundary_velocity)
 
             fluid_all_bnds_no_grad, holder_all_bnds_no_grad = \
                 add_thermal_interface_boundaries_no_grad(
@@ -2878,7 +2889,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return make_obj_array([
             fluid_rhs + fluid_sources, fluid_zeros,
             sample_rhs + sample_sources, sample_zeros, sample_mass_rhs,
-            holder_rhs + holder_sources])
+            holder_rhs + holder_sources, interface_zeros])
 
     unfiltered_rhs_compiled = actx.compile(unfiltered_rhs)
 
@@ -2887,13 +2898,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             rhs_state = unfiltered_rhs_compiled(t, state)
             filtered_sample_rhs = filter_sample_rhs_compiled(rhs_state[2])
 
-            #XXX necessary?
-            #filtered_sample_mass_rhs = filter_rhs_compiled(rhs_state[4], dd_vol_sample)
-
+            #XXX necessary to filter sample mass degradation term?
             return make_obj_array([
                 rhs_state[0], fluid_zeros,
                 filtered_sample_rhs, sample_zeros, rhs_state[4],
-                rhs_state[5]])
+                rhs_state[5], interface_zeros])
         
             return unfiltered_rhs_compiled(t, state)
 
@@ -2928,7 +2937,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     stepper_state = make_obj_array([
         fluid_state.cv, fluid_state.temperature,
         sample_state.cv, sample_state.temperature, sample_state.dv.material_densities,
-        holder_state.cv])
+        holder_state.cv, interface_zeros])
 
     if local_dt == True:
         dt_fluid = _my_get_timestep_fluid(
@@ -2943,14 +2952,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dt_holder = force_evaluation(actx, dt_holder)
 
         dt = make_obj_array([
-            dt_fluid, fluid_zeros, dt_sample, sample_zeros, dt_sample, dt_holder])
+            dt_fluid, fluid_zeros, dt_sample, sample_zeros, dt_sample, dt_holder, interface_zeros])
 
         t_fluid = force_evaluation(actx, current_t + fluid_zeros)
         t_sample = force_evaluation(actx, current_t + sample_zeros)
         t_holder = force_evaluation(actx, current_t + holder_zeros)
 
         t = make_obj_array([
-            t_fluid, t_fluid, t_sample, t_sample, t_sample, t_holder])
+            t_fluid, t_fluid, t_sample, t_sample, t_sample, t_holder, interface_zeros])
     else:
         if constant_cfl:
             dt = get_sim_timestep(dcoll, fluid_state, t, maximum_fluid_dt,
