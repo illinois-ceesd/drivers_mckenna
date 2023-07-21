@@ -114,7 +114,7 @@ from mirgecom.materials.initializer import (
     PorousWallInitializer
 )
 from mirgecom.wall_model import (
-    PorousWallEOS,
+    PorousFlowEOS,
     PorousWallDependentVars,
     SolidWallEOS,
     SolidWallState,
@@ -671,6 +671,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # discretization and model control
     order = 3
     use_overintegration = False
+    use_soln_filter = False
+    use_rhs_filter = False
 
     x0_sponge = 0.150
     sponge_amp = 400.0
@@ -994,7 +996,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                                    virgin_mass=280.0)
         decomposition = material_sample.Pyrolysis()   
 
-    sample_degradation_model = PorousWallEOS(wall_material=material)
+    sample_degradation_model = PorousFlowEOS(wall_material=material)
 
     # }}}
 
@@ -1133,6 +1135,70 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    # --- Filtering settings ---
+    # ------ Solution filtering
+    soln_filter_frac = 0.5
+    # soln_filter_cutoff = -1 => filter_frac*order)
+    soln_filter_cutoff = 1 #-1
+    soln_filter_order = 2
+    soln_filter_alpha = -1.0*np.log(np.finfo(float).eps)
+
+    # ------ RHS filtering
+    rhs_filter_frac = 0.5
+    rhs_filter_cutoff = 1 #-1
+    rhs_filter_order = 2
+    rhs_filter_alpha = -1.0*np.log(np.finfo(float).eps)
+
+    from mirgecom.filter import (
+        exponential_mode_response_function as xmrfunc,
+        filter_modally
+    )
+
+    if use_soln_filter:
+        if soln_filter_cutoff < 0:
+            soln_filter_cutoff = int(soln_filter_frac * order)
+
+        if soln_filter_cutoff >= order:
+            raise ValueError("Invalid setting for solution filter (cutoff >= order).")
+
+        soln_frfunc = partial(xmrfunc, alpha=soln_filter_alpha,
+                              filter_order=soln_filter_order)
+
+        logger.info("Solution filtering settings:")
+        logger.info(f" - filter alpha  = {soln_filter_alpha}")
+        logger.info(f" - filter cutoff = {soln_filter_cutoff}")
+        logger.info(f" - filter order  = {soln_filter_order}")
+
+        def filter_sample_cv(cv):
+            return filter_modally(dcoll, soln_filter_cutoff, soln_frfunc, cv,
+                                  dd=dd_vol_sample)
+
+        filter_sample_cv_compiled = actx.compile(filter_sample_cv)
+
+    if use_rhs_filter:
+
+        if rhs_filter_cutoff < 0:
+            rhs_filter_cutoff = int(rhs_filter_frac * order)
+
+        if rhs_filter_cutoff >= order:
+            raise ValueError("Invalid setting for RHS filter (cutoff >= order).")
+
+        rhs_frfunc = partial(xmrfunc, alpha=rhs_filter_alpha,
+                             filter_order=rhs_filter_order)
+
+        logger.info("RHS filtering settings:")
+        logger.info(f" - filter alpha  = {rhs_filter_alpha}")
+        logger.info(f" - filter cutoff = {rhs_filter_cutoff}")
+        logger.info(f" - filter order  = {rhs_filter_order}")
+
+        def filter_sample_rhs(rhs):
+            return filter_modally(dcoll, rhs_filter_cutoff, rhs_frfunc, rhs,
+                                  dd=dd_vol_sample)
+
+        filter_sample_rhs_compiled = actx.compile(filter_sample_rhs)
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
     def _limit_fluid_cv(cv, pressure, temperature, dd=None):
 
         # limit species
@@ -1164,7 +1230,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~
 
-    def _limit_sample_cv(cv, wv, pressure, temperature, epsilon, dd=None):
+    def _limit_sample_cv(cv, wdv, pressure, temperature, dd=None):
 
         # limit species
         spec_lim = make_obj_array([
@@ -1182,7 +1248,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         #XXX recompute density
         #XXX force pressure at 1atm
         #TODO get density as the sum of rho_Y? there is a source of species..
-        mass_lim = epsilon*gas_model_sample.eos.get_density(
+        mass_lim = wdv.void_fraction*gas_model_sample.eos.get_density(
             pressure=actx.np.zeros_like(pressure) + 101325.0,
             temperature=temperature, species_mass_fractions=spec_lim)
 
@@ -1196,10 +1262,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + 0.5*np.dot(velocity, velocity)
         )
 
-        tau = gas_model_sample.wall.decomposition_progress(wv)
-        eps_rho_solid = gas_model_sample.wall.solid_density(wv)
         energy_solid = \
-            eps_rho_solid*gas_model_sample.wall.enthalpy(temperature, tau)
+            wdv.density*gas_model_sample.wall.enthalpy(temperature, wdv.tau)
 
         energy = energy_gas + energy_solid
 
@@ -2433,7 +2497,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         fluid_cv = fluid_state.cv
 
         # ~~~
-        # get species-limited sample state
+        # get filtered then species-limited solid state
+        if use_soln_filter:
+            sample_cv = filter_sample_cv_compiled(sample_cv)
+
         sample_state = get_sample_state(sample_cv, sample_density,
                                         sample_tseed)
         sample_cv = sample_state.cv
@@ -2541,7 +2608,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return state, dt
 
-    def my_rhs(time, state):
+    def unfiltered_rhs(time, state):
 
         fluid_cv, fluid_tseed, \
         sample_cv, sample_tseed, sample_density, \
@@ -2665,7 +2732,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # fluid grad CV
         fluid_grad_cv = grad_cv_operator(
             dcoll, gas_model_fluid, fluid_all_bnds_no_grad, fluid_state,
-            quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
             operator_states_quad=fluid_operator_states_quad,
             #comm_tag=_FluidGradCVTag
         )
@@ -2673,7 +2740,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # fluid grad T
         fluid_grad_temperature = grad_t_operator(
             dcoll, gas_model_fluid, fluid_all_bnds_no_grad, fluid_state,
-            quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
             operator_states_quad=fluid_operator_states_quad,
             #comm_tag=_FluidGradTempTag
         )
@@ -2683,7 +2750,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             # sample grad CV
             sample_grad_cv = grad_cv_operator(
                 dcoll, gas_model_sample, sample_all_bnds_no_grad,
-                sample_state, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+                sample_state,
+                time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
                 operator_states_quad=sample_operator_states_quad,
                 #comm_tag=_SampleGradCVTag
             )
@@ -2691,7 +2759,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             # sample grad T
             sample_grad_temperature = grad_t_operator(
                 dcoll, gas_model_sample, sample_all_bnds_no_grad,
-                sample_state, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+                sample_state,
+                time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
                 operator_states_quad=sample_operator_states_quad,
                 #comm_tag=_SampleGradTempTag
             )
@@ -2761,7 +2830,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             sample_rhs = wall_time_scale * ns_operator(
                 dcoll, gas_model_sample, sample_state, sample_all_boundaries,
-                quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+                time=time, quadrature_tag=quadrature_tag, dd=dd_vol_sample,
                 operator_states_quad=sample_operator_states_quad,
                 grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
                 comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
@@ -2800,7 +2869,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         #~~~~~~~~~~~~~
         fluid_rhs = ns_operator(
             dcoll, gas_model_fluid, fluid_state, fluid_all_boundaries,
-            quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
+            time=time, quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
             operator_states_quad=fluid_operator_states_quad,
             grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
             comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
@@ -2820,6 +2889,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             sample_rhs + sample_sources, sample_zeros, sample_mass_rhs,
             holder_rhs + holder_sources, interface_zeros])
 
+    unfiltered_rhs_compiled = actx.compile(unfiltered_rhs)
+
+    def my_rhs(t, state):
+        if use_rhs_filter is True:
+            rhs_state = unfiltered_rhs_compiled(t, state)
+            filtered_sample_rhs = filter_sample_rhs_compiled(rhs_state[2])
+
+            #XXX necessary to filter sample mass degradation term?
+            return make_obj_array([
+                rhs_state[0], fluid_zeros,
+                filtered_sample_rhs, sample_zeros, rhs_state[4],
+                rhs_state[5], interface_zeros])
+
+        else:
+            return unfiltered_rhs(t, state)
 
     def my_post_step(step, t, dt, state):
         if step == first_step + 1:
@@ -2891,7 +2975,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             istep=current_step, dt=dt, t=t, t_final=t_final,
             max_steps=niter, local_dt=local_dt,
             force_eval=force_eval, state=stepper_state,
-            compile_rhs=False)
+            compile_rhs=False if use_rhs_filter is True else True)
 
 #    # 
 #    final_cv, tseed, final_wv, wv_tseed = stepper_state

@@ -51,7 +51,6 @@ from grudge.trace_pair import (
     inter_volume_trace_pairs
 )
 
-from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from mirgecom.utils import force_evaluation
 from mirgecom.simutil import (
     check_step, get_sim_timestep, distribute_mesh, write_visfile,
@@ -673,8 +672,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # discretization and model control
     order = 3
     use_overintegration = False
-    use_soln_filter = False
-    use_rhs_filter = False
+    use_soln_filter = True
+    use_rhs_filter = True
 
     x0_sponge = 0.150
     sponge_amp = 400.0
@@ -2490,74 +2489,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return state, dt
 
-    def unfiltered_rhs(time, state):
+    def get_node_count(ary):
+        if not isinstance(ary, DOFArray):
+            from arraycontext import map_reduce_array_container
+            return map_reduce_array_container(sum, get_node_count, ary)
 
-        fluid_cv, fluid_tseed, \
-        sample_cv, sample_tseed, sample_density, \
-        holder_cv, boundary_velocity = state
+        from pytato.analysis import get_num_nodes
+        return get_num_nodes(ary[0])
 
-        # include both outflow and sponge in the damping region
-        # apply outflow damping
-        smoothness = smooth_region + sponge_sigma/sponge_amp
-        fluid_cv = _drop_order_cv(fluid_cv, smoothness, theta_factor)
+    def _get_rhs(time, state):
 
-        # construct species-limited fluid state
-        fluid_state = make_fluid_state(cv=fluid_cv, gas_model=gas_model_fluid,
-            temperature_seed=fluid_tseed,
-            limiter_func=_limit_fluid_cv, limiter_dd=dd_vol_fluid
-        )
+        fluid_state, sample_state, holder_state, boundary_velocity = state
+
         fluid_cv = fluid_state.cv
-
-        # construct species-limited solid state
-        if use_soln_filter:
-            sample_cv = filter_sample_cv(sample_cv)
-
-        sample_state = make_fluid_state(cv=sample_cv, gas_model=gas_model_sample,
-            material_densities=sample_density, temperature_seed=sample_tseed,
-            limiter_func=_limit_sample_cv, limiter_dd=dd_vol_sample
-        )
         sample_cv = sample_state.cv
-
-        # construct species-limited solid state
-        holder_state = _get_holder_state(holder_cv)
         holder_cv = holder_state.cv
-
-        # the blowing velocity must be given in the coupling
-        # I dont like to put the source term here, but let's see if it 
-        # at least the results are making sense
-
-        # another possibility is to make the source term part of the wall state
-        tau = gas_model_sample.wall.decomposition_progress(
-            sample_state.dv.material_densities)
-
-        if my_material == "fiber":
-            sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
-                decomposition.get_source_terms(
-                    sample_state.temperature, tau,
-                    sample_state.cv.species_mass[cantera_soln.species_index("O2")])
-
-            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
-            source_species[cantera_soln.species_index("O2")] = sample_source_O2
-            source_species[cantera_soln.species_index("CO2")] = sample_source_CO2
-
-            sample_source_gas = sample_source_O2 + sample_source_CO2
-
-        if my_material == "composite":
-            sample_mass_rhs = decomposition.get_source_terms(
-                temperature=sample_state.temperature,
-                chi=sample_state.dv.material_densities)
-            
-            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
-            source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
-
-            sample_source_gas = -sum(sample_mass_rhs)
-
-        sample_heterogeneous_source = make_conserved(dim=2,
-            mass=sample_source_gas,
-            energy=sample_zeros,
-            momentum=make_obj_array([sample_zeros, sample_zeros]),
-            species_mass=source_species
-        )
 
         #~~~~~~~~~~~~~
 
@@ -2630,64 +2576,60 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             #comm_tag=_FluidGradTempTag
         )
 
-        if True:
+        # sample grad CV
+        sample_grad_cv = grad_cv_operator(
+            dcoll, gas_model_sample, sample_all_bnds_no_grad,
+            sample_state,
+            quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+            operator_states_quad=sample_operator_states_quad,
+            #comm_tag=_SampleGradCVTag
+        )
 
-            # sample grad CV
-            sample_grad_cv = grad_cv_operator(
-                dcoll, gas_model_sample, sample_all_bnds_no_grad,
-                sample_state,
-                quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-                operator_states_quad=sample_operator_states_quad,
-                #comm_tag=_SampleGradCVTag
-            )
+        # sample grad T
+        sample_grad_temperature = grad_t_operator(
+            dcoll, gas_model_sample, sample_all_bnds_no_grad,
+            sample_state,
+            quadrature_tag=quadrature_tag, dd=dd_vol_sample,
+            operator_states_quad=sample_operator_states_quad,
+            #comm_tag=_SampleGradTempTag
+        )
 
-            # sample grad T
-            sample_grad_temperature = grad_t_operator(
-                dcoll, gas_model_sample, sample_all_bnds_no_grad,
-                sample_state,
-                quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-                operator_states_quad=sample_operator_states_quad,
-                #comm_tag=_SampleGradTempTag
-            )
-
-            # holder grad T
-            holder_grad_temperature = wall_grad_t_operator(
-                dcoll, holder_state.dv.thermal_conductivity,
-                holder_all_bnds_no_grad, holder_state.dv.temperature,
-                quadrature_tag=quadrature_tag, dd=dd_vol_holder,
-                #comm_tag=_HolderGradTempTag
-            )
+        # holder grad T
+        holder_grad_temperature = wall_grad_t_operator(
+            dcoll, holder_state.dv.thermal_conductivity,
+            holder_all_bnds_no_grad, holder_state.dv.temperature,
+            quadrature_tag=quadrature_tag, dd=dd_vol_holder,
+            #comm_tag=_HolderGradTempTag
+        )
 
         # ~~~~~~~~~~~~~~~~~
 
-        if True:
+        fluid_all_boundaries, sample_all_boundaries = \
+            add_multiphysics_interface_boundaries(
+                dcoll, dd_vol_fluid, dd_vol_sample,
+                fluid_state, sample_state,
+                fluid_grad_cv, sample_grad_cv,
+                fluid_grad_temperature, sample_grad_temperature,
+                fluid_boundaries, sample_boundaries,
+                interface_noslip=True,
+                boundary_velocity=boundary_velocity,
+                interface_radiation=use_radiation,
+                wall_emissivity=emissivity, sigma=5.67e-8,
+                ambient_temperature=300.0,
+                wall_penalty_amount=wall_penalty_amount)
 
-            fluid_all_boundaries, sample_all_boundaries = \
-                add_multiphysics_interface_boundaries(
-                    dcoll, dd_vol_fluid, dd_vol_sample,
-                    fluid_state, sample_state,
-                    fluid_grad_cv, sample_grad_cv,
-                    fluid_grad_temperature, sample_grad_temperature,
-                    fluid_boundaries, sample_boundaries,
-                    interface_noslip=True,
-                    boundary_velocity=boundary_velocity,
-                    interface_radiation=use_radiation,
-                    wall_emissivity=emissivity, sigma=5.67e-8,
-                    ambient_temperature=300.0,
-                    wall_penalty_amount=wall_penalty_amount)
-
-            fluid_all_boundaries, holder_all_boundaries = \
-                add_thermal_interface_boundaries(
-                    dcoll, gas_model_fluid, dd_vol_fluid, dd_vol_holder,
-                    fluid_state, holder_state.dv.thermal_conductivity,
-                    holder_state.dv.temperature,
-                    fluid_grad_temperature, holder_grad_temperature,
-                    fluid_all_boundaries, holder_boundaries,
-                    interface_noslip=True,
-                    interface_radiation=use_radiation,
-                    wall_emissivity=emissivity, sigma=5.67e-8,
-                    ambient_temperature=300.0,
-                    wall_penalty_amount=wall_penalty_amount)
+        fluid_all_boundaries, holder_all_boundaries = \
+            add_thermal_interface_boundaries(
+                dcoll, gas_model_fluid, dd_vol_fluid, dd_vol_holder,
+                fluid_state, holder_state.dv.thermal_conductivity,
+                holder_state.dv.temperature,
+                fluid_grad_temperature, holder_grad_temperature,
+                fluid_all_boundaries, holder_boundaries,
+                interface_noslip=True,
+                interface_radiation=use_radiation,
+                wall_emissivity=emissivity, sigma=5.67e-8,
+                ambient_temperature=300.0,
+                wall_penalty_amount=wall_penalty_amount)
 
 
         if ignore_wall is False:
@@ -2704,15 +2646,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         #~~~~~~~~~~~~~
         if ignore_wall:
-
             sample_rhs = sample_zeros*0.0
 
-            sample_sources = sample_zeros*0.0
-
-            sample_mass_rhs = sample_zeros*0.0
-
         else:
-
             sample_rhs = wall_time_scale * ns_operator(
                 dcoll, gas_model_sample, sample_state, sample_all_boundaries,
                 quadrature_tag=quadrature_tag, dd=dd_vol_sample,
@@ -2720,22 +2656,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
                 comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
 
-            sample_sources = wall_time_scale*(
-                #eos.get_species_source_terms(sample_cv, sample_state.temperature)
-                + sample_heterogeneous_source
-                + axisym_source_sample(actx, dcoll, sample_state, 
-                                       sample_grad_cv,
-                                       sample_grad_temperature))
-
         #~~~~~~~~~~~~~
         if ignore_wall:
-
             holder_rhs = holder_zeros*0.0
-
-            holder_sources = holder_zeros*0.0
-
         else:
-
             holder_energy_rhs = wall_time_scale * diffusion_operator(
                 dcoll, holder_state.dv.thermal_conductivity,
                 holder_all_boundaries, holder_state.dv.temperature,
@@ -2746,9 +2670,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             holder_rhs = SolidWallConservedVars(mass=holder_zeros,
                                                 energy=holder_energy_rhs)
 
-            holder_sources = wall_time_scale * axisym_source_holder(
-                actx, dcoll, holder_state, holder_grad_temperature)
-
         #~~~~~~~~~~~~~
         fluid_rhs = ns_operator(
             dcoll, gas_model_fluid, fluid_state, fluid_all_boundaries,
@@ -2756,14 +2677,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             operator_states_quad=fluid_operator_states_quad,
             grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
             comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
-
-        fluid_sources = (
-            chemical_source_term(fluid_cv, fluid_state.temperature)
-            + sponge_func(cv=fluid_cv, cv_ref=ref_cv, sigma=sponge_sigma)
-            + gravity_source_terms(fluid_cv)
-            + axisym_source_fluid(actx, dcoll, fluid_state,
-                                  fluid_grad_cv, fluid_grad_temperature)
-        )
 
         #~~~~~~~~~~~~~
 
@@ -2779,19 +2692,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         print(f"{get_max_node_depth(fluid_rhs.species_mass[4][0])=}")
         print(f"{get_max_node_depth(fluid_rhs.species_mass[5][0])=}")
         print(f"{get_max_node_depth(fluid_rhs.species_mass[6][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.mass[0])=}")
-        print(f"{get_max_node_depth(fluid_sources.energy[0])=}")
-        print(f"{get_max_node_depth(fluid_sources.momentum[0][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.momentum[1][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[0][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[1][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[2][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[3][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[4][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[5][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[6][0])=}")
         print('')
-        print(f"{get_max_node_depth(sample_mass_rhs[0])=}")
         print(f"{get_max_node_depth(sample_rhs.mass[0])=}")
         print(f"{get_max_node_depth(sample_rhs.energy[0])=}")
         print(f"{get_max_node_depth(sample_rhs.momentum[0][0])=}")
@@ -2803,6 +2704,109 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         print(f"{get_max_node_depth(sample_rhs.species_mass[4][0])=}")
         print(f"{get_max_node_depth(sample_rhs.species_mass[5][0])=}")
         print(f"{get_max_node_depth(sample_rhs.species_mass[6][0])=}")
+        print('')
+        print(f"{get_max_node_depth(holder_rhs.mass[0])=}")
+        print(f"{get_max_node_depth(holder_rhs.energy[0])=}")
+
+#        print('')
+#        print(f"{get_node_count(fluid_cv)=}")
+#        print(f"{get_node_count(fluid_state)=}")
+#        print(f"{get_node_count(fluid_operator_states_quad)=}")
+#        print(f"{get_node_count(fluid_all_bnds_no_grad)=}")
+#        print(f"{get_node_count(fluid_all_boundaries)=}")        
+#        print(f"{get_node_count(fluid_grad_cv)=}")
+#        print(f"{get_node_count(fluid_grad_temperature)=}")
+
+        print('')
+        print(f"{get_node_count(fluid_rhs)=}")
+        print(f"{get_node_count(sample_rhs)=}")
+        print(f"{get_node_count(holder_rhs)=}")
+
+        return make_obj_array([
+            make_obj_array([fluid_rhs, sample_rhs, holder_rhs]),
+            make_obj_array([fluid_grad_cv, fluid_grad_temperature,
+                            sample_grad_cv, sample_grad_temperature,
+                            holder_grad_temperature])
+        ])
+
+    get_rhs_compiled = actx.compile(_get_rhs)
+
+    def _get_sources(state, gradients):
+
+        fluid_state, sample_state, holder_state, _ = state
+
+        fluid_grad_cv, fluid_grad_temperature, \
+            sample_grad_cv, sample_grad_temperature, \
+            holder_grad_temperature = gradients
+
+        fluid_cv = fluid_state.cv
+        sample_cv = sample_state.cv
+        holder_cv = holder_state.cv
+
+        # another possibility is to make the source term part of the wall state
+        tau = gas_model_sample.wall.decomposition_progress(
+            sample_state.dv.material_densities)
+
+        if my_material == "fiber":
+            sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
+                decomposition.get_source_terms(
+                    sample_state.temperature, tau,
+                    sample_state.cv.species_mass[cantera_soln.species_index("O2")])
+
+            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
+            source_species[cantera_soln.species_index("O2")] = sample_source_O2
+            source_species[cantera_soln.species_index("CO2")] = sample_source_CO2
+
+            sample_source_gas = sample_source_O2 + sample_source_CO2
+
+        if my_material == "composite":
+            sample_mass_rhs = decomposition.get_source_terms(
+                temperature=sample_state.temperature,
+                chi=sample_state.dv.material_densities)
+            
+            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
+            source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
+
+            sample_source_gas = -sum(sample_mass_rhs)
+
+        sample_heterogeneous_source = make_conserved(dim=2,
+            mass=sample_source_gas,
+            energy=sample_zeros,
+            momentum=make_obj_array([sample_zeros, sample_zeros]),
+            species_mass=source_species
+        )
+
+        sample_sources = wall_time_scale*(
+            #eos.get_species_source_terms(sample_cv, sample_state.temperature)
+            + sample_heterogeneous_source
+            + axisym_source_sample(actx, dcoll, sample_state, 
+                                   sample_grad_cv,
+                                   sample_grad_temperature))
+
+        holder_sources = wall_time_scale * axisym_source_holder(
+            actx, dcoll, holder_state, holder_grad_temperature)
+
+        fluid_sources = (
+            chemical_source_term(fluid_cv, fluid_state.temperature)
+            + sponge_func(cv=fluid_cv, cv_ref=ref_cv, sigma=sponge_sigma)
+            + gravity_source_terms(fluid_cv)
+            + axisym_source_fluid(actx, dcoll, fluid_state,
+                                  fluid_grad_cv, fluid_grad_temperature)
+        )
+
+        print(f"{get_max_node_depth(fluid_sources.mass[0])=}")
+        print(f"{get_max_node_depth(fluid_sources.energy[0])=}")
+        print(f"{get_max_node_depth(fluid_sources.momentum[0][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.momentum[1][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.species_mass[0][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.species_mass[1][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.species_mass[2][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.species_mass[3][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.species_mass[4][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.species_mass[5][0])=}")
+        print(f"{get_max_node_depth(fluid_sources.species_mass[6][0])=}")
+        print(' ')
+        print(f"{get_max_node_depth(sample_mass_rhs[0])=}")
         print(f"{get_max_node_depth(sample_sources.mass[0])=}")
         print(f"{get_max_node_depth(sample_sources.energy[0])=}")
         print(f"{get_max_node_depth(sample_sources.momentum[0][0])=}")
@@ -2814,34 +2818,67 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         print(f"{get_max_node_depth(sample_sources.species_mass[4][0])=}")
         print(f"{get_max_node_depth(sample_sources.species_mass[5][0])=}")
         print(f"{get_max_node_depth(sample_sources.species_mass[6][0])=}")
-        print('')
-        print(f"{get_max_node_depth(holder_rhs.mass[0])=}")
-        print(f"{get_max_node_depth(holder_rhs.energy[0])=}")
+        print(' ')
         print(f"{get_max_node_depth(holder_sources.mass[0])=}")
         print(f"{get_max_node_depth(holder_sources.energy[0])=}")
 
-        sys.exit()
+        print(' ')
+        print(f"{get_node_count(fluid_sources)=}")
+        print(f"{get_node_count(sample_sources)=}")
+        print(f"{get_node_count(holder_sources)=}")
+        print(f"{get_node_count(sample_mass_rhs)=}")
 
         return make_obj_array([
-            fluid_rhs + fluid_sources, fluid_zeros,
-            sample_rhs + sample_sources, sample_zeros, sample_mass_rhs,
-            holder_rhs + holder_sources, interface_zeros])
+            fluid_sources, sample_sources, holder_sources, sample_mass_rhs])
 
-    unfiltered_rhs_compiled = actx.compile(unfiltered_rhs)
+    get_sources_compiled = actx.compile(_get_sources)
 
     def my_rhs(t, state):
-        if use_rhs_filter is True:
-            rhs_state = unfiltered_rhs_compiled(t, state)
-            filtered_sample_rhs = filter_sample_rhs_compiled(rhs_state[2])
+
+        fluid_cv, fluid_tseed, \
+        sample_cv, sample_tseed, sample_density, \
+        holder_cv, boundary_velocity = state
+
+        # include both outflow and sponge in the damping region
+        # apply outflow damping
+        smoothness = force_evaluation(actx, smooth_region + sponge_sigma/sponge_amp)
+        fluid_cv = drop_order_cv(fluid_cv, smoothness, theta_factor)
+
+        # construct species-limited fluid state
+        fluid_state = get_fluid_state(fluid_cv, fluid_tseed)
+        fluid_state = force_evaluation(actx, fluid_state)
+
+        # construct species-limited solid state
+        # if use_soln_filter:
+        #     sample_cv = filter_sample_cv_compiled(sample_cv)
+
+        sample_state = get_sample_state(sample_cv, sample_density,
+                                        sample_tseed)
+        sample_state = force_evaluation(actx, sample_state)
+
+        # construct species-limited solid state
+        holder_state = get_holder_state(holder_cv)
+        holder_state = force_evaluation(actx, holder_state)
+
+        actual_state = make_obj_array([fluid_state, sample_state,
+                                       holder_state, boundary_velocity])
+
+        result = get_rhs_compiled(t, actual_state)
+        rhs = result[0]
+        gradients = result[1]
+
+        sources = get_sources_compiled(actual_state, gradients)
+
+        if use_rhs_filtered:
+            filtered_sample_rhs = filter_sample_rhs_compiled(rhs[1])
 
             #XXX necessary to filter sample mass degradation term?
             return make_obj_array([
-                rhs_state[0], fluid_zeros,
-                filtered_sample_rhs, sample_zeros, rhs_state[4],
-                rhs_state[5], interface_zeros])
+                rhs[0] + sources[0], fluid_zeros,
+                filtered_sample_rhs + sources[1], sample_zeros, sources[4],
+                rhs[2] + sources[2], interface_zeros])
 
-        else:
-            return unfiltered_rhs(t, state)
+        return rhs
 
     def my_post_step(step, t, dt, state):
         if step == first_step + 1:
@@ -2913,7 +2950,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             istep=current_step, dt=dt, t=t, t_final=t_final,
             max_steps=niter, local_dt=local_dt,
             force_eval=force_eval, state=stepper_state,
-            compile_rhs=False if use_rhs_filter is True else True)
+            compile_rhs=False)
 
 #    # 
 #    final_cv, tseed, final_wv, wv_tseed = stepper_state
