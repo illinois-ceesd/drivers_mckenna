@@ -76,7 +76,8 @@ from mirgecom.fluid import (
 from mirgecom.transport import (
     SimpleTransport,
     PowerLawTransport,
-    MixtureAveragedTransport
+    MixtureAveragedTransport,
+    PorousWallTransport
 )
 import cantera
 from mirgecom.eos import PyrometheusMixture
@@ -114,9 +115,8 @@ from mirgecom.materials.initializer import (
     PorousWallInitializer
 )
 from mirgecom.wall_model import (
-    PorousFlowEOS,
-    PorousWallDependentVars,
-    SolidWallEOS,
+    PorousFlowModel,
+    SolidWallModel,
     SolidWallState,
     SolidWallDependentVars,
     SolidWallConservedVars,
@@ -671,7 +671,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     maximum_cfl = 0.2
     
     # discretization and model control
-    order = 3
+    order = 1
     use_overintegration = False
     use_soln_filter = False
     use_rhs_filter = False
@@ -684,7 +684,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     my_mechanism = "uiuc_7sp"
 #    my_mechanism = "uiuc_7sp_phenol"
     equiv_ratio = 0.7
-    chem_rate = 1.0 #keep it between 0.0 and 1.0
+    chem_rate = 0.3 #keep it between 0.0 and 1.0
     flow_rate = 25.0
     shroud_rate = 11.85
     Twall = 300.0
@@ -695,7 +695,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     transport = "PowerLaw"
 
     # wall stuff
-    ignore_wall = False
+    ignore_wall = True
     my_material = "fiber"
 #    my_material = "composite"
     temp_wall = 300
@@ -703,7 +703,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_penalty_amount = 1.0
     wall_time_scale = speedup_factor*25.0
 
-    use_radiation = False
+    use_radiation = True
     emissivity = 0.85*speedup_factor
 
     restart_iterations = False
@@ -977,8 +977,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~ porous media
     # do not scale the transport model because the RHS will be scaled
-    sample_transport = PowerLawTransport(lewis=np.ones(nspecies,),
-                                         beta=4.093e-7)
+    base_transport = PowerLawTransport(lewis=np.ones(nspecies,), beta=4.093e-7)
+    sample_transport = PorousWallTransport(base_transport=base_transport)
 
     # }}}
 
@@ -997,8 +997,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         material = material_sample.SolidProperties(char_mass=220.0,
                                                    virgin_mass=280.0)
         decomposition = material_sample.Pyrolysis()   
-
-    sample_degradation_model = PorousFlowEOS(wall_material=material)
 
     # }}}
 
@@ -1035,7 +1033,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return (wall_alumina_kappa * wall_alumina_mask
                 + wall_graphite_kappa * wall_graphite_mask)
 
-    holder_wall_model = SolidWallEOS(
+    holder_wall_model = SolidWallModel(
         density_func=_get_holder_density,
         enthalpy_func=_get_holder_enthalpy,
         heat_capacity_func=_get_holder_heat_capacity,
@@ -1045,9 +1043,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     gas_model_fluid = GasModel(eos=eos, transport=physical_transport)
 
-    gas_model_sample = GasModel(eos=eos, wall=sample_degradation_model, 
-                                transport=sample_transport
-                                )
+    gas_model_sample = PorousFlowModel(eos=eos, transport=sample_transport,
+                                       wall_model=material)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1232,7 +1229,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~
 
-    def _limit_sample_cv(cv, wdv, pressure, temperature, dd=None):
+    def _limit_sample_cv(cv, wv, pressure, temperature, dd=None):
 
         # limit species
         spec_lim = make_obj_array([
@@ -1250,7 +1247,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         #XXX recompute density
         #XXX force pressure at 1atm
         #TODO get density as the sum of rho_Y? there is a source of species..
-        mass_lim = wdv.void_fraction*gas_model_sample.eos.get_density(
+        mass_lim = wv.void_fraction*gas_model_sample.eos.get_density(
             pressure=actx.np.zeros_like(pressure) + 101325.0,
             temperature=temperature, species_mass_fractions=spec_lim)
 
@@ -1265,7 +1262,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
 
         energy_solid = \
-            wdv.density*gas_model_sample.wall.enthalpy(temperature, wdv.tau)
+            wv.density*gas_model_sample.wall_model.enthalpy(temperature, wv.tau)
 
         energy = energy_gas + energy_solid
 
@@ -1356,9 +1353,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                              solve_the_flame=solve_the_flame)
         fluid_cv = fluid_init(actx, fluid_nodes, eos, solve_the_flame=solve_the_flame)
 
-        sample_cv = sample_init(actx, sample_nodes, gas_model_sample) #FIXME
+        sample_cv = sample_init(2, sample_nodes, gas_model_sample)
 
-        holder_cv = holder_init(actx, holder_nodes, holder_wall_model)
+        holder_cv = holder_init(holder_nodes, holder_wall_model)
 
     else:
         current_step = restart_step
@@ -1461,7 +1458,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # track mass loss
     from grudge.reductions import integral
 
-    eps_rho_solid = gas_model_sample.wall.solid_density(sample_density)
+    eps_rho_solid = gas_model_sample.solid_density(sample_density)
     initial_mass = integral(dcoll, dd_vol_sample,
                             np.pi*sample_nodes[0]*eps_rho_solid + sample_zeros)
 
@@ -1695,25 +1692,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             print('Writing solution file...')
 
-#        grads = my_gradients(t, fluid_state, sample_state, holder_state)
-#        fluid_grad_t = grads[1]
-
-        if rhs is not None:
-            fluid_rhs = rhs[0]
-            sample_rhs = rhs[2]
-            holder_rhs = rhs[5]
-        else:
-            fluid_rhs = None
-            sample_rhs = None
-            holder_rhs = None
-
-#        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
-
-        enthalpy = eos.get_internal_energy(fluid_state.temperature,
-            fluid_state.cv.species_mass_fractions) - eos.gas_const(fluid_state.cv)*fluid_state.temperature
-
-        heat_capacity = eos.heat_capacity_cp(fluid_state.cv, fluid_state.temperature)
-
         fluid_viz_fields = [
             ("rho_g", fluid_state.cv.mass),
             ("rhoU_g", fluid_state.cv.momentum),
@@ -1727,12 +1705,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #            ("smoothness", 1.0 - theta_factor*smoothness),
 #            ("RR", chem_rate*reaction_rates_damping),
 #            ("heat_rls", heat_rls),
-            ("fluid_rhs", fluid_rhs),
-#            ("h_e", enthalpy),
-#            ("heat_capacity", heat_capacity),
-#            ("viscosity", fluid_state.tv.viscosity),
-#            ("kappa", fluid_state.tv.thermal_conductivity),
-#            ("grad_T", fluid_grad_t)
         ]
 
         # species mass fractions
@@ -1744,19 +1716,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             vizname=vizname+"-fluid", step=step, t=t, overwrite=True, comm=comm)
 
         # ~~~ Sample
-        wdv = gas_model_sample.wall.dependent_vars(sample_state.dv.material_densities)
-
-        wall_mass = gas_model_sample.wall.solid_density(sample_state.dv.material_densities)
+        wv = sample_state.wv 
+        wall_mass = gas_model_sample.solid_density(sample_state.wv.material_densities)
         wall_conductivity = material.thermal_conductivity(
-            temperature=sample_state.dv.temperature, tau=wdv.tau)
+            temperature=sample_state.dv.temperature, tau=wv.tau)
         wall_heat_capacity = material.heat_capacity(
-            temperature=sample_state.dv.temperature, tau=wdv.tau)
+            temperature=sample_state.dv.temperature, tau=wv.tau)
         wall_heat_diffusivity = wall_conductivity/(wall_mass * wall_heat_capacity)            
         
         if my_material == "fiber":
             sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
                 decomposition.get_source_terms(
-                    sample_state.temperature, wdv.tau,
+                    sample_state.temperature, wv.tau,
                     sample_state.cv.species_mass[cantera_soln.species_index("O2")])
 
             source_species = make_obj_array([sample_zeros for i in range(nspecies)])
@@ -1768,7 +1739,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if my_material == "composite":
             sample_mass_rhs = decomposition.get_source_terms(
                 temperature=sample_state.temperature,
-                chi=sample_state.dv.material_densities)
+                chi=sample_state.wv.material_densities)
             
             source_species = make_obj_array([sample_zeros for i in range(nspecies)])
             source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
@@ -1781,20 +1752,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("rhoE_b", sample_state.cv.energy),
             ("pressure", sample_state.pressure),
             ("temperature", sample_state.temperature),
-            ("solid_mass", sample_state.dv.material_densities),
+            ("solid_mass", sample_state.wv.material_densities),
             ("viscosity", sample_state.tv.viscosity),
             ("kappa", sample_state.thermal_conductivity),
             ("alpha", wall_heat_diffusivity),
             ("ox_diff", sample_state.tv.species_diffusivity[1]),
             ("Vx", sample_state.velocity[0]),
             ("Vy", sample_state.velocity[1]),
-            ("void_fraction", wdv.void_fraction),
-            ("progress", wdv.tau),
-            ("permeability", wdv.permeability),
+            ("progress", wv.tau),
             ("dt", dt[2] if local_dt else None),
             ("source_solid", sample_mass_rhs),
-            ("source_gas", sample_source_gas),
-            ("sample_rhs", sample_rhs),
+            ("source_O2", sample_source_O2),
+            ("source_CO2", sample_source_CO2),
         ]
 
         # species mass fractions
@@ -1812,7 +1781,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("temperature", holder_state.dv.temperature),
             ("kappa", holder_state.dv.thermal_conductivity),
             ("dt", dt[5] if local_dt else None),
-            ("holder_rhs", holder_rhs),
         ]
         write_visfile(dcoll, holder_viz_fields, holder_visualizer,
             vizname=vizname+"-holder", step=step, t=t, overwrite=True, comm=comm)
@@ -1829,7 +1797,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 "fluid_cv": fluid_state.cv,
                 "fluid_temperature_seed": fluid_state.temperature,
                 "sample_cv": sample_state.cv,
-                "sample_density": sample_state.dv.material_densities,
+                "sample_density": sample_state.wv.material_densities,
                 "sample_temperature_seed": sample_state.dv.temperature,
                 "holder_cv": holder_state.cv,
                 "nspecies": nspecies,
@@ -2288,13 +2256,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def _my_get_timestep_sample(state):
         return maximum_solid_dt + actx.np.zeros_like(state.cv.energy)
 
-#        wdv = gas_model_sample.wall.dependent_vars(state.dv.material_densities)
-
-#        wall_mass = gas_model_sample.wall.solid_density(state.dv.material_densities)
+#        wv = state.wv
+#        wall_mass = gas_model_sample.solid_density(state.wv.material_densities)
 #        wall_conductivity = material.thermal_conductivity(
-#            temperature=state.dv.temperature, tau=wdv.tau)
+#            temperature=state.dv.temperature, tau=wv.tau)
 #        wall_heat_capacity = material.heat_capacity(
-#            temperature=state.dv.temperature, tau=wdv.tau)
+#            temperature=state.dv.temperature, tau=wv.tau)
 
 #        wall_heat_diffusivity = wall_conductivity/(wall_mass * wall_heat_capacity)
 #        wall_spec_diffusivity = get_local_max_species_diffusivity(actx, state.tv.species_diffusivity)
@@ -2317,11 +2284,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def _my_get_timestep_holder(state):
         return maximum_solid_dt + actx.np.zeros_like(state.cv.energy)
 
-#        wdv = state.dv
+#        dv = state.dv
 
 #        wall_mass = holder_wall_model.density()
-#        wall_conductivity = holder_wall_model.thermal_conductivity(wdv.temperature)
-#        wall_heat_capacity = holder_wall_model.heat_capacity(wdv.temperature)
+#        wall_conductivity = holder_wall_model.thermal_conductivity(dv.temperature)
+#        wall_heat_capacity = holder_wall_model.heat_capacity(dv.temperature)
 
 #        wall_heat_diffusivity = wall_conductivity/(wall_mass * wall_heat_capacity)
 
@@ -2396,19 +2363,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         holder_state = get_holder_state(holder_cv)
 
         # ~~~
-        wall_density = gas_model_sample.wall.solid_density(sample_state.dv.material_densities)
-
-        # ~~~
-        tau = gas_model_sample.wall.decomposition_progress(
-            sample_state.dv.material_densities)
-
         if my_material == "fiber":
             boundary_velocity = interface_zeros
 
         if my_material == "composite":
             sample_mass_rhs = decomposition.get_source_terms(
                 temperature=sample_state.temperature,
-                chi=sample_state.dv.material_densities)
+                chi=sample_state.wv.material_densities)
 
             sample_source_gas = -sum(sample_mass_rhs)
 
@@ -2434,7 +2395,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         try:
             state = make_obj_array([
                 fluid_cv, fluid_state.temperature,
-                sample_cv, sample_state.temperature, sample_state.dv.material_densities,
+                sample_cv, sample_state.temperature, sample_state.wv.material_densities,
                 holder_cv, boundary_velocity])
 
             do_garbage = check_step(step=step, interval=ngarbage)
@@ -2527,8 +2488,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # at least the results are making sense
 
         # another possibility is to make the source term part of the wall state
-        tau = gas_model_sample.wall.decomposition_progress(
-            sample_state.dv.material_densities)
+        tau = gas_model_sample.wall_model.decomposition_progress(
+            sample_state.wv.material_densities)
 
         if my_material == "fiber":
             sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
@@ -2545,7 +2506,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if my_material == "composite":
             sample_mass_rhs = decomposition.get_source_terms(
                 temperature=sample_state.temperature,
-                chi=sample_state.dv.material_densities)
+                chi=sample_state.wv.material_densities)
             
             source_species = make_obj_array([sample_zeros for i in range(nspecies)])
             source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
@@ -2570,8 +2531,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             fluid_all_bnds_no_grad, sample_all_bnds_no_grad = \
                 add_multiphysics_interface_boundaries_no_grad(
                     dcoll, dd_vol_fluid, dd_vol_sample,
+                    gas_model_fluid, gas_model_sample,
                     fluid_state, sample_state,
                     fluid_boundaries, sample_boundaries,
+                    limiter_func_fluid=_limit_fluid_cv,
+                    limiter_func_wall=_limit_sample_cv,
                     interface_noslip=True,
                     interface_radiation=use_radiation,
                     boundary_velocity=boundary_velocity)
@@ -2665,10 +2629,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             fluid_all_boundaries, sample_all_boundaries = \
                 add_multiphysics_interface_boundaries(
                     dcoll, dd_vol_fluid, dd_vol_sample,
+                    gas_model_fluid, gas_model_sample,
                     fluid_state, sample_state,
                     fluid_grad_cv, sample_grad_cv,
                     fluid_grad_temperature, sample_grad_temperature,
                     fluid_boundaries, sample_boundaries,
+                    limiter_func_fluid=_limit_fluid_cv,
+                    limiter_func_wall=_limit_sample_cv,
                     interface_noslip=True,
                     boundary_velocity=boundary_velocity,
                     interface_radiation=use_radiation,
@@ -2767,60 +2734,58 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         #~~~~~~~~~~~~~
 
-        from pytato.analysis import get_max_node_depth
-        print(f"{get_max_node_depth(fluid_rhs.mass[0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.energy[0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.momentum[0][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.momentum[1][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.species_mass[0][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.species_mass[1][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.species_mass[2][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.species_mass[3][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.species_mass[4][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.species_mass[5][0])=}")
-        print(f"{get_max_node_depth(fluid_rhs.species_mass[6][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.mass[0])=}")
-        print(f"{get_max_node_depth(fluid_sources.energy[0])=}")
-        print(f"{get_max_node_depth(fluid_sources.momentum[0][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.momentum[1][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[0][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[1][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[2][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[3][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[4][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[5][0])=}")
-        print(f"{get_max_node_depth(fluid_sources.species_mass[6][0])=}")
-        print('')
-        print(f"{get_max_node_depth(sample_mass_rhs[0])=}")
-        print(f"{get_max_node_depth(sample_rhs.mass[0])=}")
-        print(f"{get_max_node_depth(sample_rhs.energy[0])=}")
-        print(f"{get_max_node_depth(sample_rhs.momentum[0][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.momentum[1][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.species_mass[0][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.species_mass[1][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.species_mass[2][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.species_mass[3][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.species_mass[4][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.species_mass[5][0])=}")
-        print(f"{get_max_node_depth(sample_rhs.species_mass[6][0])=}")
-        print(f"{get_max_node_depth(sample_sources.mass[0])=}")
-        print(f"{get_max_node_depth(sample_sources.energy[0])=}")
-        print(f"{get_max_node_depth(sample_sources.momentum[0][0])=}")
-        print(f"{get_max_node_depth(sample_sources.momentum[1][0])=}")
-        print(f"{get_max_node_depth(sample_sources.species_mass[0][0])=}")
-        print(f"{get_max_node_depth(sample_sources.species_mass[1][0])=}")
-        print(f"{get_max_node_depth(sample_sources.species_mass[2][0])=}")
-        print(f"{get_max_node_depth(sample_sources.species_mass[3][0])=}")
-        print(f"{get_max_node_depth(sample_sources.species_mass[4][0])=}")
-        print(f"{get_max_node_depth(sample_sources.species_mass[5][0])=}")
-        print(f"{get_max_node_depth(sample_sources.species_mass[6][0])=}")
-        print('')
-        print(f"{get_max_node_depth(holder_rhs.mass[0])=}")
-        print(f"{get_max_node_depth(holder_rhs.energy[0])=}")
-        print(f"{get_max_node_depth(holder_sources.mass[0])=}")
-        print(f"{get_max_node_depth(holder_sources.energy[0])=}")
-
-        sys.exit()
+#        from pytato.analysis import get_max_node_depth
+#        print(f"{get_max_node_depth(fluid_rhs.mass[0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.energy[0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.momentum[0][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.momentum[1][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.species_mass[0][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.species_mass[1][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.species_mass[2][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.species_mass[3][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.species_mass[4][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.species_mass[5][0])=}")
+#        print(f"{get_max_node_depth(fluid_rhs.species_mass[6][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.mass[0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.energy[0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.momentum[0][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.momentum[1][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.species_mass[0][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.species_mass[1][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.species_mass[2][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.species_mass[3][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.species_mass[4][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.species_mass[5][0])=}")
+#        print(f"{get_max_node_depth(fluid_sources.species_mass[6][0])=}")
+#        print('')
+#        print(f"{get_max_node_depth(sample_mass_rhs[0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.mass[0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.energy[0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.momentum[0][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.momentum[1][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.species_mass[0][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.species_mass[1][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.species_mass[2][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.species_mass[3][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.species_mass[4][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.species_mass[5][0])=}")
+#        print(f"{get_max_node_depth(sample_rhs.species_mass[6][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.mass[0])=}")
+#        print(f"{get_max_node_depth(sample_sources.energy[0])=}")
+#        print(f"{get_max_node_depth(sample_sources.momentum[0][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.momentum[1][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.species_mass[0][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.species_mass[1][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.species_mass[2][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.species_mass[3][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.species_mass[4][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.species_mass[5][0])=}")
+#        print(f"{get_max_node_depth(sample_sources.species_mass[6][0])=}")
+#        print('')
+#        print(f"{get_max_node_depth(holder_rhs.mass[0])=}")
+#        print(f"{get_max_node_depth(holder_rhs.energy[0])=}")
+#        print(f"{get_max_node_depth(holder_sources.mass[0])=}")
+#        print(f"{get_max_node_depth(holder_sources.energy[0])=}")
 
         return make_obj_array([
             fluid_rhs + fluid_sources, fluid_zeros,
@@ -2870,7 +2835,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     stepper_state = make_obj_array([
         fluid_state.cv, fluid_state.temperature,
-        sample_state.cv, sample_state.temperature, sample_state.dv.material_densities,
+        sample_state.cv, sample_state.temperature, sample_state.wv.material_densities,
         holder_state.cv, interface_zeros])
 
     if local_dt == True:
