@@ -645,7 +645,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     sys.setrecursionlimit(5000)
 
-    mesh_filename = "mesh_11m_10mm_020um_3domains-v2.msh"
+    mesh_filename = "mesh_12m_10mm_020um_3domains-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -671,7 +671,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     maximum_cfl = 0.2
     
     # discretization and model control
-    order = 1
+    order = 2
     use_overintegration = False
     use_soln_filter = False
     use_rhs_filter = False
@@ -681,8 +681,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-    my_mechanism = "uiuc_7sp"
-#    my_mechanism = "uiuc_7sp_phenol"
+#    my_mechanism = "uiuc_7sp"
+    my_mechanism = "uiuc_7sp_phenol"
     equiv_ratio = 0.7
     chem_rate = 0.3 #keep it between 0.0 and 1.0
     flow_rate = 25.0
@@ -696,8 +696,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # wall stuff
     ignore_wall = True
-    my_material = "fiber"
-#    my_material = "composite"
+#    my_material = "fiber"
+    my_material = "composite"
     temp_wall = 300
 
     wall_penalty_amount = 1.0
@@ -1762,8 +1762,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("progress", wv.tau),
             ("dt", dt[2] if local_dt else None),
             ("source_solid", sample_mass_rhs),
-            ("source_O2", sample_source_O2),
-            ("source_CO2", sample_source_CO2),
+#            ("source_O2", sample_source_O2),
+#            ("source_CO2", sample_source_CO2),
         ]
 
         # species mass fractions

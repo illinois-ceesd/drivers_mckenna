@@ -291,7 +291,7 @@ Plane Surface(18) = {-70};
 /*#########################*/
 
 Physical Line("inlet") = {1,2,5};
-Physical Line("symmetry") = {6,20:22,50,31,32,59};
+Physical Line("symmetry") = {6,23,50,31,32,59};
 Physical Line("burner") = {44,14,15};
 Physical Line("outlet") = {40};
 Physical Line("linear") = {41,42,43};
