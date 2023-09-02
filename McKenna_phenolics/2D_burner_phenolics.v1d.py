@@ -642,7 +642,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-#    sys.setrecursionlimit(5000)
+    sys.setrecursionlimit(5000)
 
     mesh_filename = "mesh_11m_10mm_020um_3domains-v2.msh"
 
@@ -694,7 +694,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     transport = "PowerLaw"
 
     # wall stuff
-    ignore_wall = True
+    ignore_wall = False
 #    my_material = "fiber"
     my_material = "composite"
     temp_wall = 300
@@ -702,7 +702,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_penalty_amount = 1.0
     wall_time_scale = speedup_factor*25.0
 
-    use_radiation = True
     emissivity = 0.85*speedup_factor
 
     restart_iterations = False
@@ -1238,16 +1237,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             aux = aux + spec_lim[i]
         spec_lim = spec_lim/aux
 
-        #XXX recompute density
-        #XXX force pressure at 1atm
-        #TODO get density as the sum of rho_Y? there is a source of species..
+        #XXX recompute density with pressure forced to be 1atm
         mass_lim = wv.void_fraction*gas_model_sample.eos.get_density(
             pressure=actx.np.zeros_like(pressure) + 101325.0,
             temperature=temperature, species_mass_fractions=spec_lim)
 
-        #velocity = cv.velocity*0.0
+        # ignore velocity inside the wall
         velocity = actx.np.zeros_like(cv.velocity)
-        mom_lim = mass_lim*velocity
 
         # recompute energy
         energy_gas = mass_lim*(gas_model_sample.eos.get_internal_energy(
@@ -1262,7 +1258,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         # make a new CV with the limited variables
         return make_conserved(dim=dim, mass=mass_lim, energy=energy,
-            momentum=mom_lim, species_mass=mass_lim*spec_lim)
+            momentum=mass_lim*velocity, species_mass=mass_lim*spec_lim)
 
     # ~~~~~~~~~~
 
@@ -1825,15 +1821,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
+    # create a list for the boundaries to be used for axisym sources
     from mirgecom.boundary import DummyBoundary
-
-#    from mirgecom.diffusion import DiffusionBoundary
-#    class DummyDiffusionBoundary(DiffusionBoundary):
-#        def get_grad_flux(self, dcoll, dd_bdry, kappa_minus, u_minus):
-#            return None
-#        def get_diffusion_flux(self, dcoll, dd_bdry, kappa_minus, u_minus,
-#            grad_u_minus, lengthscales_minus, *, penalty_amount=None):
-#            return None
 
     fluid_field = fluid_zeros
     sample_field = sample_zeros
@@ -1878,17 +1867,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             tpair.dd.domain_tag: DummyBoundary()
             for tpair in field_tpairs_HS})
 
-#    axisym_holder_boundaries = {}
-#    axisym_holder_boundaries.update(holder_boundaries)
-#    axisym_holder_boundaries.update({
-#            tpair.dd.domain_tag: DummyDiffusionBoundary()
-#            for tpair in field_tpairs_FH})
-#    axisym_holder_boundaries.update({
-#            tpair.dd.domain_tag: DummyDiffusionBoundary()
-#            for tpair in field_tpairs_SH})
-
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
     from arraycontext import outer
     from grudge.trace_pair import (
         interior_trace_pairs, tracepair_with_discr_tag)
@@ -2208,19 +2187,34 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~
 
     from grudge.discretization import filter_part_boundaries
-    dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_sample,
-                                     neighbor_volume_dd=dd_vol_fluid)
+    from grudge.reductions import integral
+    sample_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_sample,
+                                           neighbor_volume_dd=dd_vol_fluid)
+    interface_nodes = force_evaluation(actx, dcoll.nodes(sample_dd_list[0]))
+    interface_zeros = actx.np.zeros_like(interface_nodes[0])
 
-    # FIXME generalize this for multiple returned arguments in the list
-    interface_zeros = op.project(
-        dcoll, dd_vol_sample, dd_list[0], sample_nodes[0])*0.0
-    interface_zeros = force_evaluation(actx, interface_zeros)
+    integral_volume = integral(dcoll, dd_vol_sample, 2.0*np.pi*sample_nodes[0])
+    integral_surface = integral(dcoll, sample_dd_list[0], 2.0*np.pi*interface_nodes[0])
+
+    radius = 0.015875
+    height = 0.01905
+
+    volume = np.pi*radius**2*height
+    area = np.pi*radius**2 + 2.0*np.pi*radius*height
+
+    assert integral_volume - volume < 1e-9
+    assert integral_surface - area < 1e-9
+
+    print(integral_volume - volume)
+    print(integral_surface - area)
 
     def blowing_velocity(cv, source):
 
         # volume integral of the source terms
+        # dV = r dz dr dO, with O = 0 to 2pi = 2 pi r dz dr
+        dV = 2.0*np.pi*sample_nodes[0]
         integral_volume_source = \
-            integral(dcoll, dd_vol_sample, np.pi*source)
+            integral(dcoll, dd_vol_sample, source*dV)
 
         # FIXME generalize this for multiple returned arguments in the list
         dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_sample,
@@ -2231,8 +2225,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, dd_vol_sample, dd_list[0], cv.mass)                                   
 
         # surface integral of the density
+        # dS = 2 pi r dx
+        dS = 2.0*np.pi*interface_nodes[0]
         integral_surface_density = \
-            integral(dcoll, dd_list[0], np.pi*surface_density)
+            integral(dcoll, dd_list[0], surface_density*dS)
 
         return integral_volume_source/integral_surface_density + interface_zeros
 
@@ -2368,10 +2364,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             sample_source_gas = -sum(sample_mass_rhs)
 
-            # FIXME should this be speedup_factor or wall_timescale?
-            # FIXME the orientations are bugging me...
+            # the normal points towards the wall but the gas must leave the wall
+            # so we flip the sign here..
             boundary_velocity = \
-                -1.0 *  speedup_factor * blowing_velocity(sample_cv, sample_source_gas)
+                -1.0 * speedup_factor * blowing_velocity(sample_cv, sample_source_gas)
 
         if local_dt:
             t = force_evaluation(actx, t)
@@ -2479,42 +2475,42 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         holder_state = _get_holder_state(holder_cv)
         holder_cv = holder_state.cv
 
-        # the blowing velocity must be given in the coupling
-        # I dont like to put the source term here, but let's see if it 
-        # at least the results are making sense
+        # wall degradation
+        if ignore_wall:
+            sample_mass_rhs = sample_zeros*0.0
 
-        # another possibility is to make the source term part of the wall state
-        tau = gas_model_sample.wall_eos.decomposition_progress(
-            sample_state.wv.material_densities)
+        else:
+            tau = gas_model_sample.wall_eos.decomposition_progress(
+                sample_state.wv.material_densities)
 
-        if my_material == "fiber":
-            sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
-                decomposition.get_source_terms(
-                    sample_state.temperature, tau,
-                    sample_state.cv.species_mass[cantera_soln.species_index("O2")])
+            if my_material == "fiber":
+                sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
+                    decomposition.get_source_terms(
+                        sample_state.temperature, tau,
+                        sample_state.cv.species_mass[cantera_soln.species_index("O2")])
 
-            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
-            source_species[cantera_soln.species_index("O2")] = sample_source_O2
-            source_species[cantera_soln.species_index("CO2")] = sample_source_CO2
+                source_species = make_obj_array([sample_zeros for i in range(nspecies)])
+                source_species[cantera_soln.species_index("O2")] = sample_source_O2
+                source_species[cantera_soln.species_index("CO2")] = sample_source_CO2
 
-            sample_source_gas = sample_source_O2 + sample_source_CO2
+                sample_source_gas = sample_source_O2 + sample_source_CO2
 
-        if my_material == "composite":
-            sample_mass_rhs = decomposition.get_source_terms(
-                temperature=sample_state.temperature,
-                chi=sample_state.wv.material_densities)
-            
-            source_species = make_obj_array([sample_zeros for i in range(nspecies)])
-            source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
+            if my_material == "composite":
+                sample_mass_rhs = decomposition.get_source_terms(
+                    temperature=sample_state.temperature,
+                    chi=sample_state.wv.material_densities)
+                
+                source_species = make_obj_array([sample_zeros for i in range(nspecies)])
+                source_species[cantera_soln.species_index("X2")] = -sum(sample_mass_rhs)
 
-            sample_source_gas = -sum(sample_mass_rhs)
+                sample_source_gas = -sum(sample_mass_rhs)
 
-        sample_heterogeneous_source = make_conserved(dim=2,
-            mass=sample_source_gas,
-            energy=sample_zeros,
-            momentum=make_obj_array([sample_zeros, sample_zeros]),
-            species_mass=source_species
-        )
+            sample_heterogeneous_source = make_conserved(dim=2,
+                mass=sample_source_gas,
+                energy=sample_zeros,
+                momentum=make_obj_array([sample_zeros, sample_zeros]),
+                species_mass=source_species
+            )
 
         #~~~~~~~~~~~~~
 
@@ -2533,7 +2529,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     limiter_func_fluid=_limit_fluid_cv,
                     limiter_func_wall=_limit_sample_cv,
                     interface_noslip=True,
-                    interface_radiation=use_radiation,
+                    interface_radiation=True,
                     boundary_velocity=boundary_velocity)
 
             fluid_all_bnds_no_grad, holder_all_bnds_no_grad = \
@@ -2544,7 +2540,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     holder_state.dv.temperature,
                     fluid_all_bnds_no_grad, holder_boundaries,
                     interface_noslip=True,
-                    interface_radiation=use_radiation,
+                    interface_radiation=True,
                 )
 
             sample_all_bnds_no_grad, holder_all_bnds_no_grad = \
@@ -2634,7 +2630,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     limiter_func_wall=_limit_sample_cv,
                     interface_noslip=True,
                     boundary_velocity=boundary_velocity,
-                    interface_radiation=use_radiation,
+                    interface_radiation=True,
                     wall_emissivity=emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
                     wall_penalty_amount=wall_penalty_amount)
@@ -2647,7 +2643,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     fluid_grad_temperature, holder_grad_temperature,
                     fluid_all_boundaries, holder_boundaries,
                     interface_noslip=True,
-                    interface_radiation=use_radiation,
+                    interface_radiation=True,
                     wall_emissivity=emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
                     wall_penalty_amount=wall_penalty_amount)
@@ -2667,15 +2663,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         #~~~~~~~~~~~~~
         if ignore_wall:
-
             sample_rhs = sample_zeros*0.0
-
             sample_sources = sample_zeros*0.0
 
-            sample_mass_rhs = sample_zeros*0.0
-
         else:
-
             sample_rhs = wall_time_scale * ns_operator(
                 dcoll, gas_model_sample, sample_state, sample_all_boundaries,
                 quadrature_tag=quadrature_tag, dd=dd_vol_sample,
@@ -2683,7 +2674,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 grad_cv=sample_grad_cv, grad_t=sample_grad_temperature,
                 comm_tag=_SampleOperatorTag, inviscid_terms_on=False)
 
-            sample_sources = wall_time_scale*(
+            sample_sources = wall_time_scale * (
                 #eos.get_species_source_terms(sample_cv, sample_state.temperature)
                 + sample_heterogeneous_source
                 + axisym_source_sample(actx, dcoll, sample_state, 
@@ -2692,9 +2683,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         #~~~~~~~~~~~~~
         if ignore_wall:
-
             holder_rhs = holder_zeros*0.0
-
             holder_sources = holder_zeros*0.0
 
         else:
@@ -2784,9 +2773,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #        print(f"{get_max_node_depth(holder_sources.energy[0])=}")
 
         return make_obj_array([
-            fluid_rhs + fluid_sources, fluid_zeros,
-            sample_rhs + sample_sources, sample_zeros, sample_mass_rhs,
-            holder_rhs + holder_sources, interface_zeros])
+            fluid_rhs + fluid_sources,
+            fluid_zeros,
+            sample_rhs + sample_sources,
+            sample_zeros,
+            sample_mass_rhs,
+            holder_rhs + holder_sources,
+            interface_zeros])
 
     unfiltered_rhs_compiled = actx.compile(unfiltered_rhs)
 
@@ -2794,11 +2787,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if use_rhs_filter is True:
             rhs_state = unfiltered_rhs_compiled(t, state)
             filtered_sample_rhs = filter_sample_rhs_compiled(rhs_state[2])
+            filtered_sample_mass = filter_sample_rhs_compiled(rhs_state[4])
 
-            #XXX necessary to filter sample mass degradation term?
             return make_obj_array([
                 rhs_state[0], fluid_zeros,
-                filtered_sample_rhs, sample_zeros, rhs_state[4],
+                filtered_sample_rhs, sample_zeros, filtered_sample_mass,
                 rhs_state[5], interface_zeros])
 
         else:

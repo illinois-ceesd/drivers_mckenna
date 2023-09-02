@@ -2051,12 +2051,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         #~~~~~~~~~~~~~
         fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
             add_thermal_interface_boundaries_no_grad(
-                dcoll,
+                dcoll, gas_model,
                 dd_vol_fluid, dd_vol_solid,
                 fluid_state, wdv.thermal_conductivity, wdv.temperature,
                 fluid_boundaries, solid_boundaries,
                 interface_noslip=True, interface_radiation=use_radiation,
-                use_kappa_weighted_grad_flux_in_fluid=False)
+#XXX                use_kappa_weighted_grad_flux_in_fluid=False
+                )
 
         fluid_operator_states_quad = make_operator_fluid_states(
             dcoll, fluid_state, gas_model, fluid_all_boundaries_no_grad,
@@ -2089,13 +2090,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         fluid_all_boundaries, solid_all_boundaries = \
             add_thermal_interface_boundaries(
-                dcoll, dd_vol_fluid, dd_vol_solid,
+                dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
                 fluid_boundaries, solid_boundaries,
                 fluid_state, wdv.thermal_conductivity,
                 wdv.temperature,
                 fluid_grad_temperature, solid_grad_temperature,
                 interface_noslip=True, interface_radiation=use_radiation,
-                use_kappa_weighted_grad_flux_in_fluid=False,
+#XXX                use_kappa_weighted_grad_flux_in_fluid=False,
                 wall_emissivity=emissivity, sigma=5.67e-8,
                 ambient_temperature=300.0,
                 wall_penalty_amount=wall_penalty_amount)
