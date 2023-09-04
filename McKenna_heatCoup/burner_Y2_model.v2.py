@@ -568,7 +568,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     integrator = "ssprk43"
     current_dt = 2.5e-6  # order == 2
     t_final = 2.0
-    niter = 4000001
+    niter = 11
     local_dt = True
     constant_cfl = True
     current_cfl = 0.2
@@ -2091,10 +2091,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         fluid_all_boundaries, solid_all_boundaries = \
             add_thermal_interface_boundaries(
                 dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
-                fluid_boundaries, solid_boundaries,
                 fluid_state, wdv.thermal_conductivity,
                 wdv.temperature,
                 fluid_grad_temperature, solid_grad_temperature,
+                fluid_boundaries, solid_boundaries,
                 interface_noslip=True, interface_radiation=use_radiation,
 #XXX                use_kappa_weighted_grad_flux_in_fluid=False,
                 wall_emissivity=emissivity, sigma=5.67e-8,
