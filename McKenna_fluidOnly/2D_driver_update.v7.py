@@ -1,4 +1,4 @@
-""" Tue 11 Jul 2023 08:58:16 AM CDT """
+"""Thu 08 Dec 2022 05:55:37 PM CST"""
 
 __copyright__ = """
 Copyright (C) 2020 University of Illinois Board of Trustees
@@ -28,17 +28,25 @@ import logging
 import sys
 import numpy as np
 import pyopencl as cl
+import numpy.linalg as la  # noqa
+import pyopencl.array as cla  # noqa
+
 from functools import partial
-
+from logpyle import IntervalTimer, set_dt
+from pytools.obj_array import make_obj_array
 from arraycontext import thaw, freeze
-
 from meshmode.dof_array import DOFArray
-
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
+from grudge.dof_desc import BoundaryDomainTag, VolumeDomainTag
+from grudge.dof_desc import DOFDesc, as_dofdesc, DISCR_TAG_BASE, VolumeDomainTag
+from grudge.dof_desc import DD_VOLUME_ALL
+from grudge.trace_pair import TracePair
 
-from mirgecom.profiling import PyOpenCLProfilingArrayContext
-from mirgecom.navierstokes import ns_operator
+from mirgecom.navierstokes import (
+    grad_t_operator,
+    grad_cv_operator,
+    ns_operator)
 from mirgecom.utils import force_evaluation
 from mirgecom.simutil import (
     check_step,
@@ -47,15 +55,11 @@ from mirgecom.simutil import (
     write_visfile,
     check_naninf_local,
     check_range_local,
-    global_reduce
-)
-from mirgecom.restart import (
-    write_restart_file
-)
+    global_reduce)
+from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
 import pyopencl.tools as cl_tools
-
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     IsothermalWallBoundary,
@@ -63,30 +67,23 @@ from mirgecom.boundary import (
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
     LinearizedOutflowBoundary,
-    AdiabaticSlipBoundary
-)
+    AdiabaticSlipBoundary)
 from mirgecom.fluid import make_conserved
 from mirgecom.eos import PyrometheusMixture
-from mirgecom.gas_model import GasModel, make_fluid_state
+from mirgecom.gas_model import (
+    GasModel,
+    make_fluid_state,
+    make_operator_fluid_states)
 import cantera
-
-from logpyle import IntervalTimer, set_dt
+from mirgecom.fluid import (
+    make_conserved, 
+    velocity_gradient,
+    species_mass_fraction_gradient)
 from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
     logmgr_set_time,
-    logmgr_add_device_memory_usage,
-)
-
-from pytools.obj_array import make_obj_array
-
-from mirgecom.fluid import velocity_gradient, species_mass_fraction_gradient
-
-from grudge.dof_desc import BoundaryDomainTag, VolumeDomainTag
-from grudge.dof_desc import DOFDesc, as_dofdesc, DISCR_TAG_BASE, VolumeDomainTag
-from grudge.dof_desc import DD_VOLUME_ALL
-
-from grudge.trace_pair import TracePair
+    logmgr_add_device_memory_usage)
 
 #########################################################################
 
@@ -106,6 +103,18 @@ class _MyGradTag_5:
     pass
 
 class _MyGradTag_6:
+    pass
+
+class _FluidOperatorTag:
+    pass
+
+class _FluidOpStatesTag:
+    pass
+
+class _FluidGradCVTag:
+    pass
+
+class _FluidGradTempTag:
     pass
 
 class Burner2D_Reactive:
@@ -391,7 +400,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     niter = 3000001
     local_dt = True
     constant_cfl = True
-    current_cfl = 0.1
+    current_cfl = 0.2
     
     # discretization and model control
     order = 3
@@ -401,9 +410,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sponge_amp = 400.0
     theta_factor = 0.02
 
-    my_mechanism = "Davis2005_expanded_noFallOff"
+    my_mechanism = "uiuc_7sp"
     equiv_ratio = 0.7
-    speedup_factor = 2.0
+    speedup_factor = 7.5
     chem_rate = 1.0
     flow_rate = 25.0
     shroud_rate = 11.85
@@ -767,7 +776,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     flow_init = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
         sigma_flame=0.00010, temperature=temp_ignition, pressure=101325.0,
-        flame_loc=0.10075, speedup_factor=speedup_factor,
+        flame_loc=0.10100, speedup_factor=speedup_factor,
         mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
         species_unburn=y_unburned, species_burned=y_burned)
@@ -814,16 +823,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         local_nelements = local_mesh.nelements
         global_nelements = restart_data["global_nelements"]
         restart_order = int(restart_data["order"])
-        
         first_step = restart_step+0
-        current_step = restart_step
-        current_t = restart_data["t"]
-        if (np.isscalar(current_t) is False):
-            current_t = np.min(actx.to_numpy(current_t))
-
-        if restart_iterations:
-            current_t = 0.0
-            current_step = 0
 
         assert comm.Get_size() == restart_data["num_parts"]
 
@@ -930,6 +930,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_cv = flow_init(nodes, eos, flow_rate=flow_rate,
                                solve_the_flame=solve_the_flame)
     else:
+        current_step = restart_step
+        current_t = restart_data["t"]
+        if (np.isscalar(current_t) is False):
+            current_t = np.min(actx.to_numpy(current_t))
+
+        if restart_iterations:
+            current_t = 0.0
+            current_step = 0
+
         if restart_order != order:
             restart_discr = EagerDGDiscretization(
                 actx,
@@ -947,6 +956,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         else:
             current_cv = restart_data["state"]
             tseed = restart_data["temperature_seed"]
+
+        if logmgr:
+            logmgr_set_time(logmgr, current_step, current_t)
+
 
     tseed = force_evaluation(actx, 300.0 + nodes[0]*0.0)
     current_cv = force_evaluation(actx, current_cv)
@@ -1056,22 +1069,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             mom_y = 2.0*state_plus.cv.momentum[1] - state_minus.cv.momentum[1]
             mom_plus = make_obj_array([ mom_x, mom_y])
 
-            species_mass_plus = 2.0*state_plus.cv.species_mass - state_minus.cv.species_mass
-            species_mass_fraction_plus = species_mass_plus/state_plus.cv.mass
+            kin_energy_ref = 0.5*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)/state_plus.cv.mass
+            kin_energy_mod = 0.5*np.dot(mom_plus, mom_plus)/state_plus.cv.mass
+            energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
 
-            int_energy = state_plus.cv.mass * gas_model.eos.get_internal_energy(temperature, species_mass_fraction_plus)
-            kin_energy = 0.5*np.dot(mom_plus, mom_plus)/state_plus.cv.mass
-            energy_plus = int_energy + kin_energy
-
-#            kin_energy_ref = 0.5*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)/state_plus.cv.mass
-#            kin_energy_mod = 0.5*np.dot(mom_plus, mom_plus)/state_plus.cv.mass
-#            energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
-
-            cv = make_conserved(dim=2,
-                mass=state_plus.cv.mass, energy=energy_plus, momentum=mom_plus,
-                #species_mass=state_plus.cv.species_mass
-                species_mass=species_mass_plus
-            )
+            cv = make_conserved(dim=2, mass=state_plus.cv.mass, energy=energy_plus,
+                momentum=mom_plus, species_mass=state_plus.cv.species_mass)
 
             return make_fluid_state(cv=cv, gas_model=gas_model, temperature_seed=300.0)
 
@@ -1098,31 +1101,40 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 q_minus=state_pair.int.cv,
                 q_plus=state_pair.ext.cv, lam=lam)
 
-#        def grad_cv_bc(self, state_plus, state_minus, grad_cv_minus, normal, **kwargs):
-#            """Return grad(CV) for boundary calculation of viscous flux."""
-#            return grad_cv_minus
-
         def grad_cv_bc(self, state_plus, state_minus, grad_cv_minus, normal, **kwargs):
             """Return grad(CV) to be used in the boundary calculation of viscous flux."""
 
-            state_plus = self.prescribed_state_for_advection(dcoll=dcoll, dd_bdry=dd_bdry,
-                gas_model=gas_model, state_minus=state_minus, **kwargs)
+            # extrapolate density and its gradient
+            mass_plus = state_minus.mass_density
+            grad_mass_plus = grad_cv_minus.mass
 
-            # non-diffusion of species
-            grad_species_mass_bc = 1.*grad_cv_minus.species_mass
-            grad_y_minus = species_mass_fraction_gradient(state_minus.cv,
-                                                          grad_cv_minus)
-            grad_y_bc = grad_y_minus - np.outer(grad_y_minus@normal, normal)
-            grad_species_mass_bc = 0.*grad_y_bc
+            #v_minus = state_minus.velocity               
+            grad_v_minus = velocity_gradient(state_minus.cv, grad_cv_minus)
 
-            for i in range(nspecies):
-                grad_species_mass_bc[i] = \
-                    (state_plus.mass_density*grad_y_bc[i]
-                     + state_plus.species_mass_fractions[i]*grad_cv_minus.mass)
+            v_plus = state_plus.velocity
+            aux = np.ones((2,2))
+            aux[0,0] = 0.0  # du/dx and u are zero at the surface, so is d(rho u)/dx
+            grad_mom_plus = grad_cv_minus.momentum*0.0 + grad_cv_minus.momentum*aux
+            #grad_v_plus = 1.0/mass_plus*( grad_mom_plus - v_plus*grad_mass_plus )
 
-            return make_conserved(dim=grad_cv_minus.dim,
-                mass=grad_cv_minus.mass, energy=grad_cv_minus.energy,
-                momentum=grad_cv_minus.momentum, species_mass=grad_species_mass_bc
+            grad_species_mass_plus = grad_cv_minus.species_mass
+
+#            Dij = gas_model.transport.species_diffusivity(cv=state_minus.cv, 
+#                    dv=state_minus.dv, eos=gas_model.eos) #XXX 
+#            grad_species_mass_plus = 1.*grad_cv_minus.species_mass
+#            if state_minus.nspecies > 0:
+#                grad_y_minus = species_mass_fraction_gradient(state_minus.cv, grad_cv_minus)
+#
+#                grad_y_plus = 0.*grad_y_minus
+#                grad_species_mass_plus = 0.*grad_y_minus
+#                for i in range(state_minus.nspecies):
+#                    grad_y_plus[i] = state_minus.velocity[1]/Dij[i]*(ref_cv_inlet.species_mass_fractions[i] - state_minus.species_mass_fractions[i]) #XXX
+#                    grad_species_mass_plus[i] = (state_minus.mass_density*grad_y_plus[i]
+#                         + state_minus.species_mass_fractions[i]*grad_cv_minus.mass)                    
+
+            return make_conserved(dim=grad_cv_minus.dim, mass=grad_cv_minus.mass,
+                energy=grad_cv_minus.energy*10000000.0, #XXX It doesn't matter what we do to energy
+                momentum=grad_mom_plus, species_mass=grad_species_mass_plus
             )
 
         def viscous_wall_flux(self, dcoll, dd_bdry, gas_model, state_minus,
@@ -1183,19 +1195,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #########################################################################
 
+    from grudge.dt_utils import characteristic_lengthscales, dt_geometric_factors
     def my_write_viz(step, t, state, dt=None, smoothness=None):
 
         viz_fields = [("CV_rho", state.cv.mass),
                       ("CV_rhoU", state.cv.momentum),
-                      #("CV_rhoE", state.cv.energy),
+                      ("CV_rhoE", state.cv.energy),
                       ("DV_P", state.pressure),
                       ("DV_T", state.temperature),
                       ("DV_U", state.velocity[0]),
                       ("DV_V", state.velocity[1]),
                       ("dt", dt),
                       #("sponge", sponge_sigma),
-                      #("smoothness", 1.0 - theta_factor*smoothness),
-                      #("RR", chem_rate*reaction_rates_damping),
+                      ("smoothness", 1.0 - theta_factor*smoothness),
+                      ("RR", chem_rate*reaction_rates_damping),
                         ]
 
         # species mass fractions
@@ -1498,22 +1511,36 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         cv = _drop_order_cv(cv, smoothness, theta_factor)
 
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-            temperature_seed=tseed,
-            limiter_func=_limit_fluid_cv
-        )
+            temperature_seed=tseed, limiter_func=_limit_fluid_cv)
 
-        ns_rhs, grad_cv, grad_t = (
-            ns_operator(dcoll, state=fluid_state, time=t,
-                        boundaries=boundaries, gas_model=gas_model,
-                        return_gradients=True, quadrature_tag=quadrature_tag)
-        )
+        fluid_operator_states_quad = make_operator_fluid_states(
+            dcoll, fluid_state, gas_model, boundaries,
+            quadrature_tag, dd=dd_vol, comm_tag=_FluidOpStatesTag,
+            limiter_func=_limit_fluid_cv)
+
+        # fluid grad CV
+        grad_cv = grad_cv_operator(
+            dcoll, gas_model, boundaries, fluid_state,
+            dd=dd_vol, operator_states_quad=fluid_operator_states_quad,
+            quadrature_tag=quadrature_tag, comm_tag=_FluidGradCVTag)
+
+        # fluid grad T
+        grad_t = grad_t_operator(
+            dcoll, gas_model, boundaries, fluid_state,
+            dd=dd_vol, operator_states_quad=fluid_operator_states_quad,
+            quadrature_tag=quadrature_tag, comm_tag=_FluidGradTempTag)
+
+        ns_rhs = ns_operator(
+            dcoll, state=fluid_state, time=t, boundaries=boundaries,
+            gas_model=gas_model, grad_cv=grad_cv, grad_t=grad_t,
+            operator_states_quad=fluid_operator_states_quad,
+            quadrature_tag=quadrature_tag, comm_tag=_FluidOperatorTag)
 
         sources = (
             chemical_source_term(cv, fluid_state.temperature)
             + gravity_source_terms(cv)
             + axisym_source_terms(actx, dcoll, fluid_state, grad_cv, grad_t)
-            + sponge_func(cv=cv, cv_ref=ref_cv, sigma=sponge_sigma)
-        )
+            + sponge_func(cv=cv, cv_ref=ref_cv, sigma=sponge_sigma))
         
         return make_obj_array([ns_rhs + sources, fluid_state.temperature*0.0])
 
