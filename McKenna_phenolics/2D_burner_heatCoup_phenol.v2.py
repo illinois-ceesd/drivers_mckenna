@@ -1710,24 +1710,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #    assert integral_volume - volume < 1e-9
 #    assert integral_surface - area < 1e-9
 
-    def blowing_velocity(fluid_mass, source):
+    def blowing_momentum(source):
 
         # volume integral of the source terms
         integral_volume_source = \
             integral(dcoll, dd_vol_solid, source*wall_sample_mask*dV)
 
-        # restrict to coupled surface 
-        surface_density = op.project(
-            dcoll, dd_vol_fluid, fluid_dd_list[0], fluid_mass) 
-
         # surface integral of the density
-        integral_surface_density = \
-            integral(dcoll, solid_dd_list[0], surface_density*dS)
+        integral_surface = \
+            integral(dcoll, solid_dd_list[0], dS)
 
-        velocity = \
-            -1.0*integral_volume_source/integral_surface_density*interface_sample
+        momentum = \
+            -1.0*integral_volume_source/integral_surface*interface_sample
 
-        return force_evaluation(actx, velocity)
+        return force_evaluation(actx, momentum)
 
 
 ##############################################################################
@@ -1787,9 +1783,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             solid_mass_rhs = decomposition.get_source_terms(
                 temperature=solid_state.dv.temperature, chi=solid_state.cv.mass)
 
-            boundary_velocity = \
-                speedup_factor * blowing_velocity(fluid_state.cv.mass,
-                                                  -1.0*sum(solid_mass_rhs))
+            boundary_momentum = \
+                speedup_factor * blowing_momentum(-1.0*sum(solid_mass_rhs))
 
         t = force_evaluation(actx, t)
         dt_fluid = force_evaluation(actx, actx.np.minimum(
@@ -1804,7 +1799,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             state = make_obj_array([
                 fluid_state.cv, fluid_state.dv.temperature,
                 solid_state.cv, solid_state.dv.temperature,
-                boundary_velocity])
+                boundary_momentum])
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
@@ -1858,7 +1853,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def _get_rhs(t, state):
 
-        fluid_state, solid_state, boundary_velocity = state
+        fluid_state, solid_state, boundary_momentum = state
 
         cv = fluid_state.cv
         wv = solid_state.cv
@@ -1870,7 +1865,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 dcoll, gas_model,
                 dd_vol_fluid, dd_vol_solid,
                 fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                boundary_velocity,
+                boundary_momentum,
                 fluid_boundaries, solid_boundaries,
                 interface_noslip=True, interface_radiation=use_radiation,
                 )
@@ -1909,7 +1904,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
                 fluid_state, wdv.thermal_conductivity,
                 wdv.temperature,
-                boundary_velocity,
+                boundary_momentum,
                 fluid_grad_temperature, solid_grad_temperature,
                 fluid_boundaries, solid_boundaries,
                 interface_noslip=True, interface_radiation=use_radiation,
