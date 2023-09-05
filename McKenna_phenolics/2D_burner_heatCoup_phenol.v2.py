@@ -1725,9 +1725,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             integral(dcoll, solid_dd_list[0], surface_density*dS)
 
         velocity = \
-            integral_volume_source/integral_surface_density*interface_sample
+            -1.0*integral_volume_source/integral_surface_density*interface_sample
 
-        #since I am prescribing the flux, I have to multiply by the normal
         return force_evaluation(actx, velocity)
 
 
