@@ -1685,6 +1685,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     interface_nodes = op.project(
         dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes*wall_sample_mask)
 
+    print(interface_nodes)
+
     interface_zeros = actx.np.zeros_like(interface_nodes[0])
 
     interface_sample = op.project(
@@ -1704,8 +1706,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     volume = np.pi*radius**2*height
     area = np.pi*radius**2 + 2.0*np.pi*radius*height
 
-#    print(integral_volume - volume)
-#    print(integral_surface - area)
+    print(integral_volume - volume)
+    print(integral_surface - area)
 
 #    assert integral_volume - volume < 1e-9
 #    assert integral_surface - area < 1e-9

@@ -1,4 +1,4 @@
-"""Thu 08 Dec 2022 05:55:37 PM CST"""
+"""Tue Sep  5 14:41:17 PDT 2023"""
 
 __copyright__ = """
 Copyright (C) 2020 University of Illinois Board of Trustees
@@ -26,6 +26,7 @@ THE SOFTWARE.
 import yaml
 import logging
 import sys
+import os
 import numpy as np
 import pyopencl as cl
 import numpy.linalg as la  # noqa
@@ -191,12 +192,9 @@ class Burner2D_Reactive:
             flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
 
             #~~~ species
-            if state_minus is None:
-                yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
-                ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
-                y = atmosphere*_ya + shroud*ys + core*yf
-            else:
-                y = state_minus.species_mass_fractions
+            yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
+            ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
+            y = atmosphere*_ya + shroud*ys + core*yf
 
             #~~~ temperature and EOS
             temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
@@ -349,7 +347,7 @@ class InitSponge:
 @mpi_entry_point
 def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
          use_leap=False, use_profiling=False, casename=None, lazy=False,
-         rst_filename=None):
+         restart_filename=None):
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
@@ -360,25 +358,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
                                mode="wo", mpi_comm=comm)
 
-    cl_ctx = ctx_factory()
-
-    if use_profiling:
-        queue = cl.CommandQueue(
-            cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
-    else:
-        queue = cl.CommandQueue(cl_ctx)
-
-    from mirgecom.simutil import get_reasonable_memory_pool
-    alloc = get_reasonable_memory_pool(cl_ctx, queue)
-
-    if lazy:
-        actx = actx_class(comm, queue, mpi_base_tag=12000, allocator=alloc)
-    else:
-        actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
+    from mirgecom.array_context import initialize_actx, actx_class_is_profiling
+    actx = initialize_actx(actx_class, comm)
+    queue = getattr(actx, "queue", None)
+    use_profiling = actx_class_is_profiling(actx_class)
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_03_round_10mm_020um_fluid-v2.msh"
+    mesh_filename = "mesh_11m_10mm_020um-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -403,17 +390,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.2
     
     # discretization and model control
-    order = 3
+    order = 2
     use_overintegration = False
 
     x0_sponge = 0.15
     sponge_amp = 400.0
     theta_factor = 0.02
 
-    my_mechanism = "uiuc_7sp"
+    mechanism_file = "uiuc_7sp"
     equiv_ratio = 0.7
     speedup_factor = 7.5
-    chem_rate = 1.0
+    chem_rate = 0.5
     flow_rate = 25.0
     shroud_rate = 11.85
     Twall = 300.0
@@ -463,10 +450,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{  Set up initial state using Cantera
 
     # Use Cantera for initialization
-    import os
-    current_path = os.path.abspath(os.getcwd()) + "/"
-    mechanism_file = current_path + my_mechanism
-
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -524,28 +507,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     cantera_soln.TPX = temp_ignition, pres_unburned, x_unburned
     cantera_soln.equilibrate("TP")
 
-#    if solve_the_flame: 
-#        air = "O2:0.21,N2:0.79"
-#        fuel = "C2H4:1"
-#        cantera_soln.set_equivalence_ratio(phi=1.0, fuel=fuel, oxidizer=air)
-#        x_unburned = cantera_soln.X
-#        pres_unburned = cantera.one_atm
-
-#        # Let the user know about how Cantera is being initilized
-#        print(f"Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x_unburned}")
-#        # Set Cantera internal gas temperature, pressure, and mole fractios
-#        cantera_soln.TPX = temp_unburned, pres_unburned, x_unburned
-#        #y_unburned = np.zeros(nspecies)
-#        can_t, rho_unburned, y_unburned = cantera_soln.TDY
-
-#        # now find the conditions for the burned gas
-#        cantera_soln.TPX = temp_ignition, pres_unburned, x_unburned
-#        cantera_soln.equilibrate("TP")
-#    else:
-#        rho_unburned = None
-#        y_unburned = None
-#        #cantera_soln.Y = [7.12425262e-04, 1.70875574e-01, 8.93831339e-04, 1.05556386e-01, 7.21961784e-01]
-
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
     pres_burned = cantera_soln.P
 
@@ -601,12 +562,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # }}}
 
     print(f"Pyrometheus mechanism species names {species_names}")
-    if solve_the_flame:
-        print(f"Unburned:")
-        print(f"T = {temp_unburned}")
-        print(f"D = {rho_unburned}")
-        print(f"Y = {y_unburned}")
-        print(f" ")
+    print(f"Unburned:")
+    print(f"T = {temp_unburned}")
+    print(f"D = {rho_unburned}")
+    print(f"Y = {y_unburned}")
+    print(f" ")
     print(f"Burned:")
     print(f"T = {temp_burned}")
     print(f"D = {rho_burned}")
@@ -743,11 +703,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + 0.5*np.dot(cv.velocity, cv.velocity)
         )
 
-        cv = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
-            momentum=mass_lim*cv.velocity, species_mass=mass_lim*spec_lim)
-
         # make a new CV with the limited variables
-        return cv
+        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+            momentum=mass_lim*cv.velocity, species_mass=mass_lim*spec_lim)
 
 
     def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
@@ -774,9 +732,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##################################
 
-    flow_init = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
-        sigma_flame=0.00010, temperature=temp_ignition, pressure=101325.0,
-        flame_loc=0.10100, speedup_factor=speedup_factor,
+    fluid_init = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
+        sigma_flame=0.00005, temperature=temp_ignition, pressure=101325.0,
+        flame_loc=0.10025, speedup_factor=speedup_factor,
         mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
         species_unburn=y_unburned, species_burned=y_burned)
@@ -927,8 +885,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if restart_file is None:
         if rank == 0:
             logging.info("Initializing soln.")
-        current_cv = flow_init(nodes, eos, flow_rate=flow_rate,
-                               solve_the_flame=solve_the_flame)
+        current_cv = fluid_init(nodes, eos, flow_rate=flow_rate)
     else:
         current_step = restart_step
         current_t = restart_data["t"]
@@ -982,8 +939,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     )
 
     sponge_sigma = force_evaluation(actx, sponge_init(x_vec=nodes))
-    ref_cv = force_evaluation(actx,
-        ref_state(nodes, eos, flow_rate, solve_the_flame))
+    ref_cv = force_evaluation(actx, ref_state(nodes, eos, flow_rate))
 
 #####################################################################################
 
@@ -1030,16 +986,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         inflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
         inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
         inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
-            flow_rate=flow_rate, solve_the_flame=solve_the_flame,
-            state_minus=state_minus, time=time)
+            flow_rate=flow_rate, state_minus=state_minus, time=time)
         return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
             temperature_seed=300.0, #smoothness=inflow_nodes[0]*0.0,
             #limiter_func=_limit_fluid_cv, limiter_dd=dd_bdry
         )
 
     inflow_nodes = force_evaluation(actx, dcoll.nodes(dd_vol.trace('inlet')))
-    ref_cv_inlet = force_evaluation(actx,
-        ref_state(inflow_nodes, eos, flow_rate, solve_the_flame))
+    ref_cv_inlet = force_evaluation(actx, ref_state(inflow_nodes, eos, flow_rate))
 
     from mirgecom.inviscid import inviscid_flux, inviscid_facial_flux_rusanov
     from mirgecom.flux import num_flux_central
@@ -1059,41 +1013,49 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             inviscid_flux_func=self.inviscid_wall_flux,
             viscous_flux_func=self.viscous_wall_flux,
             boundary_temperature_func=temperature_func,
-            boundary_gradient_cv_func=self.grad_cv_bc,
-            )
+            boundary_gradient_cv_func=self.grad_cv_bc)
 
-        def prescribed_state_for_advection(self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-            state_plus = self.bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs)
+        def prescribed_state_for_advection(self, dcoll, dd_bdry, gas_model,
+                                           state_minus, **kwargs):
+            state_plus = self.bnd_state_func(dcoll, dd_bdry, gas_model,
+                                             state_minus, **kwargs)
 
-            mom_x = -state_minus.cv.momentum[0]
-            mom_y = 2.0*state_plus.cv.momentum[1] - state_minus.cv.momentum[1]
-            mom_plus = make_obj_array([ mom_x, mom_y])
+            mom_x = - state_minus.cv.momentum[0]
+            mom_y = - state_minus.cv.momentum[1] + 2.0*state_plus.cv.momentum[1]
+            mom_plus = make_obj_array([mom_x, mom_y])
 
-            kin_energy_ref = 0.5*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)/state_plus.cv.mass
-            kin_energy_mod = 0.5*np.dot(mom_plus, mom_plus)/state_plus.cv.mass
+            kin_energy_ref = 0.5/state_plus.cv.mass*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)
+            kin_energy_mod = 0.5/state_plus.cv.mass*np.dot(mom_plus, mom_plus)
             energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
 
-            cv = make_conserved(dim=2, mass=state_plus.cv.mass, energy=energy_plus,
-                momentum=mom_plus, species_mass=state_plus.cv.species_mass)
+            cv = make_conserved(dim=2, mass=state_plus.cv.mass,
+                energy=energy_plus, momentum=mom_plus,
+                species_mass=state_plus.cv.species_mass)
 
-            return make_fluid_state(cv=cv, gas_model=gas_model, temperature_seed=300.0)
+            return make_fluid_state(cv=cv, gas_model=gas_model,
+                                    temperature_seed=300.0)
 
-        def prescribed_state_for_diffusion(self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-            return self.bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs)
+        def prescribed_state_for_diffusion(self, dcoll, dd_bdry, gas_model,
+                                           state_minus, **kwargs):
+            return self.bnd_state_func(dcoll, dd_bdry, gas_model,
+                                       state_minus, **kwargs)
 
         def inviscid_wall_flux(self, dcoll, dd_bdry, gas_model, state_minus,
                 numerical_flux_func, **kwargs):
 
-            state_plus = self.prescribed_state_for_advection(dcoll=dcoll, dd_bdry=dd_bdry,
-                gas_model=gas_model, state_minus=state_minus, **kwargs)
+            state_plus = self.prescribed_state_for_advection(dcoll=dcoll,
+                dd_bdry=dd_bdry, gas_model=gas_model, 
+                state_minus=state_minus,**kwargs)
 
-            state_pair = TracePair(dd_bdry, interior=state_minus, exterior=state_plus)
+            state_pair = TracePair(dd_bdry, interior=state_minus,
+                                   exterior=state_plus)
 
             actx = state_minus.array_context
             normal = actx.thaw(dcoll.normal(dd_bdry))
 
             actx = state_pair.int.array_context
-            lam = actx.np.maximum(state_pair.int.wavespeed, state_pair.ext.wavespeed)
+            lam = actx.np.maximum(state_pair.int.wavespeed,
+                                  state_pair.ext.wavespeed)
             from mirgecom.flux import num_flux_lfr
             return num_flux_lfr(
                 f_minus_normal=inviscid_flux(state_pair.int)@normal,
@@ -1101,53 +1063,24 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 q_minus=state_pair.int.cv,
                 q_plus=state_pair.ext.cv, lam=lam)
 
-        def grad_cv_bc(self, state_plus, state_minus, grad_cv_minus, normal, **kwargs):
-            """Return grad(CV) to be used in the boundary calculation of viscous flux."""
-
-            # extrapolate density and its gradient
-            mass_plus = state_minus.mass_density
-            grad_mass_plus = grad_cv_minus.mass
-
-            #v_minus = state_minus.velocity               
-            grad_v_minus = velocity_gradient(state_minus.cv, grad_cv_minus)
-
-            v_plus = state_plus.velocity
-            aux = np.ones((2,2))
-            aux[0,0] = 0.0  # du/dx and u are zero at the surface, so is d(rho u)/dx
-            grad_mom_plus = grad_cv_minus.momentum*0.0 + grad_cv_minus.momentum*aux
-            #grad_v_plus = 1.0/mass_plus*( grad_mom_plus - v_plus*grad_mass_plus )
-
-            grad_species_mass_plus = grad_cv_minus.species_mass
-
-#            Dij = gas_model.transport.species_diffusivity(cv=state_minus.cv, 
-#                    dv=state_minus.dv, eos=gas_model.eos) #XXX 
-#            grad_species_mass_plus = 1.*grad_cv_minus.species_mass
-#            if state_minus.nspecies > 0:
-#                grad_y_minus = species_mass_fraction_gradient(state_minus.cv, grad_cv_minus)
-#
-#                grad_y_plus = 0.*grad_y_minus
-#                grad_species_mass_plus = 0.*grad_y_minus
-#                for i in range(state_minus.nspecies):
-#                    grad_y_plus[i] = state_minus.velocity[1]/Dij[i]*(ref_cv_inlet.species_mass_fractions[i] - state_minus.species_mass_fractions[i]) #XXX
-#                    grad_species_mass_plus[i] = (state_minus.mass_density*grad_y_plus[i]
-#                         + state_minus.species_mass_fractions[i]*grad_cv_minus.mass)                    
-
-            return make_conserved(dim=grad_cv_minus.dim, mass=grad_cv_minus.mass,
-                energy=grad_cv_minus.energy*10000000.0, #XXX It doesn't matter what we do to energy
-                momentum=grad_mom_plus, species_mass=grad_species_mass_plus
-            )
+        def grad_cv_bc(self, state_plus, state_minus, grad_cv_minus, normal,
+                       **kwargs):
+            """Return grad(CV) for boundary calculation of viscous flux."""
+            return grad_cv_minus
 
         def viscous_wall_flux(self, dcoll, dd_bdry, gas_model, state_minus,
             grad_cv_minus, grad_t_minus, numerical_flux_func, **kwargs):
-            """Return the boundary flux for the divergence of the viscous flux."""
+            """Return the boundary flux for viscous flux."""
             actx = state_minus.array_context
             normal = actx.thaw(dcoll.normal(dd_bdry))
 
-            state_plus = self.prescribed_state_for_diffusion(dcoll=dcoll, dd_bdry=dd_bdry,
-                gas_model=gas_model, state_minus=state_minus, **kwargs)
+            state_plus = self.prescribed_state_for_diffusion(dcoll=dcoll,
+                dd_bdry=dd_bdry, gas_model=gas_model,
+                state_minus=state_minus, **kwargs)
 
             grad_cv_plus = self.grad_cv_bc(state_plus=state_plus,
-                state_minus=state_minus, grad_cv_minus=grad_cv_minus, normal=normal, **kwargs)
+                state_minus=state_minus, grad_cv_minus=grad_cv_minus,
+                normal=normal, **kwargs)
 
             grad_t_plus = self._bnd_grad_temperature_func(
                 dcoll=dcoll, dd_bdry=dd_bdry, gas_model=gas_model,
@@ -1159,7 +1092,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             f_ext = viscous_flux(state=state_plus, grad_cv=grad_cv_plus,
                                  grad_t=grad_t_plus)
             return f_ext@normal
-
 
     linear_bnd = LinearizedOutflowBoundary(free_stream_density=rho_atmosphere,
         free_stream_pressure=101325.0, free_stream_velocity=np.zeros(shape=(dim,)),
@@ -1180,16 +1112,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     initname = original_casename
     eosname = eos.__class__.__name__
-    init_message = make_init_message(dim=dim, order=order,
-                                     nelements=local_nelements,
-                                     global_nelements=global_nelements,
-                                     dt=current_dt, t_final=t_final,
-                                     nstatus=nstatus, nviz=nviz,
-                                     t_initial=current_t,
-                                     cfl=current_cfl,
-                                     constant_cfl=constant_cfl,
-                                     initname=initname,
-                                     eosname=eosname, casename=casename)
+    init_message = make_init_message(
+        dim=dim, order=order, nelements=local_nelements,
+        global_nelements=global_nelements, dt=current_dt, t_final=t_final,
+        nstatus=nstatus, nviz=nviz, t_initial=current_t, cfl=current_cfl,
+        constant_cfl=constant_cfl, initname=initname, eosname=eosname,
+        casename=casename)
     if rank == 0:
         logger.info(init_message)
 
@@ -1222,7 +1150,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_write_restart(step, t, cv, tseed):
         rst_fname = rst_pattern.format(cname=casename, step=step, rank=rank)
-        if rst_fname != rst_filename:
+        if rst_fname != restart_filename:
             rst_data = {
                 "local_mesh": local_mesh,
                 "state": cv,
@@ -1408,8 +1336,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return make_conserved(dim=2, mass=source_mass, energy=source_rhoE,
                        momentum=make_obj_array([source_rhoU, source_rhoV]),
                        species_mass=source_spec)
-          
-        
+
+
     def gravity_source_terms(cv):
         """Gravity."""
         gravity = -9.80665*speedup_factor
@@ -1581,13 +1509,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         logging.info("Stepping.")
 
     (current_step, current_t, stepper_state) = \
-        advance_state(rhs=my_rhs, timestepper=timestepper,
-                      pre_step_callback=my_pre_step,
-                      post_step_callback=my_post_step,
-                      state=make_obj_array([current_state.cv, tseed]),
-                      dt=dt, t_final=t_final, t=t,
-                      max_steps=niter, local_dt=local_dt,
-                      istep=current_step)
+        advance_state(
+            rhs=my_rhs, timestepper=timestepper,
+            pre_step_callback=my_pre_step, post_step_callback=my_post_step,
+            state=make_obj_array([current_state.cv, tseed]),
+            dt=dt, t_final=t_final, t=t, max_steps=niter, local_dt=local_dt,
+            istep=current_step)
+
     current_cv, tseed = stepper_state
 
     # Dump the final data
@@ -1624,12 +1552,16 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--casename",  type=ascii,
                         dest="casename", nargs="?", action="store",
                         help="simulation case name")
-    parser.add_argument("--profile", action="store_true", default=False,
+    parser.add_argument("--profiling", action="store_true", default=False,
         help="enable kernel profiling [OFF]")
     parser.add_argument("--log", action="store_true", default=True,
         help="enable logging profiling [ON]")
+    parser.add_argument("--esdg", action="store_true",
+        help="use flux-differencing/entropy stable DG for inviscid computations.")
     parser.add_argument("--lazy", action="store_true", default=False,
         help="enable lazy evaluation [OFF]")
+    parser.add_argument("--numpy", action="store_true",
+        help="use numpy-based eager actx.")
 
     args = parser.parse_args()
 
@@ -1655,10 +1587,17 @@ if __name__ == "__main__":
 
     print(f"Running {sys.argv[0]}\n")
 
-    from grudge.array_context import get_reasonable_array_context_class
-    actx_class = get_reasonable_array_context_class(lazy=args.lazy,
-                                                    distributed=True)
+    from warnings import warn
+    from mirgecom.simutil import ApplicationOptionsError
+    if args.esdg:
+        if not args.lazy and not args.numpy:
+            raise ApplicationOptionsError("ESDG requires lazy or numpy context.")
+        if not args.overintegration:
+            warn("ESDG requires overintegration, enabling --overintegration.")
 
-    main(actx_class, use_logmgr=args.log, 
-         use_profiling=args.profile, casename=casename,
-         lazy=args.lazy, rst_filename=restart_file)
+    from mirgecom.array_context import get_reasonable_array_context_class
+    actx_class = get_reasonable_array_context_class(
+        lazy=args.lazy, distributed=True, profiling=args.profiling, numpy=args.numpy)
+
+    main(actx_class, use_logmgr=args.log, casename=casename, 
+         restart_filename=restart_file)
