@@ -843,42 +843,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == i:
             print(f"{rank=},{local_nelements=},{global_nelements=}")
         comm.Barrier()
-
-#########################################################################
-
-    original_casename = casename
-    casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
-    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
-                               
-    vis_timer = None
-
-    if logmgr:
-        logmgr_add_cl_device_info(logmgr, queue)
-        logmgr_add_device_memory_usage(logmgr, queue)
-        logmgr_set_time(logmgr, current_step, current_t)
-
-        logmgr.add_watches([
-            ("step.max", "step = {value}, "),
-            ("dt.max", "dt: {value:1.5e} s, "),
-            ("t_sim.max", "sim time: {value:1.5e} s, "),
-            ("t_step.max", "--- step walltime: {value:5g} s\n")
-            ])
-
-        try:
-            logmgr.add_watches(["memory_usage_python.max",
-                                "memory_usage_gpu.max"])
-        except KeyError:
-            pass
-
-        if use_profiling:
-            logmgr.add_watches(["pyopencl_array_time.max"])
-
-        vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
-        logmgr.add_quantity(vis_timer)
-
-        gc_timer = IntervalTimer("t_gc", "Time spent garbage collecting")
-        logmgr.add_quantity(gc_timer)
         
 #################################################################
 
@@ -922,6 +886,42 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cv = force_evaluation(actx, current_cv)
 
     current_state = get_fluid_state(current_cv, tseed)
+
+#########################################################################
+
+    original_casename = casename
+    casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
+    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
+                               mode="wo", mpi_comm=comm)
+                               
+    vis_timer = None
+
+    if logmgr:
+        logmgr_add_cl_device_info(logmgr, queue)
+        logmgr_add_device_memory_usage(logmgr, queue)
+        logmgr_set_time(logmgr, current_step, current_t)
+
+        logmgr.add_watches([
+            ("step.max", "step = {value}, "),
+            ("dt.max", "dt: {value:1.5e} s, "),
+            ("t_sim.max", "sim time: {value:1.5e} s, "),
+            ("t_step.max", "--- step walltime: {value:5g} s\n")
+            ])
+
+        try:
+            logmgr.add_watches(["memory_usage_python.max",
+                                "memory_usage_gpu.max"])
+        except KeyError:
+            pass
+
+        if use_profiling:
+            logmgr.add_watches(["pyopencl_array_time.max"])
+
+        vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
+        logmgr.add_quantity(vis_timer)
+
+        gc_timer = IntervalTimer("t_gc", "Time spent garbage collecting")
+        logmgr.add_quantity(gc_timer)
 
 #####################################################################################
 
