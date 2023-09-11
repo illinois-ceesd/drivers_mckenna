@@ -680,8 +680,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-#    mechanism_file = "uiuc_7sp"
-    mechanism_file = "uiuc_8sp_phenol"
+    mechanism_file = "uiuc_7sp"
+#    mechanism_file = "uiuc_8sp_phenol"
     equiv_ratio = 0.7
     chem_rate = 0.3 #keep it between 0.0 and 1.0
     flow_rate = 25.0
@@ -695,8 +695,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # wall stuff
     ignore_wall = False
-#    my_material = "fiber"
-    my_material = "composite"
+    my_material = "fiber"
+#    my_material = "composite"
     temp_wall = 300
 
     wall_penalty_amount = 1.0
@@ -1327,8 +1327,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sample_init = PorousWallInitializer(
         pressure=101325.0, temperature=300.0,
         species=y_atmosphere, material_densities=sample_density)
-
-    holder_init = SolidWallInitializer(temperature=300.0)
+    
+    holder_mass = (wall_alumina_rho * wall_alumina_mask
+                   + wall_graphite_rho * wall_graphite_mask)
+    holder_init = SolidWallInitializer(temperature=300.0,
+                                       material_densities=holder_mass)
 
 ##############################################################################
 
@@ -2317,9 +2320,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if logmgr:
             logmgr.tick_before()
 
+#        fluid_cv, fluid_tseed, \
+#            sample_cv, sample_tseed, sample_density, \
+#            holder_cv, _ = state
         fluid_cv, fluid_tseed, \
-        sample_cv, sample_tseed, sample_density, \
-        holder_cv, _ = state
+            sample_cv, sample_tseed, sample_density, holder_cv = state
 
         fluid_cv = force_evaluation(actx, fluid_cv)
         fluid_tseed = force_evaluation(actx, fluid_tseed)
@@ -2350,21 +2355,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # construct species-limited solid state
         holder_state = get_holder_state(holder_cv)
 
-        # ~~~
-        if my_material == "fiber":
-            boundary_velocity = interface_zeros
+#        # ~~~
+#        if my_material == "fiber":
+#            boundary_velocity = interface_zeros
 
-        if my_material == "composite":
-            sample_mass_rhs = decomposition.get_source_terms(
-                temperature=sample_state.temperature,
-                chi=sample_state.wv.material_densities)
+#        if my_material == "composite":
+#            sample_mass_rhs = decomposition.get_source_terms(
+#                temperature=sample_state.temperature,
+#                chi=sample_state.wv.material_densities)
 
-            sample_source_gas = -sum(sample_mass_rhs)
+#            sample_source_gas = -sum(sample_mass_rhs)
 
-            # the normal points towards the wall but the gas must leave the wall
-            # so we flip the sign here..
-            boundary_velocity = \
-                -1.0 * speedup_factor * blowing_velocity(sample_cv, sample_source_gas)
+#            # the normal points towards the wall but the gas must leave the wall
+#            # so we flip the sign here..
+#            boundary_velocity = \
+#                -1.0 * speedup_factor * blowing_velocity(sample_cv, sample_source_gas)
 
         if local_dt:
             t = force_evaluation(actx, t)
@@ -2375,7 +2380,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             dt = make_obj_array([dt_fluid, fluid_zeros,
                                  dt_sample, sample_zeros, dt_sample,
-                                 dt_holder, interface_zeros])
+#                                 dt_holder, interface_zeros])
+                                 dt_holder])
         else:
             if constant_cfl:
                 dt = get_sim_timestep(dcoll, fluid_state, t, dt, maximum_cfl,
@@ -2385,7 +2391,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             state = make_obj_array([
                 fluid_cv, fluid_state.temperature,
                 sample_cv, sample_state.temperature, sample_state.wv.material_densities,
-                holder_cv, boundary_velocity])
+#                holder_cv, boundary_velocity])
+                holder_cv])
 
             do_garbage = check_step(step=step, interval=ngarbage)
             do_viz = check_step(step=step, interval=nviz)
@@ -2444,7 +2451,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         fluid_cv, fluid_tseed, \
         sample_cv, sample_tseed, sample_density, \
-        holder_cv, boundary_velocity = state
+        holder_cv = state
+
+#        fluid_cv, fluid_tseed, \
+#        sample_cv, sample_tseed, sample_density, \
+#        holder_cv, boundary_velocity = state
 
         # include both outflow and sponge in the damping region
         # apply outflow damping
@@ -2527,7 +2538,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     limiter_func_wall=_limit_sample_cv,
                     interface_noslip=True,
                     interface_radiation=True,
-                    boundary_velocity=boundary_velocity)
+                    # boundary_velocity=boundary_velocity
+                    )
 
             fluid_all_bnds_no_grad, holder_all_bnds_no_grad = \
                 add_thermal_interface_boundaries_no_grad(
@@ -2537,8 +2549,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     holder_state.dv.temperature,
                     fluid_all_bnds_no_grad, holder_boundaries,
                     interface_noslip=True,
-                    interface_radiation=True,
-                )
+                    interface_radiation=True)
 
             sample_all_bnds_no_grad, holder_all_bnds_no_grad = \
                 add_thermal_interface_boundaries_no_grad(
@@ -2548,22 +2559,19 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     holder_state.dv.temperature,
                     sample_all_bnds_no_grad, holder_all_bnds_no_grad,
                     interface_noslip=True,
-                    interface_radiation=False,
-                )
+                    interface_radiation=False)
 
         # ~~~~~~~~~~~~~~
 
         fluid_operator_states_quad = make_operator_fluid_states(
             dcoll, fluid_state, gas_model_fluid, fluid_all_bnds_no_grad,
             quadrature_tag, dd=dd_vol_fluid, comm_tag=_FluidOpStatesTag,
-            limiter_func=_limit_fluid_cv
-        )
+            limiter_func=_limit_fluid_cv)
 
         sample_operator_states_quad = make_operator_fluid_states(
             dcoll, sample_state, gas_model_sample, sample_all_bnds_no_grad,
             quadrature_tag, dd=dd_vol_sample, comm_tag=_WallOpStatesTag,
-            limiter_func=_limit_sample_cv
-        )
+            limiter_func=_limit_sample_cv)
 
         # ~~~~~~~~~~~~~~
 
@@ -2572,16 +2580,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, gas_model_fluid, fluid_all_bnds_no_grad, fluid_state,
             quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
             operator_states_quad=fluid_operator_states_quad,
-            #comm_tag=_FluidGradCVTag
-        )
+            comm_tag=_FluidGradCVTag)
 
         # fluid grad T
         fluid_grad_temperature = grad_t_operator(
             dcoll, gas_model_fluid, fluid_all_bnds_no_grad, fluid_state,
             quadrature_tag=quadrature_tag, dd=dd_vol_fluid,
             operator_states_quad=fluid_operator_states_quad,
-            #comm_tag=_FluidGradTempTag
-        )
+            comm_tag=_FluidGradTempTag)
 
         if True:
 
@@ -2591,8 +2597,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 sample_state,
                 quadrature_tag=quadrature_tag, dd=dd_vol_sample,
                 operator_states_quad=sample_operator_states_quad,
-                #comm_tag=_SampleGradCVTag
-            )
+                comm_tag=_SampleGradCVTag)
 
             # sample grad T
             sample_grad_temperature = grad_t_operator(
@@ -2600,16 +2605,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 sample_state,
                 quadrature_tag=quadrature_tag, dd=dd_vol_sample,
                 operator_states_quad=sample_operator_states_quad,
-                #comm_tag=_SampleGradTempTag
-            )
+                comm_tag=_SampleGradTempTag)
 
             # holder grad T
             holder_grad_temperature = wall_grad_t_operator(
                 dcoll, holder_state.dv.thermal_conductivity,
                 holder_all_bnds_no_grad, holder_state.dv.temperature,
                 quadrature_tag=quadrature_tag, dd=dd_vol_holder,
-                #comm_tag=_HolderGradTempTag
-            )
+                comm_tag=_HolderGradTempTag)
 
         # ~~~~~~~~~~~~~~~~~
 
@@ -2626,7 +2629,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     limiter_func_fluid=_limit_fluid_cv,
                     limiter_func_wall=_limit_sample_cv,
                     interface_noslip=True,
-                    boundary_velocity=boundary_velocity,
+                    # boundary_velocity=boundary_velocity,
                     interface_radiation=True,
                     wall_emissivity=emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
@@ -2711,8 +2714,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + sponge_func(cv=fluid_cv, cv_ref=ref_cv, sigma=sponge_sigma)
             + gravity_source_terms(fluid_cv)
             + axisym_source_fluid(actx, dcoll, fluid_state,
-                                  fluid_grad_cv, fluid_grad_temperature)
-        )
+                                  fluid_grad_cv, fluid_grad_temperature))
 
         #~~~~~~~~~~~~~
 
@@ -2776,11 +2778,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             sample_zeros,
             sample_mass_rhs,
             holder_rhs + holder_sources,
-            interface_zeros])
+#            interface_zeros
+            ])
 
     unfiltered_rhs_compiled = actx.compile(unfiltered_rhs)
 
     def my_rhs(t, state):
+
         if use_rhs_filter is True:
             rhs_state = unfiltered_rhs_compiled(t, state)
             filtered_sample_rhs = filter_sample_rhs_compiled(rhs_state[2])
@@ -2789,7 +2793,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             return make_obj_array([
                 rhs_state[0], fluid_zeros,
                 filtered_sample_rhs, sample_zeros, filtered_sample_mass,
-                rhs_state[5], interface_zeros])
+#                rhs_state[5], interface_zeros])
+                rhs_state[5]])
 
         else:
             return unfiltered_rhs(t, state)
@@ -2822,7 +2827,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     stepper_state = make_obj_array([
         fluid_state.cv, fluid_state.temperature,
         sample_state.cv, sample_state.temperature, sample_state.wv.material_densities,
-        holder_state.cv, interface_zeros])
+#        holder_state.cv, interface_zeros])
+        holder_state.cv])
 
     if local_dt == True:
         dt_fluid = _my_get_timestep_fluid(
@@ -2837,14 +2843,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dt_holder = force_evaluation(actx, dt_holder)
 
         dt = make_obj_array([
-            dt_fluid, fluid_zeros, dt_sample, sample_zeros, dt_sample, dt_holder, interface_zeros])
+#            dt_fluid, fluid_zeros, dt_sample, sample_zeros, dt_sample, dt_holder, interface_zeros])
+            dt_fluid, fluid_zeros, dt_sample, sample_zeros, dt_sample, dt_holder])
 
         t_fluid = force_evaluation(actx, current_t + fluid_zeros)
         t_sample = force_evaluation(actx, current_t + sample_zeros)
         t_holder = force_evaluation(actx, current_t + holder_zeros)
 
         t = make_obj_array([
-            t_fluid, t_fluid, t_sample, t_sample, t_sample, t_holder, interface_zeros])
+#            t_fluid, t_fluid, t_sample, t_sample, t_sample, t_holder, interface_zeros])
+            t_fluid, t_fluid, t_sample, t_sample, t_sample, t_holder])
     else:
         if constant_cfl:
             dt = get_sim_timestep(dcoll, fluid_state, t, maximum_fluid_dt,
