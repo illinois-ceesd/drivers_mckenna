@@ -1033,22 +1033,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 + wall_alumina_density * wall_alumina_mask
                 + wall_graphite_density * wall_graphite_mask)
 
-        # summ all the phases of the material
-        tau = solid_wall_model.decomposition_progress(wall_densities)
-        wall_mass = solid_wall_model.solid_density(wall_densities)
-
-        wall_sample_h = material.enthalpy(wv_tseed, tau)
-        wall_alumina_h = wall_alumina_cp * wv_tseed
-        wall_graphite_h = wall_graphite_cp * wv_tseed
-        wall_enthalpy = (
-            wall_sample_h * wall_sample_mask
-            + wall_alumina_h * wall_alumina_mask
-            + wall_graphite_h * wall_graphite_mask)
-
-        wall_energy = wall_mass * wall_enthalpy
-
-        current_wv = SolidWallConservedVars(mass=wall_densities,
-                                            energy=wall_energy)
+        from mirgecom.materials.initializer import SolidWallInitializer
+        holder_init = SolidWallInitializer(temperature=300.0,
+                                           material_densities=wall_densities)
+        current_wv = holder_init(solid_nodes, solid_wall_model)
 
     else:
         current_step = restart_step
