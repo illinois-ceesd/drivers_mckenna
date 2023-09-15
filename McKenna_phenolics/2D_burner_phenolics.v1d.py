@@ -2068,7 +2068,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     #~~~~~~~~~~
 
     from mirgecom.viscous import get_local_max_species_diffusivity
-    from grudge.dof_desc import DD_VOLUME_ALL
     def _my_get_timestep_sample(state):
         return maximum_solid_dt + actx.np.zeros_like(state.cv.energy)
 
