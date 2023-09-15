@@ -23,9 +23,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
+import os
+import sys
 import yaml
 import logging
-import sys
 import numpy as np
 import pyopencl as cl
 import pyopencl.array as cla  # noqa
@@ -582,7 +583,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-    my_mechanism = "uiuc_7sp"
+    mechanism_file = "uiuc_7sp"
     equiv_ratio = 0.7
     chem_rate = 1.0
     flow_rate = 25.0
@@ -654,10 +655,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{  Set up initial state using Cantera
 
     # Use Cantera for initialization
-    import os
-    current_path = os.path.abspath(os.getcwd()) + "/"
-    mechanism_file = current_path + my_mechanism
-
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -1862,7 +1859,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         fluid_cv = fluid_state.cv
 
         # wall variables
-        solid_state = get_solid_state(solid_cv)
+        solid_state = _get_solid_state(solid_cv)
         wdv = solid_state.dv
 
         #~~~~~~~~~~~~~
