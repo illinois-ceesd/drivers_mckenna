@@ -617,10 +617,30 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     bnd_discr = dcoll.discr_from_dd(dd_vol_solid.trace("sample_base").domain_tag)
     sld_bnd_nodes = actx.thaw(bnd_discr.nodes())
+    print(f"{sld_bnd_nodes=}")
+
     bnd_wv = solid_density_bnd + sld_bnd_nodes[0]*0.0
+    print(f"{bnd_wv=}")
+
     bnd_cv = solid_bnd_init(dim, sld_bnd_nodes, gas_model_solid)
-    bnd_state = make_fluid_state(bnd_cv, gas_model_solid, material_densities=bnd_wv,
-                                 temperature_seed=300.0)
+    bnd_cv = force_evaluation(actx, bnd_cv)
+    print(f"{bnd_cv=}")
+
+    # 1/0
+    def _mksolidbndstate():
+        return make_fluid_state(bnd_cv, gas_model_solid, material_densities=bnd_wv,
+                                temperature_seed=300.0)
+
+    make_solid_bnd_state = actx.compile(_mksolidbndstate)
+
+    # bnd_state = make_fluid_state(bnd_cv, gas_model_solid, material_densities=bnd_wv,
+    #                             temperature_seed=300.0)
+    bnd_state = make_solid_bnd_state()
+
+    # bnd_state = force_evaluation(actx, bnd_state)
+    print(f"{bnd_state=}")
+    # 1/0
+
     def _solid_bnd_solution(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
         return bnd_state
 
@@ -629,7 +649,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dd_vol_solid.trace("sample_side").domain_tag: AdiabaticSlipBoundary(),
         dd_vol_solid.trace("sample_base").domain_tag:
             PrescribedFluidBoundary(boundary_state_func=_solid_bnd_solution),
-            #AdiabaticSlipBoundary(),
+            # AdiabaticSlipBoundary(),
     }
 
 ##############################################################################
