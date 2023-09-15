@@ -566,7 +566,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # default timestepping control
 #    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
-    maximum_dt = 1.5e-8  # order == 2
+    maximum_dt = 1.0e-7  # order == 2
     t_final = 2.0
     niter = 11
     local_dt = True
@@ -574,7 +574,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.2
     
     # discretization and model control
-    order = 3
+    order = 2
     use_overintegration = False
 
     x0_sponge = 0.150
@@ -599,7 +599,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     temp_wall = 300.0
 
     wall_penalty_amount = 1.0
-    wall_time_scale = 50.0  # wall speed-up
+    wall_time_scale = 100.0  # wall speed-up
 
     # https://www.azom.com/article.aspx?ArticleID=2850
     # https://matweb.com/search/DataSheet.aspx?MatGUID=9aebe83845c04c1db5126fada6f76f7e&ckck=1
@@ -1350,6 +1350,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None,
         fluid_sources=None, solid_sources=None,):
 
+        dt_fluid = my_get_timestep_fluid(fluid_state, t[0], dt[0])
+
+        dt_solid = my_get_timestep_solid(solid_state, t[2], dt[2])
+
 #        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
 
         fluid_viz_fields = [
@@ -1361,6 +1365,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("DV_U", fluid_state.velocity[0]),
             ("DV_V", fluid_state.velocity[1]),
             ("dt", dt[0] if local_dt else None),
+            ("dt_max", dt_fluid if local_dt else None),
             ("sponge", sponge_sigma),
             ("smoothness", 1.0 - theta_factor*smoothness),
             ("RR", chem_rate*reaction_rates_damping),
@@ -1401,6 +1406,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("wall_temperature", wdv.temperature),
             ("wall_grad_t", grad_t_solid),
             ("dt", dt[2] if local_dt else None),
+            ("dt_max", dt_solid if local_dt else None),
         ]
 
         if grad_t_solid is not None:
@@ -1703,7 +1709,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 ##############################################################################
 
     from grudge.dof_desc import DD_VOLUME_ALL
-    def _my_get_timestep_wall(solid_state, t, dt):
+    def _my_get_timestep_solid(solid_state, t, dt):
 
         if not constant_cfl:
             return dt
@@ -1713,7 +1719,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         actx = wv.mass.array_context
         wall_diffusivity = wall_model.thermal_diffusivity(solid_state)
-        dt = char_length_solid**2/(wall_time_scale*wall_diffusivity)
+        dt = char_length_solid**2/(wall_diffusivity)
         if local_dt:
             mydt = current_cfl*dt
         else:
@@ -1733,7 +1739,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             current_cfl, gas_model, constant_cfl=constant_cfl,
             local_dt=local_dt, fluid_dd=dd_vol_fluid)
 
-    my_get_timestep_wall = actx.compile(_my_get_timestep_wall)
+    my_get_timestep_solid = actx.compile(_my_get_timestep_solid)
     my_get_timestep_fluid = actx.compile(_my_get_timestep_fluid)
 
 ##############################################################################
@@ -1775,12 +1781,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #            dt_fluid = force_evaluation(actx, 
 #                my_get_timestep_fluid(fluid_state, t[0], dt[0]))
 
-#            dt_wall = force_evaluation(actx, 
-#                my_get_timestep_wall(solid_state, t[2], dt[2]))
-            dt_wall = force_evaluation(actx, actx.np.minimum(
-                1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
+#            dt_solid = force_evaluation(actx, 
+#                my_get_timestep_solid(solid_state, t[2], dt[2]))
+            dt_solid = force_evaluation(actx, actx.np.minimum(
+                maximum_dt, my_get_timestep_solid(solid_state, t[2], dt[2])))
 
-            dt = make_obj_array([dt_fluid, dt_fluid*0., dt_wall])
+            dt = make_obj_array([dt_fluid, dt_fluid*0., dt_solid])
         else:
             if constant_cfl:
                 dt = get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl,
@@ -1962,7 +1968,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                             "future GC collections")
                 gc.freeze()
 
-        min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
+        min_dt = wall_time_scale*np.min(actx.to_numpy(dt[2])) \
+            if local_dt else dt
         if logmgr:
             set_dt(logmgr, min_dt)
             logmgr.tick_after()
@@ -1984,8 +1991,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         t_solid = force_evaluation(actx, current_t + solid_zeros)
         maximum_dt_solid = force_evaluation(actx, maximum_dt + solid_zeros)
         dt_solid = force_evaluation(actx, actx.np.minimum(
-            maximum_dt, my_get_timestep_wall(
-                solid_state, t_solid, maximum_dt_solid))))
+            maximum_dt, my_get_timestep_solid(
+                solid_state, t_solid, maximum_dt_solid)))
 
         dt = make_obj_array([dt_fluid, dt_fluid*0.0, dt_solid])
         t = make_obj_array([t_fluid, t_fluid, t_solid])
