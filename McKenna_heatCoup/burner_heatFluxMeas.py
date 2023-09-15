@@ -566,7 +566,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # default timestepping control
 #    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
-    current_dt = 2.5e-6  # order == 2
+    maximum_dt = 1.5e-8  # order == 2
     t_final = 2.0
     niter = 11
     local_dt = True
@@ -597,7 +597,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     ignore_wall = False
 
     temp_wall = 300.0
-    wall_sample_rho = 1600.0 * 0.1  # do not account for porous volume
 
     wall_penalty_amount = 1.0
     wall_time_scale = 50.0  # wall speed-up
@@ -617,7 +616,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # FIXME There is a table with the temperature-dependent data for graphite
     wall_graphite_rho = 1625.0
     wall_graphite_cp = 770.0
-    wall_graphite_kappa = 50.0
+    wall_graphite_kappa = 200.0
 
     use_radiation = True
     emissivity = 0.85*speedup_factor
@@ -639,7 +638,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         print(f"\tnrestart = {nrestart}")
         print(f"\tnhealth = {nhealth}")
         print(f"\tnstatus = {nstatus}")
-        print(f"\tcurrent_dt = {current_dt}")
+        print(f"\maximum_dt = {maximum_dt}")
         if constant_cfl is False:
             print(f"\tt_final = {t_final}")
         else:
@@ -1337,7 +1336,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     eosname = eos.__class__.__name__
     init_message = make_init_message(dim=dim, order=order,
         nelements=local_nelements, global_nelements=global_nelements,
-        dt=current_dt, t_final=t_final, nstatus=nstatus, nviz=nviz,
+        dt=maximum_dt, t_final=t_final, nstatus=nstatus, nviz=nviz,
         t_initial=current_t, cfl=current_cfl, constant_cfl=constant_cfl,
         initname=initname, eosname=eosname, casename=casename)
 
@@ -1714,7 +1713,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         actx = wv.mass.array_context
         wall_diffusivity = wall_model.thermal_diffusivity(solid_state)
-        dt = char_length_solid**2/wall_diffusivity
+        dt = char_length_solid**2/(wall_time_scale*wall_diffusivity)
         if local_dt:
             mydt = current_cfl*dt
         else:
@@ -1771,15 +1770,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if local_dt:
             t = force_evaluation(actx, t)
 
-#            dt_fluid = force_evaluation(actx, actx.np.minimum(
-#                current_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
-            dt_fluid = force_evaluation(actx, 
-                my_get_timestep_fluid(fluid_state, t[0], dt[0]))
+            dt_fluid = force_evaluation(actx, actx.np.minimum(
+                maximum_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
+#            dt_fluid = force_evaluation(actx, 
+#                my_get_timestep_fluid(fluid_state, t[0], dt[0]))
 
-            dt_wall = force_evaluation(actx, 
-                my_get_timestep_wall(solid_state, t[2], dt[2]))
-#            dt_wall = force_evaluation(actx, actx.np.minimum(
-#                1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
+#            dt_wall = force_evaluation(actx, 
+#                my_get_timestep_wall(solid_state, t[2], dt[2]))
+            dt_wall = force_evaluation(actx, actx.np.minimum(
+                1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
 
             dt = make_obj_array([dt_fluid, dt_fluid*0., dt_wall])
         else:
@@ -1976,31 +1975,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                     solid_state.cv])
 
     if local_dt == True:
-        dt_fluid = force_evaluation(actx, actx.np.minimum(
-            current_dt, my_get_timestep_fluid(fluid_state,
-                            force_evaluation(actx, current_t + fluid_zeros),
-                            force_evaluation(actx, current_dt + fluid_zeros))
-            )
-        )
-
-        dt_wall = force_evaluation(actx, actx.np.minimum(
-            1.0e-8, my_get_timestep_wall(solid_state,
-                            force_evaluation(actx, current_t + solid_zeros),
-                            force_evaluation(actx, current_dt + solid_zeros))
-            )
-        )
-
-        dt = make_obj_array([dt_fluid, dt_fluid*0.0, dt_wall])
-
         t_fluid = force_evaluation(actx, current_t + fluid_zeros)
-        t_wall = force_evaluation(actx, current_t + solid_zeros)
-        t = make_obj_array([t_fluid, t_fluid, t_wall])
+        maximum_dt_fluid = force_evaluation(actx, maximum_dt + fluid_zeros)
+        dt_fluid = force_evaluation(actx, actx.np.minimum(
+            maximum_dt, my_get_timestep_fluid(
+                fluid_state, t_fluid, maximum_dt_fluid)))
+
+        t_solid = force_evaluation(actx, current_t + solid_zeros)
+        maximum_dt_solid = force_evaluation(actx, maximum_dt + solid_zeros)
+        dt_solid = force_evaluation(actx, actx.np.minimum(
+            maximum_dt, my_get_timestep_wall(
+                solid_state, t_solid, maximum_dt_solid))))
+
+        dt = make_obj_array([dt_fluid, dt_fluid*0.0, dt_solid])
+        t = make_obj_array([t_fluid, t_fluid, t_solid])
     else:
         if constant_cfl:
             dt = get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl,
                 t_final, constant_cfl, local_dt, dd_vol_fluid)
         else:
-            dt = 1.0*current_dt
+            dt = 1.0*maximum_dt
             t = 1.0*current_t
 
     if rank == 0:
@@ -2026,7 +2020,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #    my_write_restart(step=final_step, t=final_t, state=stepper_state)
 
-#    my_write_viz(step=final_step, t=final_t, dt=current_dt,
+#    my_write_viz(step=final_step, t=final_t, dt=maximum_dt,
 #                 cv=final_state.cv, dv=current_state.dv,
 #                 wv=final_wv, wdv=final_wdv)
 

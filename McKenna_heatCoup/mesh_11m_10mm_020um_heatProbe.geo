@@ -229,14 +229,14 @@ Point(87) = {  0.250, burner_height + 0.500, 0., 5.500*clF};
 Point(88) = {  0.250, burner_height + 0.550, 0., 6.000*clF};
 Point{70:88} In Surface{1};
 
-Point(100) = {0.1, 0.1, 0., 1.0};
-Point(101) = {             0.000500, flame_dist + burner_height, 0., 1.0};
-Point(102) = {int_radius + 0.000281,              burner_height, 0., 1.0};
-Point(103) = {int_radius - 0.000281,              burner_height, 0., 1.0};
-Point(104) = {int_radius           ,   0.000020 + burner_height, 0., 1.0};
-Point(105) = {      0.005 - 0.00050, flame_dist + burner_height, 0., 1.0};
-Point(106) = {      0.005 + 0.00050, flame_dist + burner_height, 0., 1.0};
-Point(107) = {        0.           ,  -0.000120 + mat_location , 0., 1.0};
+/*Point(100) = {0.1, 0.1, 0., 1.0};*/
+/*Point(101) = {             0.000500, flame_dist + burner_height, 0., 1.0};*/
+/*Point(102) = {int_radius + 0.000281,              burner_height, 0., 1.0};*/
+/*Point(103) = {int_radius - 0.000281,              burner_height, 0., 1.0};*/
+/*Point(104) = {int_radius           ,   0.000020 + burner_height, 0., 1.0};*/
+/*Point(105) = {      0.005 - 0.00050, flame_dist + burner_height, 0., 1.0};*/
+/*Point(106) = {      0.005 + 0.00050, flame_dist + burner_height, 0., 1.0};*/
+/*Point(107) = {        0.           ,  -0.000120 + mat_location , 0., 1.0};*/
 
 Line Loop(42) = {1,3,-17,-16};
 Plane Surface(3) = {42};
@@ -294,7 +294,7 @@ Physical Line("burner") = {44,14,15};
 Physical Line("outlet") = {40};
 Physical Line("linear") = {41,42,43};
 Physical Line("wall_sym") = {61};
-Physical Surface("fluid") = {1:6,11:16};
+Physical Surface("fluid") = {1:7,11:16};
 Physical Surface("solid") = {20};
 
 //+
