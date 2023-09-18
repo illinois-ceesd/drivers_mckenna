@@ -582,7 +582,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-    mechanism_file = "uiuc_7sp"
+    my_mechanism = "uiuc_7sp"
     equiv_ratio = 0.7
     chem_rate = 1.0
     flow_rate = 25.0
@@ -654,6 +654,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{  Set up initial state using Cantera
 
     # Use Cantera for initialization
+    current_path = os.path.abspath(os.getcwd()) + "/"
+    mechanism_file = current_path + my_mechanism
+
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -1082,6 +1085,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         tseed = force_evaluation(actx, 1000.0 + fluid_zeros)
         solid_cv = solid_init(solid_nodes, wall_model)
 
+        my_file = open("temperature_file.dat", "w")
+        my_file.close()
+
     else:
         current_step = restart_step
         current_t = restart_data["t"]
@@ -1091,6 +1097,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if restart_iterations:
             current_t = 0.0
             current_step = 0
+
+        my_file = open("temperature_file.dat", "x")
+        my_file.close()
 
         if rank == 0:
             logger.info("Restarting soln.")
@@ -1740,7 +1749,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-    import os
+    from grudge.op import nodal_min, nodal_max
+    def vol_min(dd_vol, x):
+        return actx.to_numpy(nodal_min(dcoll, dd_vol, x, initial=+np.inf))[()]
+
+    def vol_max(dd_vol, x):
+        return actx.to_numpy(nodal_max(dcoll, dd_vol, x, initial=-np.inf))[()]
+
     def my_pre_step(step, t, dt, state):
         
         if logmgr:
@@ -1792,6 +1807,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
             do_health = check_step(step=step, interval=nhealth)
+
+            if step % 1 == 0:
+                dd_centerline = dd_vol_solid.trace("wall_sym")
+                temperature_centerline = op.project(
+                    dcoll, dd_vol_solid, dd_centerline, solid_state.dv.temperature)
+                min_temp_center = vol_min(dd_centerline, temperature_centerline)
+                max_temp_center = vol_max(dd_centerline, temperature_centerline)
+                max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
+
+                wall_time = np.max(actx.to_numpy(t[2]))
+
+                my_file = open("temperature_file.dat", "a")
+                my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
+                my_file.close()
 
             ngarbage = 50
             if check_step(step=step, interval=ngarbage):
