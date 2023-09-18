@@ -36,27 +36,26 @@ from dataclasses import dataclass, fields
 
 from arraycontext import (
     dataclass_array_container, with_container_arithmetic,
-    get_container_context_recursively
-)
+    get_container_context_recursively)
 
 from meshmode.dof_array import DOFArray
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import (
-    DOFDesc, as_dofdesc, DISCR_TAG_BASE, BoundaryDomainTag, VolumeDomainTag
-)
+    DOFDesc, as_dofdesc, DISCR_TAG_BASE, BoundaryDomainTag, VolumeDomainTag)
+
+from logpyle import IntervalTimer, set_dt
+from pytools.obj_array import make_obj_array
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from mirgecom.navierstokes import ns_operator
 from mirgecom.utils import force_evaluation
 from mirgecom.simutil import (
     check_step, get_sim_timestep, distribute_mesh, write_visfile,
-    check_naninf_local, check_range_local, global_reduce
-)
+    check_naninf_local, check_range_local, global_reduce)
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
-
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     IsothermalWallBoundary,
@@ -64,61 +63,35 @@ from mirgecom.boundary import (
     AdiabaticSlipBoundary,
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
-    LinearizedOutflowBoundary
-)
-
+    LinearizedOutflowBoundary)
 from mirgecom.fluid import (
-    velocity_gradient, species_mass_fraction_gradient, make_conserved
-)
+    velocity_gradient, species_mass_fraction_gradient, make_conserved)
 from mirgecom.transport import (
     PowerLawTransport,
-    MixtureAveragedTransport
-)
+    MixtureAveragedTransport)
 import cantera
 from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.gas_model import (
-    GasModel,
-    make_fluid_state,
-    make_operator_fluid_states
-)
-from logpyle import IntervalTimer, set_dt
+    GasModel, make_fluid_state, make_operator_fluid_states)
 from mirgecom.logging_quantities import (
-    initialize_logmgr,
-    logmgr_add_cl_device_info,
-    logmgr_set_time,
-    logmgr_add_device_memory_usage,
-)
-
-from pytools.obj_array import make_obj_array
-
-#from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
-#    coupled_grad_t_operator,
-#    coupled_ns_heat_operator
-#)
+    initialize_logmgr, logmgr_add_cl_device_info, logmgr_set_time,
+    logmgr_add_device_memory_usage)
 from mirgecom.navierstokes import (
     grad_t_operator,
     grad_cv_operator,
-    ns_operator
-)
-from mirgecom.multiphysics.multiphysics_coupled_fluid_wall import (
-    add_interface_boundaries as add_multiphysics_interface_boundaries,
-    add_interface_boundaries_no_grad as add_multiphysics_interface_boundaries_no_grad
-)
+    ns_operator)
 from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
     add_interface_boundaries as add_thermal_interface_boundaries,
-    add_interface_boundaries_no_grad as add_thermal_interface_boundaries_no_grad
-)
+    add_interface_boundaries_no_grad as add_thermal_interface_boundaries_no_grad)
 from mirgecom.diffusion import (
     diffusion_operator,
     grad_operator as wall_grad_t_operator,
-    NeumannDiffusionBoundary
-)
+    NeumannDiffusionBoundary)
 
 from grudge.trace_pair import (
     TracePair,
-    inter_volume_trace_pairs
-)
+    inter_volume_trace_pairs)
 
 
 #########################################################################
