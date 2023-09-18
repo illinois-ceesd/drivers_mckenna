@@ -565,11 +565,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     nstatus = 100
 
     # default timestepping control
-#    integrator = "compiled_lsrk45"
     integrator = "ssprk43"
     maximum_dt = 1.0e-7  # order == 2
-    t_final = 2.0
-    niter = 11
+    t_final = 200000.0
+    niter = 10000001
     local_dt = True
     constant_cfl = True
     current_cfl = 0.2
@@ -620,7 +619,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_graphite_kappa = 200.0
 
     use_radiation = True
-    emissivity = 0.85*speedup_factor
+    emissivity = 0.03*speedup_factor
 
     restart_iterations = False
 
@@ -1054,7 +1053,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     solid_init = SolidWallInitializer(temperature=300.0,
                                       material_densities=wall_copper_rho)
 
-#####################################################################################
+#########################################################################
 
     smooth_region = force_evaluation(actx, smoothness_region(dcoll, fluid_nodes))
 
@@ -1075,41 +1074,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     get_solid_state = actx.compile(_get_solid_state)
 
 #########################################################################
-
-    original_casename = casename
-    casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
-    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
-                               
-    vis_timer = None
-    if logmgr:
-        logmgr_add_cl_device_info(logmgr, queue)
-        logmgr_add_device_memory_usage(logmgr, queue)
-        logmgr_set_time(logmgr, current_step, current_t)
-
-        logmgr.add_watches([
-            ("step.max", "step = {value}, "),
-            ("dt.max", "dt: {value:1.5e} s, "),
-            ("t_sim.max", "sim time: {value:1.5e} s, "),
-            ("t_step.max", "--- step walltime: {value:5g} s\n")
-            ])
-
-        try:
-            logmgr.add_watches(["memory_usage_python.max",
-                                "memory_usage_gpu.max"])
-        except KeyError:
-            pass
-
-        if use_profiling:
-            logmgr.add_watches(["pyopencl_array_time.max"])
-
-        vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
-        logmgr.add_quantity(vis_timer)
-
-        gc_timer = IntervalTimer("t_gc", "Time spent garbage collecting")
-        logmgr.add_quantity(gc_timer)
-
-##############################################################################
 
     if restart_file is None:
         if rank == 0:
@@ -1167,7 +1131,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     fluid_state = get_fluid_state(fluid_cv, tseed)
     solid_state = get_solid_state(solid_cv)
 
-##############################################################################
+#########################################################################
 
     # initialize the sponge field
     sponge_x_thickness = 0.055
@@ -1185,6 +1149,41 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sponge_sigma = force_evaluation(actx, sponge_init(x_vec=fluid_nodes))
     ref_cv = force_evaluation(actx,
         ref_state(fluid_nodes, eos, flow_rate, solve_the_flame))
+
+#########################################################################
+
+    original_casename = casename
+    casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
+    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
+                               mode="wo", mpi_comm=comm)
+                               
+    vis_timer = None
+    if logmgr:
+        logmgr_add_cl_device_info(logmgr, queue)
+        logmgr_add_device_memory_usage(logmgr, queue)
+        logmgr_set_time(logmgr, current_step, current_t)
+
+        logmgr.add_watches([
+            ("step.max", "step = {value}, "),
+            ("dt.max", "dt: {value:1.5e} s, "),
+            ("t_sim.max", "sim time: {value:1.5e} s, "),
+            ("t_step.max", "--- step walltime: {value:5g} s\n")
+            ])
+
+        try:
+            logmgr.add_watches(["memory_usage_python.max",
+                                "memory_usage_gpu.max"])
+        except KeyError:
+            pass
+
+        if use_profiling:
+            logmgr.add_watches(["pyopencl_array_time.max"])
+
+        vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
+        logmgr.add_quantity(vis_timer)
+
+        gc_timer = IntervalTimer("t_gc", "Time spent garbage collecting")
+        logmgr.add_quantity(gc_timer)
 
 ##############################################################################
 
