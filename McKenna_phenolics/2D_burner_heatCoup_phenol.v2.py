@@ -561,7 +561,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             for vol, (mesh, _) in volume_to_local_mesh_data.items()},
         order=order)
 
-
     from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
     if use_overintegration:
         quadrature_tag = DISCR_TAG_QUAD
@@ -592,8 +591,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~
     from grudge.dt_utils import characteristic_lengthscales
-    char_length_fluid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid)
-    char_length_solid = characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid)
+    char_length_fluid = force_evaluation(
+        actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid))
+    char_length_solid = force_evaluation(
+        actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid))
 
 ##########################################################################
 
@@ -622,7 +623,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     r_int = 2.38*25.4/2000.0
     r_ext = 2.89*25.4/2000.0
-    
+
     mass_react = flow_rate*1.0
     mass_shroud = shroud_rate*1.0
     A_int = np.pi*r_int**2
@@ -1100,6 +1101,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                mode='wo', mpi_comm=comm)
 
     vis_timer = None
+
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
         logmgr_add_device_memory_usage(logmgr, queue)
