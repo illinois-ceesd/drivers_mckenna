@@ -43,6 +43,9 @@ from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import (
     DOFDesc, as_dofdesc, DISCR_TAG_BASE, BoundaryDomainTag, VolumeDomainTag)
+from grudge.trace_pair import (
+    TracePair,
+    inter_volume_trace_pairs)
 
 from logpyle import IntervalTimer, set_dt
 from pytools.obj_array import make_obj_array
@@ -67,8 +70,7 @@ from mirgecom.boundary import (
 from mirgecom.fluid import (
     velocity_gradient, species_mass_fraction_gradient, make_conserved)
 from mirgecom.transport import (
-    PowerLawTransport,
-    MixtureAveragedTransport)
+    PowerLawTransport, MixtureAveragedTransport)
 import cantera
 from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
 from mirgecom.eos import PyrometheusMixture
@@ -78,20 +80,13 @@ from mirgecom.logging_quantities import (
     initialize_logmgr, logmgr_add_cl_device_info, logmgr_set_time,
     logmgr_add_device_memory_usage)
 from mirgecom.navierstokes import (
-    grad_t_operator,
-    grad_cv_operator,
-    ns_operator)
+    grad_t_operator, grad_cv_operator, ns_operator)
 from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
     add_interface_boundaries as add_thermal_interface_boundaries,
     add_interface_boundaries_no_grad as add_thermal_interface_boundaries_no_grad)
 from mirgecom.diffusion import (
-    diffusion_operator,
-    grad_operator as wall_grad_t_operator,
+    diffusion_operator, grad_operator as wall_grad_t_operator,
     NeumannDiffusionBoundary)
-
-from grudge.trace_pair import (
-    TracePair,
-    inter_volume_trace_pairs)
 
 
 #########################################################################
@@ -112,12 +107,6 @@ class _SolidGradTempTag:
     pass
 
 class _SolidOperatorTag:
-    pass
-
-class _WallOxDiffCommTag:
-    pass
-
-class _OxCommTag:
     pass
 
 class _MyGradTag_Bdry:
