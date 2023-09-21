@@ -1054,14 +1054,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_step = restart_step
         current_t = restart_data["t"]
         if (np.isscalar(current_t) is False):
-            current_t = np.min(actx.to_numpy(current_t[0]))
+            current_t = np.min(actx.to_numpy(current_t[2]))
 
         if restart_iterations:
             current_t = 0.0
             current_step = 0
 
-        my_file = open("temperature_file.dat", "x")
-        my_file.close()
+        data = np.genfromtxt('temperature_file.dat', delimiter=',')
+        last_stored_time = data[-1,0]
 
         if rank == 0:
             logger.info("Restarting soln.")
@@ -1779,10 +1779,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
 
                 wall_time = np.max(actx.to_numpy(t[2]))
-
-                my_file = open("temperature_file.dat", "a")
-                my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
-                my_file.close()
+                if wall_time > last_stored_time:
+                    my_file = open("temperature_file.dat", "a")
+                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
+                    my_file.close()
 
             ngarbage = 50
             if check_step(step=step, interval=ngarbage):
