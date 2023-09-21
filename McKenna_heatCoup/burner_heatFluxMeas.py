@@ -1770,7 +1770,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             do_restart = check_step(step=step, interval=nrestart)
             do_health = check_step(step=step, interval=nhealth)
 
-            if step % 1 == 0:
+            if step % 1000 == 0:
                 dd_centerline = dd_vol_solid.trace("wall_sym")
                 temperature_centerline = op.project(
                     dcoll, dd_vol_solid, dd_centerline, solid_state.dv.temperature)
