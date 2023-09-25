@@ -2010,6 +2010,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def my_rhs(t, state):
         cv, tseed, wv, wv_tseed, boundary_velocity = state
 
+        cv = force_evaluation(actx, cv)
+        tseed = force_evaluation(actx, tseed)
+        wv = force_evaluation(actx, wv)
+        wv_tseed = force_evaluation(actx, wv_tseed)
+
         t = force_evaluation(actx, t)
         smoothness = force_evaluation(actx, smooth_region + sponge_sigma/sponge_amp)
 
