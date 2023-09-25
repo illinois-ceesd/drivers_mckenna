@@ -97,8 +97,8 @@ from mirgecom.navierstokes import (
     ns_operator
 )
 from mirgecom.multiphysics.phenolics_coupled_fluid_wall import (
-    add_interface_boundaries as add_thermal_interface_boundaries,
-    add_interface_boundaries_no_grad as add_thermal_interface_boundaries_no_grad
+    add_interface_boundaries,
+    add_interface_boundaries_no_grad
 )
 from mirgecom.diffusion import (
     diffusion_operator,
@@ -202,8 +202,8 @@ class Burner2D_Reactive:
     def __call__(self, actx, x_vec, eos, state_minus=None):
 
         if x_vec.shape != (self._dim,):
-            raise ValueError(f'Position vector has unexpected dimensionality,'
-                             f' expected {self._dim}.')
+            raise ValueError(f"Position vector has unexpected dimensionality,"
+                             f" expected {self._dim}.")
 
         _ya = self._ya
         _yb = self._yb
@@ -419,22 +419,22 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rank = comm.Get_rank()
     nparts = comm.Get_size()
 
-    logmgr = initialize_logmgr(use_logmgr, filename=(f'{casename}.sqlite'),
-                               mode='wo', mpi_comm=comm)
+    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
+                               mode="wo", mpi_comm=comm)
 
     from mirgecom.array_context import initialize_actx, actx_class_is_profiling
     actx = initialize_actx(actx_class, comm)
-    queue = getattr(actx, 'queue', None)
+    queue = getattr(actx, "queue", None)
     use_profiling = actx_class_is_profiling(actx_class)
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = 'mesh_01_round_10mm_020um_2domains-v2.msh'
+    mesh_filename = "mesh_01_round_10mm_020um_2domains-v2.msh"
 
-    rst_path = 'restart_data/'
-    viz_path = 'viz_data/'
+    rst_path = "restart_data/"
+    viz_path = "viz_data/"
     vizname = viz_path+casename
-    rst_pattern = rst_path+'{cname}-{step:06d}-{rank:04d}.pkl'
+    rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     # default i/o frequencies
     nviz = 25000
@@ -443,7 +443,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     nstatus = 100
 
     # default timestepping control
-    integrator = 'ssprk43'
+    integrator = "ssprk43"
     current_dt = 1.0e-6  # order == 2
     t_final = 2.0
     niter = 4000001
@@ -460,15 +460,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-    mechanism_file = 'uiuc_8sp_phenol'
+    mechanism_file = "uiuc_8sp_phenol"
     equiv_ratio = 0.7
     chem_rate = 1.0
     flow_rate = 25.0
     shroud_rate = 11.85
     temp_products = 2000.0
 
-#    transport = 'Mixture'
-    transport = 'PowerLaw'
+#    transport = "Mixture"
+    transport = "PowerLaw"
 
     # wall stuff
     ignore_wall = False
@@ -490,26 +490,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def _compiled_stepper_wrapper(state, t, dt, rhs):
         return compiled_lsrk45_step(actx, state, t, dt, rhs)
 
-    if integrator == 'ssprk43':
+    if integrator == "ssprk43":
         from mirgecom.integrators.ssprk import ssprk43_step
         timestepper = ssprk43_step
         force_eval = True
 
     if rank == 0:
-        print('\n#### Simulation control data: ####')
-        print(f'\tnviz = {nviz}')
-        print(f'\tnrestart = {nrestart}')
-        print(f'\tnhealth = {nhealth}')
-        print(f'\tnstatus = {nstatus}')
-        print(f'\tcurrent_dt = {current_dt}')
+        print("\n#### Simulation control data: ####")
+        print(f"\tnviz = {nviz}")
+        print(f"\tnrestart = {nrestart}")
+        print(f"\tnhealth = {nhealth}")
+        print(f"\tnstatus = {nstatus}")
+        print(f"\tcurrent_dt = {current_dt}")
         if constant_cfl is False:
-            print(f'\tt_final = {t_final}')
+            print(f"\tt_final = {t_final}")
         else:
-            print(f'\tconstant_cfl = {constant_cfl}')
-            print(f'\tcurrent_cfl = {current_cfl}')
-            print(f'\tniter = {niter}')
-        print(f'\torder = {order}')
-        print(f'\tTime integration = {integrator}')
+            print(f"\tconstant_cfl = {constant_cfl}")
+            print(f"\tcurrent_cfl = {current_cfl}")
+            print(f"\tniter = {niter}")
+        print(f"\torder = {order}")
+        print(f"\tTime integration = {integrator}")
 
 ##############################################################################
 
@@ -521,7 +521,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_t = 0.0
 
         if rank == 0:
-            print(f'Reading mesh from {mesh_filename}')
+            print(f"Reading mesh from {mesh_filename}")
 
         def get_mesh_data():
             from meshmode.mesh.io import read_gmsh
@@ -529,8 +529,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 mesh_filename, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             volume_to_tags = {
-                'fluid': ['fluid'],
-                'solid': ['wall_sample', 'wall_alumina', 'wall_graphite']
+                "fluid": ["fluid"],
+                "solid": ["wall_sample", "wall_alumina", "wall_graphite"]
                 }
             return mesh, tag_to_elements, volume_to_tags
 
@@ -540,17 +540,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     else:  # Restart
         from mirgecom.restart import read_restart_data
         restart_data = read_restart_data(actx, restart_file)
-        restart_step = restart_data['step']
-        volume_to_local_mesh_data = restart_data['volume_to_local_mesh_data']
-        global_nelements = restart_data['global_nelements']
-        restart_order = int(restart_data['order'])
+        restart_step = restart_data["step"]
+        volume_to_local_mesh_data = restart_data["volume_to_local_mesh_data"]
+        global_nelements = restart_data["global_nelements"]
+        restart_order = int(restart_data["order"])
         first_step = restart_step+0
 
-        assert comm.Get_size() == restart_data['num_parts']
+        assert comm.Get_size() == restart_data["num_parts"]
 
     local_nelements = (
-          volume_to_local_mesh_data['fluid'][0].nelements +
-          volume_to_local_mesh_data['solid'][0].nelements)
+          volume_to_local_mesh_data["fluid"][0].nelements +
+          volume_to_local_mesh_data["solid"][0].nelements)
 
     from grudge.dof_desc import DISCR_TAG_QUAD
     from mirgecom.discretization import create_discretization_collection
@@ -569,20 +569,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         quadrature_tag = DISCR_TAG_BASE
 
     if rank == 0:
-        logger.info('Done making discretization')
+        logger.info("Done making discretization")
 
-    dd_vol_fluid = DOFDesc(VolumeDomainTag('fluid'), DISCR_TAG_BASE)
-    dd_vol_solid = DOFDesc(VolumeDomainTag('solid'), DISCR_TAG_BASE)
+    dd_vol_fluid = DOFDesc(VolumeDomainTag("fluid"), DISCR_TAG_BASE)
+    dd_vol_solid = DOFDesc(VolumeDomainTag("solid"), DISCR_TAG_BASE)
 
     from mirgecom.utils import mask_from_elements
     wall_vol_discr = dcoll.discr_from_dd(dd_vol_solid)
-    wall_tag_to_elements = volume_to_local_mesh_data['solid'][1]
+    wall_tag_to_elements = volume_to_local_mesh_data["solid"][1]
     wall_sample_mask = mask_from_elements(
-        dcoll, dd_vol_solid, actx, wall_tag_to_elements['wall_sample'])
+        dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_sample"])
     wall_alumina_mask = mask_from_elements(
-        dcoll, dd_vol_solid, actx, wall_tag_to_elements['wall_alumina'])
+        dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_alumina"])
     wall_graphite_mask = mask_from_elements(
-        dcoll, dd_vol_solid, actx, wall_tag_to_elements['wall_graphite'])
+        dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_graphite"])
 
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
     solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
@@ -606,7 +606,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
-    cantera_soln = cantera.Solution(name='gas', yaml=mech_input)
+    cantera_soln = cantera.Solution(name="gas", yaml=mech_input)
     nspecies = cantera_soln.n_species
 
     # Initial temperature, pressure, and mixture mole fractions are needed to
@@ -614,8 +614,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     temp_unburned = 300.0
     temp_ignition = temp_products
 
-    air = 'O2:0.21,N2:0.79'
-    fuel = 'C2H4:1'
+    air = "O2:0.21,N2:0.79"
+    fuel = "C2H4:1"
     cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
                                        fuel=fuel, oxidizer=air)
     x_unburned = cantera_soln.X
@@ -635,24 +635,24 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     u_ext = mass_shroud*lmin_to_m3s/A_ext
     rhoU_int = rho_int*u_int
 
-    mmw_N2 = cantera_soln.molecular_weights[cantera_soln.species_index('N2')]
+    mmw_N2 = cantera_soln.molecular_weights[cantera_soln.species_index("N2")]
     rho_ext = 101325.0/((8314.46/mmw_N2)*300.0)
     mdot_ext = rho_ext*u_ext*A_ext
     rhoU_ext = rho_ext*u_ext
 
-    print('V_dot=', mass_react, '(L/min)')
-    print(f'{A_int= }', '(m^2)')
-    print(f'{A_ext= }', '(m^2)')
-    print(f'{u_int= }', '(m/s)')
-    print(f'{u_ext= }', '(m/s)')
-    print(f'{rho_int= }', '(kg/m^3)')
-    print(f'{rho_ext= }', '(kg/m^3)')
-    print(f'{rhoU_int= }')
-    print(f'{rhoU_ext= }')
-    print('ratio=', u_ext/u_int)
+    print("V_dot=", mass_react, "(L/min)")
+    print(f"{A_int= }", "(m^2)")
+    print(f"{A_ext= }", "(m^2)")
+    print(f"{u_int= }", "(m/s)")
+    print(f"{u_ext= }", "(m/s)")
+    print(f"{rho_int= }", "(kg/m^3)")
+    print(f"{rho_ext= }", "(kg/m^3)")
+    print(f"{rhoU_int= }")
+    print(f"{rhoU_ext= }")
+    print("ratio=", u_ext/u_int)
 
     # Let the user know about how Cantera is being initilized
-    print(f'Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x_unburned}')
+    print(f"Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x_unburned}")
     # Set Cantera internal gas temperature, pressure, and mole fractios
     cantera_soln.TPX = temp_unburned, pres_unburned, x_unburned
 
@@ -662,27 +662,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     mmw_unburned = cantera_soln.mean_molecular_weight
 
     cantera_soln.TPX = temp_ignition, pres_unburned, x_unburned
-    cantera_soln.equilibrate('TP')
+    cantera_soln.equilibrate("TP")
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
 #    pres_burned = cantera_soln.P
     mmw_burned = cantera_soln.mean_molecular_weight
 
     # Pull temperature, density, mass fractions, and pressure from Cantera
     x = np.zeros(nspecies)
-    x[cantera_soln.species_index('O2')] = 0.21
-    x[cantera_soln.species_index('N2')] = 0.79
+    x[cantera_soln.species_index("O2")] = 0.21
+    x[cantera_soln.species_index("N2")] = 0.79
     cantera_soln.TPX = temp_unburned, pres_unburned, x
 
     y_atmosphere = np.zeros(nspecies)
     dummy, rho_atmosphere, y_atmosphere = cantera_soln.TDY
-    cantera_soln.equilibrate('TP')
+    cantera_soln.equilibrate("TP")
     temp_atmosphere, rho_atmosphere, y_atmosphere = cantera_soln.TDY
 #    pres_atmosphere = cantera_soln.P
     mmw_atmosphere = cantera_soln.mean_molecular_weight
 
     # Pull temperature, density, mass fractions, and pressure from Cantera
     y_shroud = y_atmosphere*0.0
-    y_shroud[cantera_soln.species_index('N2')] = 1.0
+    y_shroud[cantera_soln.species_index("N2")] = 1.0
 
     cantera_soln.TPY = 300.0, 101325.0, y_shroud
     temp_shroud, rho_shroud = cantera_soln.TD
@@ -702,54 +702,54 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     species_names = pyrometheus_mechanism.species_names
 
-    print(f'Pyrometheus mechanism species names {species_names}')
-    print('Unburned:')
-    print(f'T = {temp_unburned}')
-    print(f'D = {rho_unburned}')
-    print(f'Y = {y_unburned}')
-    print(f'W = {mmw_unburned}')
-    print(' ')
-    print('Burned:')
-    print(f'T = {temp_burned}')
-    print(f'D = {rho_burned}')
-    print(f'Y = {y_burned}')
-    print(f'W = {mmw_burned}')
-    print(' ')
-    print('Atmosphere:')
-    print(f'T = {temp_atmosphere}')
-    print(f'D = {rho_atmosphere}')
-    print(f'Y = {y_atmosphere}')
-    print(f'W = {mmw_atmosphere}')
-    print(' ')
-    print('Shroud:')
-    print(f'T = {temp_shroud}')
-    print(f'D = {rho_shroud}')
-    print(f'Y = {y_shroud}')
-    print(f'W = {mmw_shroud}')
+    print(f"Pyrometheus mechanism species names {species_names}")
+    print("Unburned:")
+    print(f"T = {temp_unburned}")
+    print(f"D = {rho_unburned}")
+    print(f"Y = {y_unburned}")
+    print(f"W = {mmw_unburned}")
+    print(" ")
+    print("Burned:")
+    print(f"T = {temp_burned}")
+    print(f"D = {rho_burned}")
+    print(f"Y = {y_burned}")
+    print(f"W = {mmw_burned}")
+    print(" ")
+    print("Atmosphere:")
+    print(f"T = {temp_atmosphere}")
+    print(f"D = {rho_atmosphere}")
+    print(f"Y = {y_atmosphere}")
+    print(f"W = {mmw_atmosphere}")
+    print(" ")
+    print("Shroud:")
+    print(f"T = {temp_shroud}")
+    print(f"D = {rho_shroud}")
+    print(f"Y = {y_shroud}")
+    print(f"W = {mmw_shroud}")
 
     # }}}
 
     # {{{ Initialize transport model
     physical_transport = None
-    if transport == 'Mixture':
+    if transport == "Mixture":
         physical_transport = \
             MixtureAveragedTransport(pyrometheus_mechanism,
                                      lewis=np.ones(nspecies,),
                                      factor=speedup_factor)
     else:
-        if transport == 'PowerLaw':
+        if transport == "PowerLaw":
             physical_transport = \
                 PowerLawTransport(lewis=np.ones((nspecies,)),
                                   beta=4.093e-7*speedup_factor)
         else:
-            print('No transport class defined..')
-            print('Use one of "Mixture" or "PowerLaw"')
+            print("No transport class defined..")
+            print("Use one of "Mixture" or "PowerLaw"")
             sys.exit()
 
     # {{{ Initialize wall model
 
-    my_material = 'composite'
-    if my_material == 'fiber':
+    my_material = "composite"
+    if my_material == "fiber":
         wall_sample_density = 0.1*1600.0 + solid_zeros
 
         import mirgecom.materials.carbon_fiber as material_sample
@@ -757,7 +757,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                             virgin_mass=160.0)
         decomposition = material_sample.Y3_Oxidation_Model(wall_material=material)
 
-    if my_material == 'composite':
+    if my_material == "composite":
         wall_sample_density = np.empty((3,), dtype=object)
 
         wall_sample_density[0] = 30.0 + solid_zeros
@@ -780,11 +780,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_graphite_cp = 770.0
     wall_graphite_kappa = 50.0
 
-#    def _get_solid_density(wv):
-#        wall_sample_rho = sum(wv.mass)
-#        return (wall_sample_rho * wall_sample_mask
-#                + wall_alumina_rho * wall_alumina_mask
-#                + wall_graphite_rho * wall_graphite_mask)
+    if isinstance(wall_sample_density, DOFArray) is False:
+        wall_alumina_density = actx.np.zeros_like(wall_sample_density)
+        wall_alumina_density[-1] = wall_alumina_rho
+
+        wall_graphite_density = actx.np.zeros_like(wall_sample_density)
+        wall_graphite_density[-1] = wall_graphite_rho
+
+    wall_densities = (
+        wall_sample_density * wall_sample_mask
+        + wall_alumina_density * wall_alumina_mask
+        + wall_graphite_density * wall_graphite_mask)
 
     def _get_solid_enthalpy(temperature, tau):
         wall_sample_h = material.enthalpy(temperature, tau)
@@ -891,13 +897,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         modal_discr = dcoll.discr_from_dd(dd_modal)
         modal_field = modal_map(field)
 
-        # cancel the ``high-order'' polynomials p > 0 and keep the average
+        # cancel the ``high-order"" polynomials p > 0 and keep the average
         filtered_modal_field = DOFArray(
             actx,
-            tuple(actx.einsum('ej,j->ej',
+            tuple(actx.einsum("ej,j->ej",
                               vec_i,
                               cancel_polynomials(grp),
-                              arg_names=('vec', 'filter'),
+                              arg_names=("vec", "filter"),
                               tagged=(FirstAxisIsElementsTag(),))
                   for grp, vec_i in zip(modal_discr.groups, modal_field))
         )
@@ -1013,30 +1019,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     if restart_file is None:
         if rank == 0:
-            logging.info('Initializing soln.')
+            logging.info("Initializing soln.")
         current_cv = fluid_init(actx, fluid_nodes, eos)
 
         tseed = force_evaluation(actx, 1000.0 + fluid_zeros)
         wv_tseed = force_evaluation(actx, temp_wall + solid_zeros)
 
-        if isinstance(wall_sample_density, DOFArray):
-            wall_densities = (
-                wall_sample_density * wall_sample_mask
-                + wall_alumina_rho * wall_alumina_mask
-                + wall_graphite_rho * wall_graphite_mask)
-        else:
-            wall_alumina_density = actx.np.zeros_like(wall_sample_density)
-            wall_graphite_density = actx.np.zeros_like(wall_sample_density)
+        #FIXME use SolidWallInitializer instead
 
-            wall_alumina_density[-1] = wall_alumina_rho
-            wall_graphite_density[-1] = wall_graphite_rho
-
-            wall_densities = (
-                wall_sample_density * wall_sample_mask
-                + wall_alumina_density * wall_alumina_mask
-                + wall_graphite_density * wall_graphite_mask)
-
-        # summ all the phases of the material
         tau = solid_wall_model.decomposition_progress(wall_densities)
         wall_mass = solid_wall_model.solid_density(wall_densities)
 
@@ -1055,7 +1045,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     else:
         current_step = restart_step
-        current_t = restart_data['t']
+        current_t = restart_data["t"]
         if np.isscalar(current_t) is False:
             if ignore_wall:
                 current_t = np.min(actx.to_numpy(current_t[0]))
@@ -1067,7 +1057,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             current_step = 0
 
         if rank == 0:
-            logger.info('Restarting soln.')
+            logger.info("Restarting soln.")
 
         if restart_order != order:
             restart_dcoll = create_discretization_collection(
@@ -1078,24 +1068,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 order=restart_order)
             from meshmode.discretization.connection import make_same_mesh_connection
             fluid_connection = make_same_mesh_connection(
-                actx,
-                dcoll.discr_from_dd(dd_vol_fluid),
-                restart_dcoll.discr_from_dd(dd_vol_fluid)
-            )
-            wall_connection = make_same_mesh_connection(
-                actx,
-                dcoll.discr_from_dd(dd_vol_solid),
-                restart_dcoll.discr_from_dd(dd_vol_solid)
-            )
-            current_cv = fluid_connection(restart_data['cv'])
-            tseed = fluid_connection(restart_data['temperature_seed'])
-            current_wv = wall_connection(restart_data['wv'])
-            wv_tseed = fluid_connection(restart_data['wall_temperature_seed'])
+                actx, dcoll.discr_from_dd(dd_vol_fluid),
+                restart_dcoll.discr_from_dd(dd_vol_fluid))
+            solid_connection = make_same_mesh_connection(
+                actx, dcoll.discr_from_dd(dd_vol_solid),
+                restart_dcoll.discr_from_dd(dd_vol_solid))
+            current_cv = fluid_connection(restart_data["cv"])
+            tseed = fluid_connection(restart_data["temperature_seed"])
+            current_wv = wall_connection(restart_data["wv"])
+            wv_tseed = wall_connection(restart_data["wall_temperature_seed"])
         else:
-            current_cv = restart_data['cv']
-            tseed = restart_data['temperature_seed']
-            current_wv = restart_data['wv']
-            wv_tseed = restart_data['wall_temperature_seed']
+            current_cv = restart_data["cv"]
+            tseed = restart_data["temperature_seed"]
+            current_wv = restart_data["wv"]
+            wv_tseed = restart_data["wall_temperature_seed"]
 
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
@@ -1113,9 +1099,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #########################################################################
 
     original_casename = casename
-    casename = f'{casename}-d{dim}p{order}e{global_nelements}n{nparts}'
-    logmgr = initialize_logmgr(use_logmgr, filename=(f'{casename}.sqlite'),
-                               mode='wo', mpi_comm=comm)
+    casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
+    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
+                               mode="wo", mpi_comm=comm)
 
     vis_timer = None
     if logmgr:
@@ -1124,25 +1110,25 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         logmgr_set_time(logmgr, current_step, current_t)
 
         logmgr.add_watches([
-            ('step.max', 'step = {value}, '),
-            ('dt.max', 'dt: {value:1.5e} s, '),
-            ('t_sim.max', 'sim time: {value:1.5e} s, '),
-            ('t_step.max', '--- step walltime: {value:5g} s\n')
+            ("step.max", "step = {value}, "),
+            ("dt.max", "dt: {value:1.5e} s, "),
+            ("t_sim.max", "sim time: {value:1.5e} s, "),
+            ("t_step.max", "--- step walltime: {value:5g} s\n")
             ])
 
         try:
-            logmgr.add_watches(['memory_usage_python.max',
-                                'memory_usage_gpu.max'])
+            logmgr.add_watches(["memory_usage_python.max",
+                                "memory_usage_gpu.max"])
         except KeyError:
             pass
 
         if use_profiling:
-            logmgr.add_watches(['pyopencl_array_time.max'])
+            logmgr.add_watches(["pyopencl_array_time.max"])
 
-        vis_timer = IntervalTimer('t_vis', 'Time spent visualizing')
+        vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-        gc_timer = IntervalTimer('t_gc', 'Time spent garbage collecting')
+        gc_timer = IntervalTimer("t_gc", "Time spent garbage collecting")
         logmgr.add_quantity(gc_timer)
 
 ##############################################################################
@@ -1165,7 +1151,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 ##############################################################################
 
     inflow_nodes = force_evaluation(actx,
-                                    dcoll.nodes(dd_vol_fluid.trace('inlet')))
+                                    dcoll.nodes(dd_vol_fluid.trace("inlet")))
     inflow_temperature = inflow_nodes[0]*0.0 + 300.0
     def bnd_temperature_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
         return inflow_temperature
@@ -1281,22 +1267,22 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         free_stream_species_mass_fractions=y_atmosphere)
 
     fluid_boundaries = {
-        dd_vol_fluid.trace('inlet').domain_tag:
+        dd_vol_fluid.trace("inlet").domain_tag:
             MyPrescribedBoundary(bnd_state_func=inlet_bnd_state_func,
                                  temperature_func=bnd_temperature_func),
-        dd_vol_fluid.trace('symmetry').domain_tag:
+        dd_vol_fluid.trace("symmetry").domain_tag:
             AdiabaticSlipBoundary(),
-        dd_vol_fluid.trace('burner').domain_tag:
+        dd_vol_fluid.trace("burner").domain_tag:
             AdiabaticNoslipWallBoundary(),
-        dd_vol_fluid.trace('linear').domain_tag:
+        dd_vol_fluid.trace("linear").domain_tag:
             linear_bnd,
-        dd_vol_fluid.trace('outlet').domain_tag:
+        dd_vol_fluid.trace("outlet").domain_tag:
             PressureOutflowBoundary(boundary_pressure=101325.0),
     }
 
     wall_symmetry = NeumannDiffusionBoundary(0.0)
     solid_boundaries = {
-        dd_vol_solid.trace('wall_sym').domain_tag: wall_symmetry
+        dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry
     }
 
 ##############################################################################
@@ -1325,33 +1311,33 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
 
         fluid_viz_fields = [
-            ('CV_rho', fluid_state.cv.mass),
-            ('CV_rhoU', fluid_state.cv.momentum),
-            ('CV_rhoE', fluid_state.cv.energy),
-            ('DV_P', fluid_state.pressure),
-            ('DV_T', fluid_state.temperature),
-            ('DV_U', fluid_state.velocity[0]),
-            ('DV_V', fluid_state.velocity[1]),
-#            ('dt', dt[0] if local_dt else None),
-            ('sponge', sponge_sigma),
-            ('smoothness', 1.0 - theta_factor*smoothness),
-            ('RR', chem_rate*reaction_rates_damping),
+            ("CV_rho", fluid_state.cv.mass),
+            ("CV_rhoU", fluid_state.cv.momentum),
+            ("CV_rhoE", fluid_state.cv.energy),
+            ("DV_P", fluid_state.pressure),
+            ("DV_T", fluid_state.temperature),
+            ("DV_U", fluid_state.velocity[0]),
+            ("DV_V", fluid_state.velocity[1]),
+#            ("dt", dt[0] if local_dt else None),
+            ("sponge", sponge_sigma),
+            ("smoothness", 1.0 - theta_factor*smoothness),
+            ("RR", chem_rate*reaction_rates_damping),
         ]
 
         if grad_cv_fluid is not None:
             fluid_viz_fields.extend((
-                ('fluid_grad_cv_rho', grad_cv_fluid.mass),
-                ('fluid_grad_cv_rhoU', grad_cv_fluid.momentum[0]),
-                ('fluid_grad_cv_rhoV', grad_cv_fluid.momentum[1]),
-                ('fluid_grad_cv_rhoE', grad_cv_fluid.energy),
+                ("fluid_grad_cv_rho", grad_cv_fluid.mass),
+                ("fluid_grad_cv_rhoU", grad_cv_fluid.momentum[0]),
+                ("fluid_grad_cv_rhoV", grad_cv_fluid.momentum[1]),
+                ("fluid_grad_cv_rhoE", grad_cv_fluid.energy),
             ))
 
         if grad_t_fluid is not None:
-            fluid_viz_fields.append(('fluid_grad_t', grad_t_fluid))
+            fluid_viz_fields.append(("fluid_grad_t", grad_t_fluid))
 
         # species mass fractions
         fluid_viz_fields.extend((
-            'Y_'+species_names[i], fluid_state.cv.species_mass_fractions[i])
+            "Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
             for i in range(nspecies))
 
         wv = solid_state.cv
@@ -1359,58 +1345,58 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         solid_mass_rhs = decomposition.get_source_terms(
             temperature=wdv.temperature, chi=wv.mass)
         solid_viz_fields = [
-            ('wv_energy', wv.energy),
-            ('cfl', solid_zeros),  # FIXME
-#            ('wall_h', wdv.enthalpy),
-#            ('wall_cp', wdv.heat_capacity),
-            ('wall_kappa', wdv.thermal_conductivity),
-            ('wall_alpha', solid_wall_model.thermal_diffusivity(solid_state)),
-            ('wall_progress', wv.tau),
-            ('wall_temperature', wdv.temperature),
-            ('wall_grad_t', grad_t_solid),
-#            ('dt', dt[2] if local_dt else None),
+            ("wv_energy", wv.energy),
+            ("cfl", solid_zeros),  # FIXME
+#            ("wall_h", wdv.enthalpy),
+#            ("wall_cp", wdv.heat_capacity),
+            ("wall_kappa", wdv.thermal_conductivity),
+            ("wall_alpha", solid_wall_model.thermal_diffusivity(solid_state)),
+            ("wall_progress", wdv.tau),
+            ("wall_temperature", wdv.temperature),
+            ("wall_grad_t", grad_t_solid),
+#            ("dt", dt[2] if local_dt else None),
         ]
 
         if wv.mass.shape[0] > 1:
-            solid_viz_fields.extend(('wv_mass_' + str(i), wv.mass[i])
+            solid_viz_fields.extend(("wv_mass_" + str(i), wv.mass[i])
                                      for i in range(wv.mass.shape[0]))
-            solid_viz_fields.extend(('mass_rhs' + str(i), solid_mass_rhs[i])
+            solid_viz_fields.extend(("mass_rhs" + str(i), solid_mass_rhs[i])
                                      for i in range(wv.mass.shape[0]))
         else:
-            solid_viz_fields.append(('wv_mass', wv.mass))
+            solid_viz_fields.append(("wv_mass", wv.mass))
 
         if grad_t_solid is not None:
-            solid_viz_fields.append(('solid_grad_t', grad_t_solid))
+            solid_viz_fields.append(("solid_grad_t", grad_t_solid))
 
-        print('Writing solution file...')
+        print("Writing solution file...")
         write_visfile(
             dcoll, fluid_viz_fields, fluid_visualizer,
-            vizname=vizname+'-fluid', step=step, t=t,
+            vizname=vizname+"-fluid", step=step, t=t,
             overwrite=True, comm=comm)
         write_visfile(
             dcoll, solid_viz_fields, solid_visualizer,
-            vizname=vizname+'-wall', step=step, t=t, overwrite=True, comm=comm)
+            vizname=vizname+"-wall", step=step, t=t, overwrite=True, comm=comm)
 
     def my_write_restart(step, t, state):
         if rank == 0:
-            print('Writing restart file...')
+            print("Writing restart file...")
 
         cv, tseed, wv, wv_tseed, _ = state
         restart_fname = rst_pattern.format(cname=casename, step=step,
                                            rank=rank)
         if restart_fname != restart_filename:
             restart_data = {
-                'volume_to_local_mesh_data': volume_to_local_mesh_data,
-                'cv': cv,
-                'temperature_seed': tseed,
-                'nspecies': nspecies,
-                'wv': wv,
-                'wall_temperature_seed': wv_tseed,
-                't': t,
-                'step': step,
-                'order': order,
-                'global_nelements': global_nelements,
-                'num_parts': nparts
+                "volume_to_local_mesh_data": volume_to_local_mesh_data,
+                "cv": cv,
+                "temperature_seed": tseed,
+                "nspecies": nspecies,
+                "wv": wv,
+                "wall_temperature_seed": wv_tseed,
+                "t": t,
+                "step": step,
+                "order": order,
+                "global_nelements": global_nelements,
+                "num_parts": nparts
             }
             
             write_restart_file(actx, restart_data, restart_fname, comm)
@@ -1422,15 +1408,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         pressure = force_evaluation(actx, dv.pressure)
         temperature = force_evaluation(actx, dv.temperature)
 
-        if global_reduce(check_naninf_local(dcoll, 'vol', pressure),
-                         op='lor'):
+        if global_reduce(check_naninf_local(dcoll, "vol", pressure),
+                         op="lor"):
             health_error = True
-            logger.info(f'{rank=}: NANs/Infs in pressure data.')
+            logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if global_reduce(check_naninf_local(dcoll, 'vol', temperature),
-                         op='lor'):
+        if global_reduce(check_naninf_local(dcoll, "vol", temperature),
+                         op="lor"):
             health_error = True
-            logger.info(f'{rank=}: NANs/Infs in temperature data.')
+            logger.info(f"{rank=}: NANs/Infs in temperature data.")
 
         return health_error
 
@@ -1504,7 +1490,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             normal_quad = actx.thaw(dcoll.normal(dd_bdry_quad)) 
             int_soln_quad = op.project(dcoll, dd_vol, dd_bdry_quad, field)
 
-            if bnd_cond == 'symmetry' and bdtag == '-0':
+            if bnd_cond == "symmetry" and bdtag == "-0":
                 ext_soln_quad = 0.0*int_soln_quad
             else:
                 ext_soln_quad = 1.0*int_soln_quad
@@ -1558,24 +1544,24 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         drhoudr = (grad_cv.momentum[0])[0]
 
         d2udr2   = my_derivative_function(actx, dcoll, dudr, fluid_boundaries,
-                                          dd_vol_fluid, 'replicate', _MyGradTag_1)[0] #XXX
+                                          dd_vol_fluid, "replicate", _MyGradTag_1)[0] #XXX
         d2vdr2   = my_derivative_function(actx, dcoll, dvdr, fluid_boundaries,
-                                          dd_vol_fluid, 'replicate', _MyGradTag_2)[0] #XXX
+                                          dd_vol_fluid, "replicate", _MyGradTag_2)[0] #XXX
         d2udrdy  = my_derivative_function(actx, dcoll, dudy, fluid_boundaries,
-                                          dd_vol_fluid, 'replicate', _MyGradTag_3)[0] #XXX
+                                          dd_vol_fluid, "replicate", _MyGradTag_3)[0] #XXX
                 
         dmudr    = my_derivative_function(actx, dcoll,   mu, fluid_boundaries,
-                                          dd_vol_fluid, 'replicate', _MyGradTag_4)[0]
+                                          dd_vol_fluid, "replicate", _MyGradTag_4)[0]
         dbetadr  = my_derivative_function(actx, dcoll, beta, fluid_boundaries,
-                                          dd_vol_fluid, 'replicate', _MyGradTag_5)[0]
+                                          dd_vol_fluid, "replicate", _MyGradTag_5)[0]
         dbetady  = my_derivative_function(actx, dcoll, beta, fluid_boundaries,
-                                          dd_vol_fluid, 'replicate', _MyGradTag_6)[1]
+                                          dd_vol_fluid, "replicate", _MyGradTag_6)[1]
         
         qr = - kappa*grad_t[0]
         dqrdr = 0.0 #- (dkappadr*grad_t[0] + kappa*d2Tdr2) #XXX
         
         dyidr = grad_y[:,0]
-        #dyi2dr2 = my_derivative_function(actx, dcoll, dyidr, 'replicate')[:,0]   #XXX
+        #dyi2dr2 = my_derivative_function(actx, dcoll, dyidr, "replicate")[:,0]   #XXX
         
         tau_ry = 1.0*mu*(dudy + dvdr)
         tau_rr = 2.0*mu*dudr + beta*(dudr + dvdy)
@@ -1648,7 +1634,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         kappa = solid_state.dv.thermal_conductivity
         
         qr = - kappa*grad_t[0]
-#        d2Tdr2  = my_derivative_function(actx, dcoll, grad_t[0], axisym_wall_boundaries, dd_vol_solid,  'symmetry')[0]
+#        d2Tdr2  = my_derivative_function(actx, dcoll, grad_t[0], axisym_wall_boundaries, dd_vol_solid,  "symmetry")[0]
 #        dqrdr = - (dkappadr*grad_t[0] + kappa*d2Tdr2)
                 
         source_mass = solid_state.cv.mass*0.0
@@ -1689,13 +1675,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     fluid_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_fluid,
                                            neighbor_volume_dd=dd_vol_solid)
 
+    pairwise_mask = {(dd_vol_fluid, dd_vol_solid):
+                     (fluid_zeros + 1.0, wall_sample_mask)}
+    mask_pairs = inter_volume_trace_pairs(dcoll, pairwise_mask,
+                                          comm_tag=_SampleMaskTag)
+    interface_sample = mask_pairs[dd_vol_solid, dd_vol_fluid][0].exterior
+
     interface_nodes = op.project(
         dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes*wall_sample_mask)
-
     interface_zeros = actx.np.zeros_like(interface_nodes[0])
-
-    interface_sample = op.project(
-        dcoll, dd_vol_solid, solid_dd_list[0], wall_sample_mask)
 
     # surface integral of the density
     # dS = 2 pi r dx
@@ -1816,30 +1804,30 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             if check_step(step=step, interval=ngarbage):
                 with gc_timer.start_sub_timer():
                     from warnings import warn
-                    warn('Running gc.collect() to work around memory growth issue ')
+                    warn("Running gc.collect() to work around memory growth issue ")
                     import gc
                     gc.collect()
 
-            file_exists = os.path.exists('write_solution')
+            file_exists = os.path.exists("write_solution")
             if file_exists:
-              os.system('rm write_solution')
+              os.system("rm write_solution")
               do_viz = True
         
-            file_exists = os.path.exists('write_restart')
+            file_exists = os.path.exists("write_restart")
             if file_exists:
-              os.system('rm write_restart')
+              os.system("rm write_restart")
               do_restart = True
 
             if do_health:
                 ## FIXME warning in lazy compilation
                 from warnings import warn
-                warn(f'Lazy does not like the health_check', stacklevel=2)
+                warn(f"Lazy does not like the health_check", stacklevel=2)
                 health_errors = global_reduce(
-                    my_health_check(fluid_state.cv, fluid_state.dv), op='lor')
+                    my_health_check(fluid_state.cv, fluid_state.dv), op="lor")
                 if health_errors:
                     if rank == 0:
-                        logger.info('Fluid solution failed health check.')
-                    raise MyRuntimeError('Failed simulation health check.')
+                        logger.info("Fluid solution failed health check.")
+                    raise MyRuntimeError("Failed simulation health check.")
 
             if do_viz:
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
@@ -1850,7 +1838,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         except MyRuntimeError:
             if rank == 0:
-                logger.info('Errors detected; attempting graceful exit.')
+                logger.info("Errors detected; attempting graceful exit.")
             my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                 solid_state=solid_state, smoothness=smoothness)
             raise
@@ -1868,7 +1856,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         #~~~~~~~~~~~~~
         fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
-            add_thermal_interface_boundaries_no_grad(
+            add_interface_boundaries_no_grad(
                 dcoll, gas_model,
                 dd_vol_fluid, dd_vol_solid,
                 fluid_state, wdv.thermal_conductivity, wdv.temperature,
@@ -1907,7 +1895,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
 
         fluid_all_boundaries, solid_all_boundaries = \
-            add_thermal_interface_boundaries(
+            add_interface_boundaries(
                 dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
                 fluid_state, wdv.thermal_conductivity,
                 wdv.temperature,
@@ -1976,7 +1964,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #        print(f"{get_max_node_depth(fluid_sources.momentum[0][0])=}")
 #        print(f"{get_max_node_depth(fluid_sources.momentum[1][0])=}")
 #        print(f"{get_max_node_depth(fluid_sources.species_mass[0][0])=}")
-#        print('')
+#        print("")
 #        print(f"{get_max_node_depth(solid_rhs.mass[0][0])=}")
 #        print(f"{get_max_node_depth(solid_rhs.mass[1][0])=}")
 #        print(f"{get_max_node_depth(solid_rhs.mass[2][0])=}")
@@ -1994,7 +1982,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #            from pytato.analysis import get_num_nodes
 #            return get_num_nodes(ary[0])
 
-#        print('')
+#        print("")
 #        print(f"{get_node_count(fluid_rhs)=}")
 #        print(f"{get_node_count(fluid_sources)=}")
 #        print(f"{get_node_count(solid_rhs)=}")
@@ -2054,8 +2042,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 gc.collect()
                 # Freeze the objects that are still alive so they will not
                 # be considered in future gc collections.
-                logger.info('Freezing GC objects to reduce overhead of '
-                            'future GC collections')
+                logger.info("Freezing GC objects to reduce overhead of "
+                            "future GC collections")
                 gc.freeze()
 
         # min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
@@ -2087,7 +2075,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t = make_obj_array([t_fluid, t_fluid, t_solid, t_solid, interface_zeros])
 
     if rank == 0:
-        logging.info('Stepping.')
+        logging.info("Stepping.")
 
     final_step, final_t, stepper_state = \
         advance_state(rhs=my_rhs, timestepper=timestepper,
@@ -2106,7 +2094,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # Dump the final data
     if rank == 0:
-        logger.info('Checkpointing final state ...')
+        logger.info("Checkpointing final state ...")
 
     my_write_restart(step=final_step, t=final_t, state=stepper_state)
 
@@ -2122,63 +2110,63 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     exit()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import sys
-    logging.basicConfig(format='%(message)s', level=logging.INFO)
+    logging.basicConfig(format="%(message)s", level=logging.INFO)
 
     import argparse
-    parser = argparse.ArgumentParser(description='MIRGE-Com 1D Flame Driver')
-    parser.add_argument('-r', '--restart_file',  type=ascii,
-                        dest='restart_file', nargs='?', action='store',
-                        help='simulation restart file')
-    parser.add_argument('-i', '--input_file',  type=ascii,
-                        dest='input_file', nargs='?', action='store',
-                        help='simulation config file')
-    parser.add_argument('-c', '--casename',  type=ascii,
-                        dest='casename', nargs='?', action='store',
-                        help='simulation case name')
-    parser.add_argument('--profiling', action='store_true', default=False,
-        help='enable kernel profiling [OFF]')
-    parser.add_argument('--log', action='store_true', default=True,
-        help='enable logging profiling [ON]')
-    parser.add_argument("--esdg", action='store_true',
-        help='use flux-differencing/entropy stable DG for inviscid computations.')
-    parser.add_argument('--lazy', action='store_true', default=False,
-        help='enable lazy evaluation [OFF]')
-    parser.add_argument('--numpy', action='store_true',
-        help='use numpy-based eager actx.')
+    parser = argparse.ArgumentParser(description="MIRGE-Com 1D Flame Driver")
+    parser.add_argument("-r", "--restart_file",  type=ascii,
+                        dest="restart_file", nargs="?", action="store",
+                        help="simulation restart file")
+    parser.add_argument("-i", "--input_file",  type=ascii,
+                        dest="input_file", nargs="?", action="store",
+                        help="simulation config file")
+    parser.add_argument("-c", "--casename",  type=ascii,
+                        dest="casename", nargs="?", action="store",
+                        help="simulation case name")
+    parser.add_argument("--profiling", action="store_true", default=False,
+        help="enable kernel profiling [OFF]")
+    parser.add_argument("--log", action="store_true", default=True,
+        help="enable logging profiling [ON]")
+    parser.add_argument("--esdg", action="store_true",
+        help="use flux-differencing/entropy stable DG for inviscid computations.")
+    parser.add_argument("--lazy", action="store_true", default=False,
+        help="enable lazy evaluation [OFF]")
+    parser.add_argument("--numpy", action="store_true",
+        help="use numpy-based eager actx.")
 
     args = parser.parse_args()
 
     # for writing output
-    casename = 'burner_mix'
+    casename = "burner_mix"
     if(args.casename):
-        print(f'Custom casename {args.casename}')
-        casename = (args.casename).replace("'", '')
+        print(f"Custom casename {args.casename}")
+        casename = (args.casename).replace("'", "")
     else:
-        print(f'Default casename {casename}')
+        print(f"Default casename {casename}")
 
     restart_file = None
     if args.restart_file:
-        restart_file = (args.restart_file).replace("'", '')
-        print(f'Restarting from file: {restart_file}')
+        restart_file = (args.restart_file).replace("'", "")
+        print(f"Restarting from file: {restart_file}")
 
     input_file = None
     if(args.input_file):
-        input_file = (args.input_file).replace("'", '')
-        print(f'Reading user input from {args.input_file}')
+        input_file = (args.input_file).replace("'", "")
+        print(f"Reading user input from {args.input_file}")
     else:
-        print('No user input file, using default values')
+        print("No user input file, using default values")
 
-    print(f'Running {sys.argv[0]}\n')
+    print(f"Running {sys.argv[0]}\n")
 
     from warnings import warn
     from mirgecom.simutil import ApplicationOptionsError
     if args.esdg:
         if not args.lazy and not args.numpy:
-            raise ApplicationOptionsError('ESDG requires lazy or numpy context.')
+            raise ApplicationOptionsError("ESDG requires lazy or numpy context.")
         if not args.overintegration:
-            warn('ESDG requires overintegration, enabling --overintegration.')
+            warn("ESDG requires overintegration, enabling --overintegration.")
 
     from mirgecom.array_context import get_reasonable_array_context_class
     actx_class = get_reasonable_array_context_class(
