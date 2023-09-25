@@ -118,19 +118,19 @@ Line(58) = {45, 15};
 Line(59) = {16, 17};
 Line(60) = {44, 14};
 
-Point(51) = {insulator_wide, mat_location + insulator, 0., clM};
-Point(52) = {           0.0, mat_location + insulator, 0., clM};
-Point(53) = {           0.0, mat_location + mat_thick, 0., clM};
-Point(54) = {insulator_wide, mat_location + mat_thick, 0., clM};
+/*Point(51) = {insulator_wide, mat_location + insulator, 0., clM};*/
+/*Point(52) = {           0.0, mat_location + insulator, 0., clM};*/
+/*Point(53) = {           0.0, mat_location + mat_thick, 0., clM};*/
+/*Point(54) = {insulator_wide, mat_location + mat_thick, 0., clM};*/
 
-Line(63) = {11, 53};
-Line(64) = {54, 13};
-Line(65) = {16, 52};
+/*Line(63) = {11, 53};*/
+/*Line(64) = {54, 13};*/
+/*Line(65) = {16, 52};*/
 
-Line(66) = {51, 52};
-Line(67) = {52, 53};
-Line(68) = {53, 54};
-Line(69) = {54, 51};
+/*Line(66) = {51, 52};*/
+/*Line(67) = {52, 53};*/
+/*Line(68) = {53, 54};*/
+/*Line(69) = {54, 51};*/
 
 /*Transfinite Line {21} = 16 Using Bump 0.6;*/
 
@@ -178,8 +178,8 @@ Transfinite Line { 55} = 21 Using Progression 1.02;
 Transfinite Line {-28} = 16 Using Progression 1.005;
 Transfinite Line {-56} = 16 Using Progression 1.02;
 
-Transfinite Line { 57} = 17 Using Progression 1.0;
-Transfinite Line {-29} = 17 Using Progression 1.02;
+Transfinite Line { 57} = 19 Using Progression 1.0;
+Transfinite Line {-29} = 19 Using Progression 1.02;
 
 Line Loop(41) = {10:12,17:23,26:29,31,32,40:44};
 Plane Surface(1) = {41};
@@ -274,27 +274,15 @@ Line Loop(67) = {59,-29, 58, 57};
 Plane Surface(15) = {67};
 Transfinite Surface {15};
 
-Line Loop(68) = {-54,-51,63,68,64};
-Plane Surface(16) = {68};
-/*Transfinite Surface {16} Right;*/
-
-Line Loop(69) = {66,67,68,69};
-Plane Surface(17) = {-69};
-
-Line Loop(70) = {55,56,57,65,-66,-69,64};
-Plane Surface(18) = {-70};
-
 /*#########################*/
 
 Physical Line("inlet") = {1,2,5};
-Physical Line("symmetry") = {6,20:22,50,31,32,59,44,14,15};
-Physical Line("linear") = {40,41,42,43};
-Physical Line("sample_sym") = {63};
-Physical Line("holder_sym") = {65,67};
+Physical Line("symmetry") = {6,20:22,50,31,32,59};
+Physical Line("burner") = {44,14,15};
+Physical Line("outlet") = {40};
+Physical Line("linear") = {41,42,43};
+Physical Line("wall") = {51,54,55,56,57};
 Physical Surface("fluid") = {1:6,11:15};
-Physical Surface("wall_sample") = {16};
-Physical Surface("wall_alumina") = {17};
-Physical Surface("wall_graphite") = {18};
 
 //+
 Show "*";
