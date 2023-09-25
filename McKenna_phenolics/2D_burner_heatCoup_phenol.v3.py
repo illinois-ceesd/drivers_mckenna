@@ -40,6 +40,7 @@ from arraycontext import (
 )
 
 from meshmode.dof_array import DOFArray
+from grudge.geometry.metrics import normal as normal_vector
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import (
@@ -115,6 +116,10 @@ from mirgecom.wall_model import (
 )
 
 #########################################################################
+
+class _SampleMaskTag:
+    pass
+
 
 class _FluidOpStatesTag:
     pass
@@ -743,7 +748,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                   beta=4.093e-7*speedup_factor)
         else:
             print("No transport class defined..")
-            print("Use one of "Mixture" or "PowerLaw"")
+            print("Use one of 'Mixture' or 'PowerLaw'")
             sys.exit()
 
     # {{{ Initialize wall model
@@ -1218,7 +1223,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                    exterior=state_plus)
 
             actx = state_minus.array_context
-            normal = actx.thaw(dcoll.normal(dd_bdry))
+            normal = normal_vector(actx, dcoll, dd_bdry)
+            #normal = actx.thaw(dcoll.normal(dd_bdry))
 
             actx = state_pair.int.array_context
             lam = actx.np.maximum(state_pair.int.wavespeed,
@@ -1240,7 +1246,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 grad_cv_minus, grad_t_minus, numerical_flux_func, **kwargs):
             """Return the boundary flux for viscous flux."""
             actx = state_minus.array_context
-            normal = actx.thaw(dcoll.normal(dd_bdry))
+            normal = normal_vector(actx, dcoll, dd_bdry)
+            #normal = actx.thaw(dcoll.normal(dd_bdry))
 
             state_plus = self.prescribed_state_for_diffusion(
                 dcoll=dcoll, dd_bdry=dd_bdry, gas_model=gas_model,
@@ -1477,7 +1484,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         def interior_flux(field_tpair):
             dd_trace_quad = field_tpair.dd.with_discr_tag(quadrature_tag)
-            normal_quad = actx.thaw(dcoll.normal(dd_trace_quad))
+            normal_quad = normal_vector(actx, dcoll, dd_trace_quad)
+            #normal_quad = actx.thaw(dcoll.normal(dd_trace_quad))
             bnd_tpair_quad = interp_to_surf_quad(field_tpair)
             flux_int = outer(num_flux_central(bnd_tpair_quad.int,
                                               bnd_tpair_quad.ext),
@@ -1487,7 +1495,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         def boundary_flux(bdtag, bdry):
             dd_bdry_quad = dd_vol_quad.with_domain_tag(bdtag)
-            normal_quad = actx.thaw(dcoll.normal(dd_bdry_quad)) 
+            normal_quad = normal_vector(actx, dcoll, dd_bdry_quad)
+            #normal_quad = actx.thaw(dcoll.normal(dd_bdry_quad)) 
             int_soln_quad = op.project(dcoll, dd_vol, dd_bdry_quad, field)
 
             if bnd_cond == "symmetry" and bdtag == "-0":
