@@ -604,6 +604,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         assert comm.Get_size() == restart_data["num_parts"]
 
+    print(volume_to_local_mesh_data)
+
+    sys.exit()
+
     local_nelements = (
           volume_to_local_mesh_data["fluid"][0].nelements
         + volume_to_local_mesh_data["sample"][0].nelements

@@ -391,6 +391,190 @@ class InitSponge:
         return actx.np.maximum(sponge_x,sponge_y)
 
 
+class Pyrolysis:
+    r"""Evaluate the source terms for the pyrolysis decomposition.
+
+    The source terms follow as Arrhenius-like equation given by
+
+    .. math::
+
+        \dot{\omega}_i^p = \mathcal{A}_{i} T^{n_{i}}
+        \exp\left(- \frac{E_{i}}{RT} \right)
+        \left( \frac{\epsilon_i \rho_i -
+            \epsilon^c_i \rho^c_i}{\epsilon^0_i \rho^0_i} \right)^{m_i}
+
+    For TACOT, 2 different reactions, which are assumed to only happen after
+    a minimum temperature, are considered based on the resin constituents.
+    The third reaction is the fiber oxidation, which is not handled here for now.
+
+    .. automethod:: get_source_terms
+    """
+
+    def __init__(self):
+        """Temperature in which each reaction starts."""
+        self._Tcrit = np.array([333.3, 555.6])
+
+    def get_source_terms(self, temperature, chi):
+        r"""Return the source terms of pyrolysis decomposition for TACOT.
+
+        Parameters
+        ----------
+        temperature: :class:`~meshmode.dof_array.DOFArray`
+            The temperature of the bulk material.
+
+        chi: numpy.ndarray
+            Either the solid mass $\rho_i$ of all fractions of the resin or
+            the progress ratio $\chi$ of the decomposition. The actual
+            parameter depends on the modeling itself.
+
+        Returns
+        -------
+        source: numpy.ndarray
+            The source terms for the pyrolysis
+        """
+        actx = temperature.array_context
+
+        # The density parameters are hard-coded for TACOT. They depend on the
+        # virgin and char volume fraction.
+        return make_obj_array([
+            # reaction 1
+            actx.np.where(actx.np.less(temperature, self._Tcrit[0]),
+                0.0, (
+                    -(30.*((chi[0] - 0.00)/30.)**3)*12000.
+                    * actx.np.exp(-8556.000/temperature))),
+            actx.np.where(actx.np.less(temperature, self._Tcrit[1]),
+            # reaction 2
+                0.0, (
+                    -(90.*((chi[1] - 60.0)/90.)**3)*4.48e9
+                    * actx.np.exp(-20444.44/temperature))),
+            # fiber oxidation: include in the RHS but dont do anything with it.
+            actx.np.zeros_like(temperature)])
+
+
+from mirgecom.wall_model import PorousWallEOS
+class TacotEOS(PorousWallEOS):
+    """Evaluate the properties of the solid state containing resin and fibers.
+
+    A linear weighting between the virgin and chared states is applied to
+    yield the material properties. Polynomials were generated offline to avoid
+    interpolation and they are not valid for temperatures above 3200K.
+
+    .. automethod:: void_fraction
+    .. automethod:: enthalpy
+    .. automethod:: heat_capacity
+    .. automethod:: thermal_conductivity
+    .. automethod:: volume_fraction
+    .. automethod:: permeability
+    .. automethod:: emissivity
+    .. automethod:: tortuosity
+    .. automethod:: decomposition_progress
+    """
+
+    def __init__(self, char_mass, virgin_mass):
+        """Bulk density considering the porosity and intrinsic density.
+
+        The fiber and all resin components must be considered.
+        """
+        self._char_mass = char_mass
+        self._virgin_mass = virgin_mass
+
+    def void_fraction(self, tau: DOFArray) -> DOFArray:
+        r"""Return the volumetric fraction $\epsilon$ filled with gas.
+
+        The fractions of gas and solid phases must sum to one,
+        $\epsilon_g + \epsilon_s = 1$. Both depend only on the pyrolysis
+        progress ratio $\tau$.
+        """
+        return 1.0 - self.volume_fraction(tau)
+
+    def enthalpy(self, temperature: DOFArray, tau: DOFArray) -> DOFArray:
+        """Solid enthalpy as a function of pyrolysis progress."""
+        virgin = (
+            - 1.360688853105e-11*temperature**5 + 1.521029626150e-07*temperature**4
+            - 6.733769958659e-04*temperature**3 + 1.497082282729e+00*temperature**2
+            + 3.009865156984e+02*temperature - 1.062767983774e+06)
+
+        char = (
+            - 1.279887694729e-11*temperature**5 + 1.491175465285e-07*temperature**4
+            - 6.994595296860e-04*temperature**3 + 1.691564018109e+00*temperature**2
+            - 3.441837408320e+01*temperature - 1.235438104496e+05)
+
+        return virgin*tau + char*(1.0 - tau)
+
+    def heat_capacity(self, temperature: DOFArray,
+                      tau: DOFArray) -> DOFArray:
+        r"""Solid heat capacity $C_{p_s}$ as a function of pyrolysis progress."""
+        actx = temperature.array_context
+
+        virgin = actx.np.where(actx.np.less(temperature, 2222.0),
+            + 4.122658916891e-14*temperature**5 - 4.430937180604e-10*temperature**4
+            + 1.872060335623e-06*temperature**3 - 3.951464865603e-03*temperature**2
+            + 4.291080938736e+00*temperature + 1.397594340362e+01,
+            2008.8139143251735)
+
+        char = (
+            + 1.461303669323e-14*temperature**5 - 1.862489701581e-10*temperature**4
+            + 9.685398830530e-07*temperature**3 - 2.599755262540e-03*temperature**2
+            + 3.667295510844e+00*temperature - 7.816218435655e+01)
+
+        return virgin*tau + char*(1.0 - tau)
+
+    def thermal_conductivity(self, temperature: DOFArray,
+                             tau: DOFArray) -> DOFArray:
+        """Solid thermal conductivity as a function of pyrolysis progress."""
+        virgin = (
+            + 2.31290019732353e-17*temperature**5 - 2.167785032562e-13*temperature**4
+            + 8.24498395180905e-10*temperature**3 - 1.221612456223e-06*temperature**2
+            + 8.46459266618945e-04*temperature + 2.387112689755e-01)
+
+        char = (
+            - 7.378279908877e-18*temperature**5 + 4.709353498411e-14*temperature**4
+            + 1.530236899258e-11*temperature**3 - 2.305611352452e-07*temperature**2
+            + 3.668624886569e-04*temperature + 3.120898814888e-01)
+
+        return virgin*tau + char*(1.0 - tau)
+
+    def volume_fraction(self, tau: DOFArray) -> DOFArray:
+        r"""Fraction $\phi$ occupied by the solid."""
+        fiber = 0.10
+        virgin = 0.10
+        char = 0.05
+        return virgin*tau + char*(1.0 - tau) + fiber
+
+    def permeability(self, tau: DOFArray) -> DOFArray:
+        r"""Permeability $K$ of the composite material."""
+        virgin = 1.6e-11
+        char = 2.0e-11
+        return virgin*tau + char*(1.0 - tau)
+
+    def emissivity(self, tau: DOFArray) -> DOFArray:
+        """Emissivity for energy radiation."""
+        virgin = 0.8
+        char = 0.9
+        return virgin*tau + char*(1.0 - tau)
+
+    def tortuosity(self, tau: DOFArray) -> DOFArray:
+        r"""Tortuosity $\eta$ affects the species diffusivity."""
+        virgin = 1.2
+        char = 1.1
+        return virgin*tau + char*(1.0 - tau)
+
+    def decomposition_progress(self, mass: DOFArray) -> DOFArray:
+        r"""Evaluate the progress ratio $\tau$ of the phenolics decomposition.
+
+        Where $\tau=1$, the material is locally virgin. On the other hand, if
+        $\tau=0$, then the pyrolysis is locally complete and only charred
+        material exists:
+
+        .. math::
+            \tau = \frac{\rho_0}{\rho_0 - \rho_c}
+                    \left( 1 - \frac{\rho_c}{\rho(t)} \right)
+        """
+        char_mass = self._char_mass
+        virgin_mass = self._virgin_mass
+        return virgin_mass/(virgin_mass - char_mass)*(1.0 - char_mass/mass)
+
+
 class SingleLevelFilter(logging.Filter):
     def __init__(self, passlevel, reject):
         self.passlevel = passlevel
@@ -436,7 +620,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     import time
     t_start = time.time()
-    t_shutdown = 700*60
+    t_shutdown = 720*60
 
     mesh_filename = "mesh_01_round_10mm_020um_2domains-v2.msh"
 
@@ -469,7 +653,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-    mechanism_file = "uiuc_8sp_phenol"
+    my_mechanism = "uiuc_8sp_phenol"
     equiv_ratio = 1.0
     chem_rate = 1.0
     flow_rate = 25.0
@@ -613,6 +797,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{  Set up initial state using Cantera
 
     # Use Cantera for initialization
+    import os
+    current_path = os.path.abspath(os.getcwd()) + "/"
+    mechanism_file = current_path + my_mechanism
+
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -674,7 +862,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     cantera_soln.TPX = temp_ignition, pres_unburned, x_unburned
     cantera_soln.equilibrate("TP")
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
-#    pres_burned = cantera_soln.P
     mmw_burned = cantera_soln.mean_molecular_weight
 
     # Pull temperature, density, mass fractions, and pressure from Cantera
@@ -687,7 +874,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     dummy, rho_atmosphere, y_atmosphere = cantera_soln.TDY
     cantera_soln.equilibrate("TP")
     temp_atmosphere, rho_atmosphere, y_atmosphere = cantera_soln.TDY
-#    pres_atmosphere = cantera_soln.P
     mmw_atmosphere = cantera_soln.mean_molecular_weight
 
     # Pull temperature, density, mass fractions, and pressure from Cantera
@@ -774,10 +960,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wall_sample_density[1] = 90.0 + solid_zeros
         wall_sample_density[2] = 160. + solid_zeros
 
-        import mirgecom.materials.tacot as material_sample
-        material = material_sample.TacotEOS(char_mass=220.0,
-                                            virgin_mass=280.0)
-        decomposition = material_sample.Pyrolysis()
+        material = TacotEOS(char_mass=220.0, virgin_mass=280.0)
+        decomposition = Pyrolysis()
 
     # Averaging from https://www.azom.com/properties.aspx?ArticleID=52
     wall_alumina_rho = 3500.0
@@ -954,12 +1138,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + 0.5*np.dot(cv.velocity, cv.velocity)
         )
 
-        cv = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+        # make a new CV with the limited variables
+        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
                             momentum=mass_lim*cv.velocity,
                             species_mass=mass_lim*spec_lim)
-
-        # make a new CV with the limited variables
-        return cv
 
     def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
 
@@ -1669,7 +1851,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     compiled_axisym_source_solid = actx.compile(axisym_source_solid)
 
     # ~~~~~~~
-    #FIXME do I have to increase the gravity by speedup_factor?
     def gravity_source_terms(cv):
         """Gravity."""
         gravity = - 9.80665 * speedup_factor 
@@ -1821,8 +2002,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             do_health = check_step(step=step, interval=nhealth)
 
             t_elapsed = time.time() - t_start
-            requested_time = 180.0*60
-            if requested_time - t_elapsed < 300.0:
+            if t_shutdown - t_elapsed < 120.0:
                 my_write_restart(step, t, state)
                 sys.exit()
 
@@ -1976,47 +2156,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 mass=solid_mass_rhs*wall_sample_mask,
                 energy=solid_energy_rhs)
 
-        #~~~~~~~~~~~~~
-
-#        from pytato.analysis import get_max_node_depth
-#        print(f"{get_max_node_depth(fluid_rhs.mass[0])=}")
-#        print(f"{get_max_node_depth(fluid_rhs.energy[0])=}")
-#        print(f"{get_max_node_depth(fluid_rhs.momentum[0][0])=}")
-#        print(f"{get_max_node_depth(fluid_rhs.momentum[1][0])=}")
-#        print(f"{get_max_node_depth(fluid_rhs.species_mass[0][0])=}")
-#        print(f"{get_max_node_depth(fluid_sources.mass[0])=}")
-#        print(f"{get_max_node_depth(fluid_sources.energy[0])=}")
-#        print(f"{get_max_node_depth(fluid_sources.momentum[0][0])=}")
-#        print(f"{get_max_node_depth(fluid_sources.momentum[1][0])=}")
-#        print(f"{get_max_node_depth(fluid_sources.species_mass[0][0])=}")
-#        print("")
-#        print(f"{get_max_node_depth(solid_rhs.mass[0][0])=}")
-#        print(f"{get_max_node_depth(solid_rhs.mass[1][0])=}")
-#        print(f"{get_max_node_depth(solid_rhs.mass[2][0])=}")
-#        print(f"{get_max_node_depth(solid_rhs.energy[0])=}")
-#        print(f"{get_max_node_depth(solid_sources.mass[0][0])=}")
-#        print(f"{get_max_node_depth(solid_sources.mass[1][0])=}")
-#        print(f"{get_max_node_depth(solid_sources.mass[2][0])=}")
-#        print(f"{get_max_node_depth(solid_sources.energy[0])=}")
-
-#        def get_node_count(ary):
-#            if not isinstance(ary, DOFArray):
-#                from arraycontext import map_reduce_array_container
-#                return map_reduce_array_container(sum, get_node_count, ary)
-
-#            from pytato.analysis import get_num_nodes
-#            return get_num_nodes(ary[0])
-
-#        print("")
-#        print(f"{get_node_count(fluid_rhs)=}")
-#        print(f"{get_node_count(fluid_sources)=}")
-#        print(f"{get_node_count(solid_rhs)=}")
-#        print(f"{get_node_count(solid_sources)=}")
-
-#        sys.exit()
-
-        #~~~~~~~~~~~~~
-
         return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
                                solid_rhs + solid_sources, solid_zeros,
                                interface_zeros])
@@ -2053,16 +2192,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         actual_state = make_obj_array([fluid_state, solid_state,
                                        boundary_velocity])
 
-        rhs_state = get_rhs_compiled(t, actual_state)
-
-#        if use_rhs_filtered:
-#            filtered_sample_rhs = filter_sample_rhs_compiled(rhs_state[2])
-#            return make_obj_array([
-#                rhs_state[0], fluid_zeros,
-#                filtered_sample_rhs, sample_zeros, rhs_state[4],
-#                rhs_state[5], interface_zeros])
-
-        return rhs_state
+        return get_rhs_compiled(t, actual_state)
 
     def my_post_step(step, t, dt, state):
 
