@@ -64,7 +64,7 @@ from mirgecom.boundary import (
     AdiabaticSlipBoundary,
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
-    LinearizedOutflowBoundary
+    LinearizedOutflow2DBoundary
 )
 
 from mirgecom.fluid import (
@@ -1455,7 +1455,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                  grad_t=grad_t_plus)
             return f_ext@normal
 
-    linear_bnd = LinearizedOutflowBoundary(
+    linear_bnd = LinearizedOutflow2DBoundary(
         free_stream_density=rho_atmosphere, free_stream_pressure=101325.0,
         free_stream_velocity=np.zeros(shape=(dim,)),
         free_stream_species_mass_fractions=y_atmosphere)
