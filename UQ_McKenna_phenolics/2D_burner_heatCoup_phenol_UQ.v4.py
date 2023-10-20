@@ -410,9 +410,19 @@ class Pyrolysis:
     .. automethod:: get_source_terms
     """
 
-    def __init__(self):
+    def __init__(self, virgin_mass, char_mass, fiber_mass, pre_exponential):
         """Temperature in which each reaction starts."""
         self._Tcrit = np.array([333.3, 555.6])
+        self._virgin_mass = virgin_mass
+        self._char_mass = char_mass
+        self._fiber_frac = fiber_mass
+        self._pre_exp = pre_exponential
+
+        print(self._virgin_mass)
+        print(self._virgin_mass*0.75, self._virgin_mass*0.5, self._virgin_mass*0.25)
+        print(self._char_mass)
+        print(self._fiber_frac)
+        print(self._pre_exp)
 
     def get_source_terms(self, temperature, chi):
         r"""Return the source terms of pyrolysis decomposition for TACOT.
@@ -440,12 +450,14 @@ class Pyrolysis:
             # reaction 1
             actx.np.where(actx.np.less(temperature, self._Tcrit[0]),
                 0.0, (
-                    -(30.*((chi[0] - 0.00)/30.)**3)*12000.
+#                    -(30.*((chi[0] - 0.00)/30.)**3)*12000.
+                    -(self._virgin_mass*0.25*((chi[0] - 0.00)/self._virgin_mass*0.25)**3)*self._pre_exp[0]
                     * actx.np.exp(-8556.000/temperature))),
             actx.np.where(actx.np.less(temperature, self._Tcrit[1]),
             # reaction 2
                 0.0, (
-                    -(90.*((chi[1] - 60.0)/90.)**3)*4.48e9
+#                    -(90.*((chi[1] - 60.0)/90.)**3)*4.48e9
+                    -(self._virgin_mass*0.75*((chi[1] - self._virgin_mass*0.5)/self._virgin_mass*0.75)**3)*self._pre_exp[1]
                     * actx.np.exp(-20444.44/temperature))),
             # fiber oxidation: include in the RHS but dont do anything with it.
             actx.np.zeros_like(temperature)])
@@ -470,13 +482,32 @@ class TacotEOS(PorousWallEOS):
     .. automethod:: decomposition_progress
     """
 
-    def __init__(self, char_mass, virgin_mass):
+    def __init__(self, virgin_volume_fraction, char_volume_fraction,
+                       fiber_volume_fraction, kappa0_virgin, kappa0_char,
+                       h0_virgin, h0_char, char_mass, virgin_mass):
         """Bulk density considering the porosity and intrinsic density.
 
         The fiber and all resin components must be considered.
         """
         self._char_mass = char_mass
         self._virgin_mass = virgin_mass
+        self._fiber_volume_fraction = fiber_volume_fraction
+        self._virgin_volume_fraction = virgin_volume_fraction
+        self._char_volume_fraction = char_volume_fraction
+        self._kappa0_virgin = kappa0_virgin
+        self._kappa0_char = kappa0_char
+        self._h0_virgin = h0_virgin
+        self._h0_char = h0_char
+
+        print(self._char_mass)
+        print(self._virgin_mass)
+        print(self._fiber_volume_fraction)
+        print(self._virgin_volume_fraction)
+        print(self._char_volume_fraction)
+        print(self._kappa0_virgin)
+        print(self._kappa0_char)
+        print(self._h0_virgin)
+        print(self._h0_char)
 
     def void_fraction(self, tau: DOFArray) -> DOFArray:
         r"""Return the volumetric fraction $\epsilon$ filled with gas.
@@ -492,12 +523,12 @@ class TacotEOS(PorousWallEOS):
         virgin = (
             - 1.360688853105e-11*temperature**5 + 1.521029626150e-07*temperature**4
             - 6.733769958659e-04*temperature**3 + 1.497082282729e+00*temperature**2
-            + 3.009865156984e+02*temperature - 1.062767983774e+06)
+            + 3.009865156984e+02*temperature + self._h0_virgin)
 
         char = (
             - 1.279887694729e-11*temperature**5 + 1.491175465285e-07*temperature**4
             - 6.994595296860e-04*temperature**3 + 1.691564018109e+00*temperature**2
-            - 3.441837408320e+01*temperature - 1.235438104496e+05)
+            - 3.441837408320e+01*temperature + self._h0_char)
 
         return virgin*tau + char*(1.0 - tau)
 
@@ -506,16 +537,15 @@ class TacotEOS(PorousWallEOS):
         r"""Solid heat capacity $C_{p_s}$ as a function of pyrolysis progress."""
         actx = temperature.array_context
 
-        virgin = actx.np.where(actx.np.less(temperature, 2222.0),
-            + 4.122658916891e-14*temperature**5 - 4.430937180604e-10*temperature**4
-            + 1.872060335623e-06*temperature**3 - 3.951464865603e-03*temperature**2
-            + 4.291080938736e+00*temperature + 1.397594340362e+01,
-            2008.8139143251735)
+        virgin = (
+            - 6.803444000e-11*temperature**4 + 6.0841184e-07*temperature**3
+            - 2.020131033e-03*temperature**2 + 2.9941644e+00*temperature**1
+            + 3.0098651e+02)
 
         char = (
-            + 1.461303669323e-14*temperature**5 - 1.862489701581e-10*temperature**4
-            + 9.685398830530e-07*temperature**3 - 2.599755262540e-03*temperature**2
-            + 3.667295510844e+00*temperature - 7.816218435655e+01)
+            - 6.39943845e-11*temperature**4 + 5.96470188e-07*temperature**3
+            - 2.09837859e-03*temperature**2 + 3.38312804e+00*temperature**1
+            - 3.44183741e+01)
 
         return virgin*tau + char*(1.0 - tau)
 
@@ -525,20 +555,20 @@ class TacotEOS(PorousWallEOS):
         virgin = (
             + 2.31290019732353e-17*temperature**5 - 2.167785032562e-13*temperature**4
             + 8.24498395180905e-10*temperature**3 - 1.221612456223e-06*temperature**2
-            + 8.46459266618945e-04*temperature + 2.387112689755e-01)
+            + 8.46459266618945e-04*temperature + self._kappa0_virgin)
 
         char = (
             - 7.378279908877e-18*temperature**5 + 4.709353498411e-14*temperature**4
             + 1.530236899258e-11*temperature**3 - 2.305611352452e-07*temperature**2
-            + 3.668624886569e-04*temperature + 3.120898814888e-01)
+            + 3.668624886569e-04*temperature + self._kappa0_char)
 
         return virgin*tau + char*(1.0 - tau)
 
     def volume_fraction(self, tau: DOFArray) -> DOFArray:
         r"""Fraction $\phi$ occupied by the solid."""
-        fiber = 0.10
-        virgin = 0.10
-        char = 0.05
+        fiber = self._fiber_volume_fraction
+        virgin = self._virgin_volume_fraction
+        char = self._char_volume_fraction
         return virgin*tau + char*(1.0 - tau) + fiber
 
     def permeability(self, tau: DOFArray) -> DOFArray:
@@ -676,6 +706,25 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     restart_iterations = False
     #restart_iterations = True
+
+    # heat conductivity at T=0K for polynomial fitting
+    kappa0_virgin = 2.38711269e-01
+    kappa0_char = 3.12089881e-01
+
+    # reference enthalps at T=0K for polynomial fitting
+    h0_virgin = -1.0627680e+06
+    h0_char = -1.23543810e+05
+
+#    # wall emissivity for radiation
+#    virgin_wall_emissivity = 0.80
+#    char_wall_emissivity = 0.90
+
+    # volume occupied by the solid components in the bulk volume
+    virgin_volume_fraction = 0.10
+    char_volume_fraction = virgin_volume_fraction/2.0
+    fiber_volume_fraction = 0.10    
+
+    pre_exponential = np.array([12000.0, 4.480e9])
 
 ##########################################################################
     
@@ -949,19 +998,32 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wall_sample_density = 0.1*1600.0 + solid_zeros
 
         import mirgecom.materials.carbon_fiber as material_sample
-        material = material_sample.FiberEOS(char_mass=0.0,
-                                            virgin_mass=160.0)
+        material = material_sample.FiberEOS(char_mass=0.0, virgin_mass=160.0)
         decomposition = material_sample.Y3_Oxidation_Model(wall_material=material)
 
     if my_material == "composite":
         wall_sample_density = np.empty((3,), dtype=object)
 
-        wall_sample_density[0] = 30.0 + solid_zeros
-        wall_sample_density[1] = 90.0 + solid_zeros
-        wall_sample_density[2] = 160. + solid_zeros
+        virgin_volume_fraction = 0.10
+        char_volume_fraction = virgin_volume_fraction/2.0
+        fiber_volume_fraction = 0.10
 
-        material = TacotEOS(char_mass=220.0, virgin_mass=280.0)
-        decomposition = Pyrolysis()
+        wall_sample_density[0] = virgin_volume_fraction*1200.0*0.25 + solid_zeros
+        wall_sample_density[1] = virgin_volume_fraction*1200.0*0.75 + solid_zeros
+        wall_sample_density[2] = fiber_volume_fraction*1600.0 + solid_zeros
+
+        char_mass = fiber_volume_fraction*1600.0 + virgin_volume_fraction*1200.0*0.5
+        virgin_mass = fiber_volume_fraction*1600.0 + virgin_volume_fraction*1200.0*1.0
+        material = TacotEOS(virgin_volume_fraction=virgin_volume_fraction,
+                            char_volume_fraction=char_volume_fraction,
+                            fiber_volume_fraction=fiber_volume_fraction,
+                            kappa0_virgin=kappa0_virgin, kappa0_char=kappa0_char,
+                            h0_virgin=h0_virgin, h0_char=h0_char,
+                            char_mass=char_mass, virgin_mass=virgin_mass)
+        decomposition = Pyrolysis(virgin_mass=virgin_volume_fraction*1200.0*1.0,
+                                  char_mass=virgin_volume_fraction*1200.0*0.5,
+                                  fiber_mass=fiber_volume_fraction*1600.0,
+                                  pre_exponential=pre_exponential)
 
     # Averaging from https://www.azom.com/properties.aspx?ArticleID=52
     wall_alumina_rho = 3500.0
