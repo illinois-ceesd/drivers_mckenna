@@ -415,14 +415,13 @@ class Pyrolysis:
         self._Tcrit = np.array([333.3, 555.6])
         self._virgin_mass = virgin_mass
         self._char_mass = char_mass
-        self._fiber_frac = fiber_mass
+        self._fiber_mass = fiber_mass
         self._pre_exp = pre_exponential
 
-        print(self._virgin_mass)
-        print(self._virgin_mass*0.75, self._virgin_mass*0.5, self._virgin_mass*0.25)
-        print(self._char_mass)
-        print(self._fiber_frac)
-        print(self._pre_exp)
+        print("virgin mass", self._virgin_mass)
+        print("virgin mass (2)", self._virgin_mass*0.75, self._virgin_mass*0.5, self._virgin_mass*0.25)
+        print("char mass", self._char_mass)
+        print("pre exp", self._pre_exp)
 
     def get_source_terms(self, temperature, chi):
         r"""Return the source terms of pyrolysis decomposition for TACOT.
@@ -484,7 +483,8 @@ class TacotEOS(PorousWallEOS):
 
     def __init__(self, virgin_volume_fraction, char_volume_fraction,
                        fiber_volume_fraction, kappa0_virgin, kappa0_char,
-                       h0_virgin, h0_char, char_mass, virgin_mass):
+                       h0_virgin, h0_char, char_mass, virgin_mass,
+                       virgin_emissivity, char_emissivity):
         """Bulk density considering the porosity and intrinsic density.
 
         The fiber and all resin components must be considered.
@@ -498,16 +498,20 @@ class TacotEOS(PorousWallEOS):
         self._kappa0_char = kappa0_char
         self._h0_virgin = h0_virgin
         self._h0_char = h0_char
+        self._emissivity_virgin = virgin_emissivity
+        self._emissivity_char = char_emissivity
 
-        print(self._char_mass)
-        print(self._virgin_mass)
-        print(self._fiber_volume_fraction)
-        print(self._virgin_volume_fraction)
-        print(self._char_volume_fraction)
-        print(self._kappa0_virgin)
-        print(self._kappa0_char)
-        print(self._h0_virgin)
-        print(self._h0_char)
+        print("char mass:", self._char_mass)
+        print("virgin mass:", self._virgin_mass)
+        print("fiber frac:", self._fiber_volume_fraction)
+        print("virgin frac:", self._virgin_volume_fraction)
+        print("char frac:", self._char_volume_fraction)
+        print("kappa_0 virgin:", self._kappa0_virgin)
+        print("kappa_0 char", self._kappa0_char)
+        print("h0 virgin:", self._h0_virgin)
+        print("h0 char:", self._h0_char)
+        print("emissivity virgin:", self._emissivity_virgin)
+        print("emissivity char:", self._emissivity_char)
 
     def void_fraction(self, tau: DOFArray) -> DOFArray:
         r"""Return the volumetric fraction $\epsilon$ filled with gas.
@@ -577,10 +581,10 @@ class TacotEOS(PorousWallEOS):
         char = 2.0e-11
         return virgin*tau + char*(1.0 - tau)
 
-    def emissivity(self, tau: DOFArray) -> DOFArray:
+    def emissivity(self, temperature: DOFArray, tau: DOFArray) -> DOFArray:
         """Emissivity for energy radiation."""
-        virgin = 0.8
-        char = 0.9
+        virgin = self._emissivity_virgin
+        char = self._emissivity_char
         return virgin*tau + char*(1.0 - tau)
 
     def tortuosity(self, tau: DOFArray) -> DOFArray:
@@ -652,7 +656,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_start = time.time()
     t_shutdown = 720*60
 
-    mesh_filename = "mesh_01_round_10mm_020um_2domains-v2.msh"
+    mesh_filename = "mesh_12m_10mm_015um_2domains-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -699,10 +703,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     temp_wall = 300.0
 
     wall_penalty_amount = 1.0
-    wall_time_scale = 2.5*speedup_factor  # wall speed-up
+    wall_time_scale = 10.0*speedup_factor  # wall speed-up
 
     use_radiation = True
-    emissivity = 0.85*speedup_factor
 
     restart_iterations = False
     #restart_iterations = True
@@ -715,9 +718,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     h0_virgin = -1.0627680e+06
     h0_char = -1.23543810e+05
 
-#    # wall emissivity for radiation
-#    virgin_wall_emissivity = 0.80
-#    char_wall_emissivity = 0.90
+    # wall emissivity for radiation
+    virgin_wall_emissivity = 0.80
+    char_wall_emissivity = 0.90
 
     # volume occupied by the solid components in the bulk volume
     virgin_volume_fraction = 0.10
@@ -1004,10 +1007,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if my_material == "composite":
         wall_sample_density = np.empty((3,), dtype=object)
 
-        virgin_volume_fraction = 0.10
-        char_volume_fraction = virgin_volume_fraction/2.0
-        fiber_volume_fraction = 0.10
-
         wall_sample_density[0] = virgin_volume_fraction*1200.0*0.25 + solid_zeros
         wall_sample_density[1] = virgin_volume_fraction*1200.0*0.75 + solid_zeros
         wall_sample_density[2] = fiber_volume_fraction*1600.0 + solid_zeros
@@ -1019,7 +1018,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                             fiber_volume_fraction=fiber_volume_fraction,
                             kappa0_virgin=kappa0_virgin, kappa0_char=kappa0_char,
                             h0_virgin=h0_virgin, h0_char=h0_char,
-                            char_mass=char_mass, virgin_mass=virgin_mass)
+                            char_mass=char_mass, virgin_mass=virgin_mass,
+                            char_emissivity=char_wall_emissivity,
+                            virgin_emissivity=virgin_wall_emissivity)
         decomposition = Pyrolysis(virgin_mass=virgin_volume_fraction*1200.0*1.0,
                                   char_mass=virgin_volume_fraction*1200.0*0.5,
                                   fiber_mass=fiber_volume_fraction*1600.0,
@@ -1073,6 +1074,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return (wall_sample_tau * wall_sample_mask
                 + 1.0 * wall_alumina_mask
                 + 1.0 * wall_graphite_mask)
+
+    def _get_emissivity(temperature, tau):
+        wall_sample_emissivity = \
+            speedup_factor*material.emissivity(temperature, tau)
+        return (wall_sample_emissivity * wall_sample_mask
+                + 0.0 * wall_alumina_mask
+                + 0.85 * wall_graphite_mask)
 
     solid_wall_model = SolidWallModel(
         #density_func=_get_solid_density,
@@ -2159,6 +2167,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             quadrature_tag=quadrature_tag, dd=dd_vol_solid,
             comm_tag=_SolidGradTempTag
         )
+
+        emissivity = _get_emissivity(wdv.temperature, wdv.tau)
 
         fluid_all_boundaries, solid_all_boundaries = \
             add_interface_boundaries(

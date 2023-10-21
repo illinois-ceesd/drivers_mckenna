@@ -48,7 +48,7 @@ from grudge.dof_desc import (
 )
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
-from mirgecom.utils import force_evaluation
+from mirgecom.utils import force_evaluation as force_eval
 from mirgecom.simutil import (
     check_step, get_sim_timestep, distribute_mesh, write_visfile,
     check_naninf_local, check_range_local, global_reduce
@@ -445,7 +445,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     import time
     t_start = time.time()
-    t_shutdown = 700*60
+    t_shutdown = 720*60
 
 #    mesh_filename = "mesh_01_round_10mm_020um_2domains-v2.msh"
     mesh_filename = "mesh_12m_10mm_015um_2domains-v2.msh"
@@ -479,7 +479,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-    mechanism_file = "uiuc_8sp_phenol"
+#    mechanism_file = "uiuc_8sp_phenol"
+    mechanism_file = "uiuc_7sp"
     equiv_ratio = 1.0
     chem_rate = 1.0
     flow_rate = 25.0
@@ -500,7 +501,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_time_scale = 10.0*speedup_factor  # wall speed-up
 
     use_radiation = True
-    emissivity = 0.85*speedup_factor
+#    emissivity = 0.85*speedup_factor
 
     restart_iterations = False
     #restart_iterations = True
@@ -515,7 +516,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if integrator == "ssprk43":
         from mirgecom.integrators.ssprk import ssprk43_step
         timestepper = ssprk43_step
-        force_eval = True
+        force_eval_stepper = True
 
     if rank == 0:
         print("\n#### Simulation control data: ####")
@@ -609,14 +610,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
     solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
 
-    fluid_zeros = force_evaluation(actx, fluid_nodes[0]*0.0)
-    solid_zeros = force_evaluation(actx, solid_nodes[0]*0.0)
+    fluid_zeros = force_eval(actx, fluid_nodes[0]*0.0)
+    solid_zeros = force_eval(actx, solid_nodes[0]*0.0)
 
     # ~~~~~~~~~~
     from grudge.dt_utils import characteristic_lengthscales
-    char_length_fluid = force_evaluation(
+    char_length_fluid = force_eval(
         actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid))
-    char_length_solid = force_evaluation(
+    char_length_solid = force_eval(
         actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid))
     
 
@@ -853,6 +854,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 + 1.0 * wall_alumina_mask
                 + 1.0 * wall_graphite_mask)
 
+    def _get_emissivity(temperature, tau):
+        wall_sample_emissivity = \
+            speedup_factor*material.emissivity(temperature, tau)
+        return (wall_sample_emissivity * wall_sample_mask
+                + 0.0 * wall_alumina_mask
+                + 0.85 * wall_graphite_mask)
+
     solid_wall_model = SolidWallModel(
         #density_func=_get_solid_density,
         enthalpy_func=_get_solid_enthalpy,
@@ -1026,10 +1034,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ###############################################################################
 
-    smooth_region = force_evaluation(
-            actx, smoothness_region(dcoll, fluid_nodes))
+    smooth_region = force_eval(actx, smoothness_region(dcoll, fluid_nodes))
 
-    reaction_rates_damping = force_evaluation(
+    reaction_rates_damping = force_eval(
             actx, reaction_damping(dcoll, fluid_nodes))
 
     def _get_fluid_state(cv, temp_seed):
@@ -1055,8 +1062,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             logging.info("Initializing soln.")
         current_cv = fluid_init(actx, fluid_nodes, eos)
 
-        tseed = force_evaluation(actx, 300.0 + fluid_zeros)
-        wv_tseed = force_evaluation(actx, temp_wall + solid_zeros)
+        tseed = force_eval(actx, 300.0 + fluid_zeros)
+        wv_tseed = force_eval(actx, temp_wall + solid_zeros)
 
         #FIXME use SolidWallInitializer instead
 
@@ -1121,12 +1128,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #########################################################################
 
-    current_cv = force_evaluation(actx, current_cv)
-    tseed = force_evaluation(actx, tseed)
+    current_cv = force_eval(actx, current_cv)
+    tseed = force_eval(actx, tseed)
     current_fluid_state = get_fluid_state(current_cv, tseed)
 
-    current_wv = force_evaluation(actx, current_wv)
-    wv_tseed = force_evaluation(actx, wv_tseed)
+    current_wv = force_eval(actx, current_wv)
+    wv_tseed = force_eval(actx, wv_tseed)
     current_solid_state = get_solid_state(current_wv, wv_tseed)
 
 #########################################################################
@@ -1178,13 +1185,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         x_thickness=sponge_x_thickness,
         y_thickness=sponge_y_thickness)
 
-    sponge_sigma = force_evaluation(actx, sponge_init(x_vec=fluid_nodes))
-    ref_cv = force_evaluation(actx, ref_state(actx, fluid_nodes, eos))
+    sponge_sigma = force_eval(actx, sponge_init(x_vec=fluid_nodes))
+    ref_cv = force_eval(actx, ref_state(actx, fluid_nodes, eos))
 
 ##############################################################################
 
-    inflow_nodes = force_evaluation(actx,
-                                    dcoll.nodes(dd_vol_fluid.trace("inlet")))
+    inflow_nodes = force_eval(actx, dcoll.nodes(dd_vol_fluid.trace("inlet")))
     inflow_temperature = inflow_nodes[0]*0.0 + 300.0
     def bnd_temperature_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
         return inflow_temperature
@@ -1446,8 +1452,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_health_check(cv, dv):
         health_error = False
-        pressure = force_evaluation(actx, dv.pressure)
-        temperature = force_evaluation(actx, dv.temperature)
+        pressure = force_eval(actx, dv.pressure)
+        temperature = force_eval(actx, dv.temperature)
 
         if global_reduce(check_naninf_local(dcoll, "vol", pressure),
                          op="lor"):
@@ -1516,7 +1522,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         def interior_flux(field_tpair):
             dd_trace_quad = field_tpair.dd.with_discr_tag(quadrature_tag)
             normal_quad = normal_vector(actx, dcoll, dd_trace_quad)
-            #normal_quad = actx.thaw(dcoll.normal(dd_trace_quad))
             bnd_tpair_quad = interp_to_surf_quad(field_tpair)
             flux_int = outer(num_flux_central(bnd_tpair_quad.int,
                                               bnd_tpair_quad.ext),
@@ -1527,7 +1532,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         def boundary_flux(bdtag, bdry):
             dd_bdry_quad = dd_vol_quad.with_domain_tag(bdtag)
             normal_quad = normal_vector(actx, dcoll, dd_bdry_quad)
-            #normal_quad = actx.thaw(dcoll.normal(dd_bdry_quad)) 
             int_soln_quad = op.project(dcoll, dd_vol, dd_bdry_quad, field)
 
             if bnd_cond == "symmetry" and bdtag == "-0":
@@ -1597,7 +1601,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dbetady  = my_derivative_function(actx, dcoll, beta, fluid_boundaries,
                                           dd_vol_fluid, "replicate", _MyGradTag_6)[1]
         
-        qr = - (kappa*grad_t)[0]
+        qr = - (kappa*grad_t)[0] #FIXME add species enthalpy term
         dqrdr = 0.0 #- (dkappadr*grad_t[0] + kappa*d2Tdr2) #XXX
         
         dyidr = grad_y[:,0]
@@ -1757,7 +1761,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         momentum = \
             -1.0*integral_volume_source/integral_surface*interface_sample
 
-        return force_evaluation(actx, momentum)
+        return force_eval(actx, momentum)
 
 
 ##############################################################################
@@ -1788,14 +1792,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         cv, tseed, wv, wv_tseed, _ = state
 
-        cv = force_evaluation(actx, cv)
-        tseed = force_evaluation(actx, tseed)
-        wv = force_evaluation(actx, wv)
-        wv_tseed = force_evaluation(actx, wv_tseed)
+        cv = force_eval(actx, cv)
+        tseed = force_eval(actx, tseed)
+        wv = force_eval(actx, wv)
+        wv_tseed = force_eval(actx, wv_tseed)
 
         # include both outflow and sponge in the damping region
-        smoothness = force_evaluation(actx,
-            smooth_region + sponge_sigma/sponge_amp)
+        smoothness = force_eval(actx, smooth_region + sponge_sigma/sponge_amp)
 
         # damp the outflow
         cv = drop_order_cv(cv, smoothness, theta_factor)
@@ -1820,12 +1823,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             boundary_momentum = \
                 speedup_factor * blowing_momentum(-1.0*sum(solid_mass_rhs))
 
-        t = force_evaluation(actx, t)
-        dt_fluid = force_evaluation(actx, actx.np.minimum(
+        t = force_eval(actx, t)
+        dt_fluid = force_eval(actx, actx.np.minimum(
             current_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
-#        dt_solid = force_evaluation(actx, actx.np.minimum(
+#        dt_solid = force_eval(actx, actx.np.minimum(
 #            1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
-        dt_solid = force_evaluation(actx, current_dt + solid_zeros)
+        dt_solid = force_eval(actx, current_dt + solid_zeros)
         dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros,
                              interface_zeros])
 
@@ -1840,12 +1843,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             do_health = check_step(step=step, interval=nhealth)
 
             t_elapsed = time.time() - t_start
-            requested_time = 180.0*60
-            if requested_time - t_elapsed < 300.0:
+            if t_shutdown - t_elapsed < 300.0:
                 my_write_restart(step, t, state)
                 sys.exit()
 
-            ngarbage = 50
+            ngarbage = 10
             if check_step(step=step, interval=ngarbage):
                 with gc_timer.start_sub_timer():
                     from warnings import warn
@@ -1941,13 +1943,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, wdv.thermal_conductivity,
             solid_all_boundaries_no_grad, wdv.temperature,
             quadrature_tag=quadrature_tag, dd=dd_vol_solid,
-            numerical_flux_func=grad_facial_flux_central,
+            numerical_flux_func=grad_facial_flux_weighted,
+#            numerical_flux_func=grad_facial_flux_central,
             comm_tag=_SolidGradTempTag)
 
-        print("solid_grad_temperature")
-        print(solid_grad_temperature[0].shape)
-        print(solid_grad_temperature[1].shape)
-        print(solid_grad_temperature.shape)
+#        print("solid_grad_temperature")
+#        print(solid_grad_temperature[0].shape)
+#        print(solid_grad_temperature[1].shape)
+#        print(solid_grad_temperature.shape)
+
+        wall_emissivity = _get_emissivity(temperature=wdv.temperature,
+                                          tau=wdv.tau)
 
         if my_material == "fiber":
             fluid_all_boundaries, solid_all_boundaries = \
@@ -1958,7 +1964,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     fluid_grad_temperature, solid_grad_temperature,
                     fluid_boundaries, solid_boundaries,
                     interface_noslip=True, interface_radiation=use_radiation,
-                    wall_emissivity=emissivity, sigma=5.67e-8,
+                    wall_emissivity=wall_emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
                     wall_penalty_amount=wall_penalty_amount)
 
@@ -1973,7 +1979,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     fluid_boundaries, solid_boundaries,
                     porous_wall=interface_sample,
                     interface_noslip=True, interface_radiation=use_radiation,
-                    wall_emissivity=emissivity, sigma=5.67e-8,
+                    wall_emissivity=wall_emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
                     wall_penalty_amount=wall_penalty_amount)
 
@@ -2012,11 +2018,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 dd=dd_vol_solid,
                 grad_u=solid_grad_temperature,
                 comm_tag=_SolidOperatorTag,
-                diffusion_numerical_flux_func=diffusion_facial_flux_central,
+                diffusion_numerical_flux_func=diffusion_facial_flux_harmonic,
+#                diffusion_numerical_flux_func=diffusion_facial_flux_central,
             )
 
-            print("solid_energy_rhs")
-            print(solid_energy_rhs.shape)
+#            print("solid_energy_rhs")
+#            print(solid_energy_rhs.shape)
 
             solid_sources = wall_time_scale * axisym_source_solid(
                 actx, dcoll, solid_state, solid_grad_temperature)
@@ -2075,31 +2082,31 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def my_rhs(t, state):
         cv, tseed, wv, wv_tseed, boundary_momentum = state
 
-        print('rhs')
+#        print('rhs')
 
-        cv = force_evaluation(actx, cv)
-        tseed = force_evaluation(actx, tseed)
-        wv = force_evaluation(actx, wv)
-        wv_tseed = force_evaluation(actx, wv_tseed)
+        cv = force_eval(actx, cv)
+        tseed = force_eval(actx, tseed)
+        wv = force_eval(actx, wv)
+        wv_tseed = force_eval(actx, wv_tseed)
 
-        t = force_evaluation(actx, t)
-        smoothness = force_evaluation(actx, smooth_region + sponge_sigma/sponge_amp)
+        t = force_eval(actx, t)
+        smoothness = force_eval(actx, smooth_region + sponge_sigma/sponge_amp)
 
         # apply outflow damping
         cv = drop_order_cv(cv, smoothness, theta_factor)
 
         # construct species-limited fluid state
         fluid_state = get_fluid_state(cv, tseed)
-        fluid_state = force_evaluation(actx, fluid_state)
+        fluid_state = force_eval(actx, fluid_state)
         cv = fluid_state.cv
 
         # construct wall state
         solid_state = get_solid_state(wv, wv_tseed)
-        solid_state = force_evaluation(actx, solid_state)
+        solid_state = force_eval(actx, solid_state)
         wv = solid_state.cv
         wdv = solid_state.dv
 
-        boundary_momentum = force_evaluation(actx, boundary_momentum)
+        boundary_momentum = force_eval(actx, boundary_momentum)
 
         actual_state = make_obj_array([fluid_state, solid_state,
                                        boundary_momentum])
@@ -2144,15 +2151,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                     current_solid_state.dv.temperature,
                                     interface_zeros])
 
-    dt_fluid = force_evaluation(actx, actx.np.minimum(
-        current_dt, my_get_timestep_fluid(current_fluid_state,
-                        force_evaluation(actx, current_t + fluid_zeros),
-                        force_evaluation(actx, current_dt + fluid_zeros))))
-    dt_solid = force_evaluation(actx, current_dt + solid_zeros)
+    dt_fluid = force_eval(
+        actx, actx.np.minimum(
+            current_dt, my_get_timestep_fluid(
+                current_fluid_state,
+                force_eval(actx, current_t + fluid_zeros),
+                force_eval(actx, current_dt + fluid_zeros))))
+    dt_solid = force_eval(actx, current_dt + solid_zeros)
     dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros, interface_zeros])
 
-    t_fluid = force_evaluation(actx, current_t + fluid_zeros)
-    t_solid = force_evaluation(actx, current_t + solid_zeros)
+    t_fluid = force_eval(actx, current_t + fluid_zeros)
+    t_solid = force_eval(actx, current_t + solid_zeros)
     t = make_obj_array([t_fluid, t_fluid, t_solid, t_solid, interface_zeros])
 
     if rank == 0:
@@ -2164,7 +2173,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                       post_step_callback=my_post_step,
                       istep=current_step, dt=dt, t=t, t_final=t_final,
                       max_steps=niter, local_dt=local_dt,
-                      force_eval=force_eval, state=stepper_state,
+                      force_eval=force_eval_stepper, state=stepper_state,
                       compile_rhs=False)
 
     # 
