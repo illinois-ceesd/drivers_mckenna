@@ -1305,6 +1305,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_wv = SolidWallConservedVars(mass=wall_densities,
                                             energy=wall_energy)
 
+        last_stored_time = -1.0
+        my_file = open("QoI.dat", "w")
+        my_file.close()
+
     else:
         current_step = restart_step
         current_t = restart_data["t"]
@@ -1317,6 +1321,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if restart_iterations:
             current_t = 0.0
             current_step = 0
+
+        data = np.genfromtxt('QoI.dat', delimiter=',')
+        last_stored_time = data[-1,0]
 
         if rank == 0:
             logger.info("Restarting soln.")
@@ -1976,6 +1983,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #    assert integral_volume - volume < 1e-9
 #    assert integral_surface - area < 1e-9
 
+    mass_0 = integral(dcoll, dd_vol_solid,
+                      sum(current_wv.mass)*wall_sample_mask*dV)
+
     def blowing_momentum(source):
 
         # volume integral of the source terms
@@ -2011,7 +2021,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     my_get_timestep_wall = actx.compile(_my_get_timestep_wall)
     my_get_timestep_fluid = actx.compile(_my_get_timestep_fluid)
 
+    # ~~~~~~~~~~
+    from grudge.op import nodal_min, nodal_max
+    def vol_min(dd_vol, x):
+        return actx.to_numpy(nodal_min(dcoll, dd_vol, x, initial=+np.inf))[()]
 
+    def vol_max(dd_vol, x):
+        return actx.to_numpy(nodal_max(dcoll, dd_vol, x, initial=-np.inf))[()]
+
+    # ~~~~~~~~~~
     import os
     def my_pre_step(step, t, dt, state):
         
@@ -2052,6 +2070,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             boundary_momentum = \
                 speedup_factor * blowing_momentum(-1.0*sum(solid_mass_rhs))
 
+
         t = force_evaluation(actx, t)
         dt_fluid = force_evaluation(actx, actx.np.minimum(
             current_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
@@ -2075,6 +2094,22 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             if t_shutdown - t_elapsed < 120.0:
                 my_write_restart(step, t, state)
                 sys.exit()
+
+            if step % 1000 == 0:
+                wall_time = np.max(actx.to_numpy(t[2]))
+                if wall_time > last_stored_time:
+                    mass = integral(dcoll, dd_vol_solid,
+                                    sum(wv.mass)*wall_sample_mask*dV)
+                    mass_loss = (mass - mass_0).get()
+
+                    dd_centerline = dd_vol_solid.trace("wall_sym")
+                    temperature_centerline = op.project(
+                        dcoll, dd_vol_solid, dd_centerline, wdv.temperature)
+                    min_temp_center = vol_min(dd_centerline, temperature_centerline)
+                    max_temp_center = vol_max(dd_centerline, temperature_centerline)
+                    my_file = open("QoI.dat", "a")
+                    my_file.write(f"{wall_time:.10f}, {mass_loss:.10f}, {min_temp_center:.10f}, {max_temp_center:.10f} \n")
+                    my_file.close()
 
             ngarbage = 50
             if check_step(step=step, interval=ngarbage):
