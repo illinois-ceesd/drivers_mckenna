@@ -471,7 +471,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.2
 
     # discretization and model control
-    order = 2
+    order = 1
     use_overintegration = False
 
     x0_sponge = 0.150
@@ -855,11 +855,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 + 1.0 * wall_graphite_mask)
 
     def _get_emissivity(temperature, tau):
-        wall_sample_emissivity = \
-            speedup_factor*material.emissivity(temperature, tau)
-        return (wall_sample_emissivity * wall_sample_mask
-                + 0.0 * wall_alumina_mask
-                + 0.85 * wall_graphite_mask)
+        wall_sample_emissivity = material.emissivity(temperature, tau)
+        return speedup_factor*(
+            wall_sample_emissivity * wall_sample_mask
+             + 0.00 * wall_alumina_mask
+             + 0.85 * wall_graphite_mask)
 
     solid_wall_model = SolidWallModel(
         #density_func=_get_solid_density,
