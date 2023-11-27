@@ -2100,7 +2100,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 if wall_time > last_stored_time:
                     mass = integral(dcoll, dd_vol_solid,
                                     sum(wv.mass)*wall_sample_mask*dV)
-                    mass_loss = (mass - mass_0).get()
+                    mass_loss = actx.to_numpy(mass - mass_0)
 
                     dd_centerline = dd_vol_solid.trace("wall_sym")
                     temperature_centerline = op.project(
@@ -2108,7 +2108,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     min_temp_center = vol_min(dd_centerline, temperature_centerline)
                     max_temp_center = vol_max(dd_centerline, temperature_centerline)
                     my_file = open("QoI.dat", "a")
-                    my_file.write(f"{wall_time:.10f}, {mass_loss:.10f}, {min_temp_center:.10f}, {max_temp_center:.10f} \n")
+                    #my_file.write(f"{wall_time:.10f}, {mass_loss:.10f}, {min_temp_center:.10f}, {max_temp_center:.10f} \n")
+                    my_file.write(f"{wall_time}, {mass_loss}, {min_temp_center}, {max_temp_center} \n")
                     my_file.close()
 
             ngarbage = 50
