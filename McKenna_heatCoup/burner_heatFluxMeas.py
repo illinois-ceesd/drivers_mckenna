@@ -66,7 +66,7 @@ from mirgecom.boundary import (
     AdiabaticSlipBoundary,
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
-    LinearizedOutflowBoundary)
+    LinearizedOutflow2DBoundary)
 from mirgecom.fluid import (
     velocity_gradient, species_mass_fraction_gradient, make_conserved)
 from mirgecom.transport import (
@@ -495,23 +495,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
                                mode="wo", mpi_comm=comm)
 
-    cl_ctx = ctx_factory()
-
-    if use_profiling:
-        queue = cl.CommandQueue(
-            cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
-    else:
-        queue = cl.CommandQueue(cl_ctx)
-
-    from mirgecom.simutil import get_reasonable_memory_pool
-    alloc = get_reasonable_memory_pool(cl_ctx, queue)
-
-    if lazy:
-        actx = actx_class(comm, queue, mpi_base_tag=12000, allocator=alloc)
-    else:
-        actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
+    from mirgecom.array_context import initialize_actx, actx_class_is_profiling
+    actx = initialize_actx(actx_class, comm)
+    queue = getattr(actx, "queue", None)
+    use_profiling = actx_class_is_profiling(actx_class)
 
     # ~~~~~~~~~~~~~~~~~~
+
+    import time
+    t_start = time.time()
+    t_shutdown = 720*60
 
     mesh_filename = "mesh_11m_10mm_020um_heatProbe-v2.msh"
 
@@ -544,7 +537,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
-    my_mechanism = "uiuc_7sp"
+#    my_mechanism = "uiuc_7sp"
+    my_mechanism = "Davis2005_expanded"
     equiv_ratio = 0.7
     chem_rate = 1.0
     flow_rate = 25.0
@@ -842,6 +836,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_copper_cp = 385.0
     wall_copper_kappa = 391.1
 
+    def _solid_density_func(**kwargs):
+        return wall_copper_rho + solid_zeros
+
     def _solid_enthalpy_func(temperature, **kwargs):
         return wall_copper_cp*temperature
 
@@ -852,6 +849,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return wall_copper_kappa + solid_zeros
 
     wall_model = SolidWallModel(
+        density_func=_solid_density_func,
         enthalpy_func=_solid_enthalpy_func,
         heat_capacity_func=_solid_heat_capacity_func,
         thermal_conductivity_func=_solid_thermal_cond_func)
@@ -1015,8 +1013,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~~~~~~~~
 
     from mirgecom.materials.initializer import SolidWallInitializer
-    solid_init = SolidWallInitializer(temperature=300.0,
-                                      material_densities=wall_copper_rho)
+    solid_init = SolidWallInitializer(temperature=300.0)
 
 #########################################################################
 
@@ -1271,7 +1268,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             return f_ext@normal
 
 
-    linear_bnd = LinearizedOutflowBoundary(
+    linear_bnd = LinearizedOutflow2DBoundary(
         free_stream_density=rho_atmosphere, free_stream_pressure=101325.0,
         free_stream_velocity=np.zeros(shape=(dim,)),
         free_stream_species_mass_fractions=y_atmosphere)
@@ -1364,13 +1361,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         wv = solid_state.cv
         wdv = solid_state.dv
+        wall_alpha = wall_model.thermal_diffusivity(
+            mass=wv.mass, temperature=wdv.temperature,
+            thermal_conductivity=wdv.thermal_conductivity)
         solid_viz_fields = [
             ("wv", wv),
             ("cfl", solid_zeros), #FIXME
             ("wall_h", wall_model.enthalpy(wdv.temperature)),
             ("wall_cp", wall_model.heat_capacity()),
             ("wall_kappa", wdv.thermal_conductivity),
-            ("wall_alpha", wall_model.thermal_diffusivity(solid_state)),
+            ("wall_alpha", wall_alpha),
             ("wall_temperature", wdv.temperature),
             ("wall_grad_t", grad_t_solid),
             ("dt", dt[2] if local_dt else None),
@@ -1686,7 +1686,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wdv = solid_state.dv
 
         actx = wv.mass.array_context
-        wall_diffusivity = wall_model.thermal_diffusivity(solid_state)
+        wall_diffusivity = wall_model.thermal_diffusivity(
+            mass=wv.mass, temperature=wdv.temperature,
+            thermal_conductivity=wdv.thermal_conductivity)
         dt = char_length_solid**2/(wall_diffusivity)
         if local_dt:
             mydt = current_cfl*dt
