@@ -422,7 +422,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_shutdown = 720*60
 
 #    mesh_filename = "mesh_01_round_10mm_020um_2domains-v2.msh"
-    mesh_filename = "mesh_12m_10mm_015um_2domains_adiabatic-v2.msh"
+    mesh_filename = "mesh_12m_10mm_015um_3domains_adiabatic-v2.msh"
+#    mesh_filename = "mesh_12m_10mm_015um_3domains_adiabatic_fineHolder-v2.msh"
 #    mesh_filename = "mesh_12m_10mm_015um_2domains-v2.msh"
 
     rst_path = "restart_data/"
@@ -446,7 +447,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.2
 
     # discretization and model control
-    order = 1
+    order = 2
     use_overintegration = False
 
     x0_sponge = 0.150
@@ -472,11 +473,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     temp_wall = 300.0
 
     wall_penalty_amount = 1.0
-#    wall_time_scale = 2.5*speedup_factor  # wall speed-up
     wall_time_scale = 10.0*speedup_factor  # wall speed-up
 
     use_radiation = True
-#    emissivity = 0.85*speedup_factor
 
     restart_iterations = False
     #restart_iterations = True
@@ -491,6 +490,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if integrator == "ssprk43":
         from mirgecom.integrators.ssprk import ssprk43_step
         timestepper = ssprk43_step
+        force_eval_stepper = True
+
+    if integrator == "euler":
+        from mirgecom.integrators import euler_step
+        timestepper = euler_step
         force_eval_stepper = True
 
     if rank == 0:
@@ -1081,48 +1085,52 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         holder_wv = holder_init(holder_nodes, holder_wall_model)
 
     else:
-        sys.exit()
-#        current_step = restart_step
-#        current_t = restart_data["t"]
-#        if np.isscalar(current_t) is False:
-#            if ignore_wall:
-#                current_t = np.min(actx.to_numpy(current_t[0]))
-#            else:
-#                current_t = np.min(actx.to_numpy(current_t[2]))
+        current_step = restart_step
+        current_t = restart_data["t"]
+        if np.isscalar(current_t) is False:
+            if ignore_wall:
+                current_t = np.min(actx.to_numpy(current_t[0]))
+            else:
+                current_t = np.min(actx.to_numpy(current_t[2]))
 
-#        if restart_iterations:
-#            current_t = 0.0
-#            current_step = 0
+        if restart_iterations:
+            current_t = 0.0
+            current_step = 0
 
-#        if rank == 0:
-#            logger.info("Restarting soln.")
+        if rank == 0:
+            logger.info("Restarting soln.")
 
-#        if restart_order != order:
-#            restart_dcoll = create_discretization_collection(
-#                actx,
-#                volume_meshes={
-#                    vol: mesh
-#                    for vol, (mesh, _) in volume_to_local_mesh_data.items()},
-#                order=restart_order)
-#            from meshmode.discretization.connection import make_same_mesh_connection
-#            fluid_connection = make_same_mesh_connection(
-#                actx, dcoll.discr_from_dd(dd_vol_fluid),
-#                restart_dcoll.discr_from_dd(dd_vol_fluid))
-#            solid_connection = make_same_mesh_connection(
-#                actx, dcoll.discr_from_dd(dd_vol_solid),
-#                restart_dcoll.discr_from_dd(dd_vol_solid))
-#            current_cv = fluid_connection(restart_data["cv"])
-#            tseed = fluid_connection(restart_data["temperature_seed"])
-#            #FIXME current_wv = wall_connection(restart_data["wv"])
-#            #FIXME wv_tseed = wall_connection(restart_data["wall_temperature_seed"])
-#        else:
-#            current_cv = restart_data["cv"]
-#            tseed = restart_data["temperature_seed"]
-#            #FIXME current_wv = restart_data["wv"]
-#            #FIXME wv_tseed = restart_data["wall_temperature_seed"]
+        if restart_order != order:
+            restart_dcoll = create_discretization_collection(
+                actx,
+                volume_meshes={
+                    vol: mesh
+                    for vol, (mesh, _) in volume_to_local_mesh_data.items()},
+                order=restart_order)
+            from meshmode.discretization.connection import make_same_mesh_connection
+            fluid_connection = make_same_mesh_connection(
+                actx, dcoll.discr_from_dd(dd_vol_fluid),
+                restart_dcoll.discr_from_dd(dd_vol_fluid))
+            sample_connection = make_same_mesh_connection(
+                actx, dcoll.discr_from_dd(dd_vol_sample),
+                restart_dcoll.discr_from_dd(dd_vol_sample))
+            holder_connection = make_same_mesh_connection(
+                actx, dcoll.discr_from_dd(dd_vol_holder),
+                restart_dcoll.discr_from_dd(dd_vol_holder))
+            fluid_cv = fluid_connection(restart_data["cv"])
+            tseed = fluid_connection(restart_data["temperature_seed"])
+            sample_wv = sample_connection(restart_data["sample_wv"])
+            sample_tseed = sample_connection(restart_data["sample_tseed"])
+            holder_wv = holder_connection(restart_data["holder_wv"])
+        else:
+            fluid_cv = restart_data["cv"]
+            tseed = restart_data["temperature_seed"]
+            sample_wv = restart_data["sample_wv"]
+            sample_tseed = restart_data["sample_tseed"]
+            holder_wv = restart_data["holder_wv"]
 
-        if logmgr:
-            logmgr_set_time(logmgr, current_step, current_t)
+#        if logmgr:
+#            logmgr_set_time(logmgr, current_step, current_t)
 
 #########################################################################
 
@@ -1422,24 +1430,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             print("Writing restart file...")
 
         cv, tseed, sample_wv, sample_tseed, holder_wv, _ = state
+
         restart_fname = rst_pattern.format(cname=casename, step=step,
                                            rank=rank)
-#        if restart_fname != restart_file:
-#            restart_data = {
-#                "volume_to_local_mesh_data": volume_to_local_mesh_data,
-#                "cv": cv,
-#                "temperature_seed": tseed,
-#                "nspecies": nspecies,
-#                "wv": wv,
-#                "wall_temperature_seed": wv_tseed,
-#                "t": t,
-#                "step": step,
-#                "order": order,
-#                "global_nelements": global_nelements,
-#                "num_parts": nparts
-#            }
-#            
-#            write_restart_file(actx, restart_data, restart_fname, comm)
+        if restart_fname != restart_file:
+            restart_data = {
+                "volume_to_local_mesh_data": volume_to_local_mesh_data,
+                "cv": cv,
+                "temperature_seed": tseed,
+                "nspecies": nspecies,
+                "sample_wv": sample_wv,
+                "sample_tseed": sample_tseed,
+                "holder_wv": holder_wv,
+                "t": t,
+                "step": step,
+                "order": order,
+                "global_nelements": global_nelements,
+                "num_parts": nparts
+            }
+            
+            write_restart_file(actx, restart_data, restart_fname, comm)
 
 #########################################################################
 
@@ -1464,23 +1474,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from arraycontext import outer
     from grudge.trace_pair import interior_trace_pairs, tracepair_with_discr_tag
-    from grudge import op
     from meshmode.discretization.connection import FACE_RESTR_ALL
-
-#    fluid_field = fluid_nodes[0]*0.0
-#    wall_field = solid_nodes[0]*0.0
-#    pairwise_field = {
-#        (dd_vol_fluid, dd_vol_solid): (fluid_field, wall_field)}
-#    pairwise_field_tpairs = inter_volume_trace_pairs(
-#        dcoll, pairwise_field, comm_tag=_MyGradTag_Bdry)
-#    field_tpairs_F = pairwise_field_tpairs[dd_vol_solid, dd_vol_fluid]
-#    field_tpairs_W = pairwise_field_tpairs[dd_vol_fluid, dd_vol_solid]
-
-#    axisym_fluid_boundaries = {}
-#    axisym_fluid_boundaries.update(fluid_boundaries)
-#    axisym_fluid_boundaries.update({
-#            tpair.dd.domain_tag: DummyBoundary()
-#            for tpair in field_tpairs_F})
 
     def my_derivative_function(actx, dcoll, field, field_bounds, dd_vol,
                                bnd_cond, comm_tag):    
@@ -1663,6 +1657,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return SolidWallConservedVars(mass=source_mass, energy=source_rhoE)
 
+#    compiled_axisym_source_sample = actx.compile(axisym_source_sample)
+
     # ~~~~~~~
     def axisym_source_holder(actx, dcoll, solid_state, grad_t):
         dkappadr = 0.0*solid_state.cv.energy
@@ -1683,8 +1679,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return SolidWallConservedVars(mass=source_mass, energy=source_rhoE)
 
-    compiled_axisym_source_sample = actx.compile(axisym_source_sample)
-    compiled_axisym_source_holder = actx.compile(axisym_source_holder)
+#    compiled_axisym_source_holder = actx.compile(axisym_source_holder)
 
     # ~~~~~~~
     def gravity_source_terms(cv):
@@ -1784,7 +1779,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             state = make_obj_array([
                 fluid_state.cv, fluid_state.dv.temperature,
                 sample_state.cv, sample_state.dv.temperature,
-                holder_state.cv, boundary_momentum])
+                holder_state.cv, boundary_momentum
+            ])
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
@@ -1815,8 +1811,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             if do_health:
                 ## FIXME warning in lazy compilation
-                from warnings import warn
-                warn(f"Lazy does not like the health_check", stacklevel=2)
+                #from warnings import warn
+                #warn(f"Lazy does not like the health_check", stacklevel=2)
                 health_errors = global_reduce(
                     my_health_check(fluid_state.cv, fluid_state.dv), op="lor")
                 if health_errors:
@@ -1906,14 +1902,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, sample_dv.thermal_conductivity,
             sample_all_boundaries_no_grad, sample_dv.temperature,
             quadrature_tag=quadrature_tag, dd=dd_vol_sample,
-#            numerical_flux_func=grad_facial_flux_weighted,
+            # numerical_flux_func=grad_facial_flux_weighted,
             comm_tag=_SampleGradTempTag)
 
         holder_grad_temperature = wall_grad_t_operator(
             dcoll, holder_dv.thermal_conductivity,
             holder_all_boundaries_no_grad, holder_dv.temperature,
             quadrature_tag=quadrature_tag, dd=dd_vol_holder,
-#            numerical_flux_func=grad_facial_flux_weighted,
+            # numerical_flux_func=grad_facial_flux_weighted,
             comm_tag=_HolderGradTempTag)
 
         sample_emissivity = _get_sample_emissivity(
@@ -1941,7 +1937,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     fluid_state,
                     holder_dv.thermal_conductivity, holder_dv.temperature,
                     fluid_grad_temperature, holder_grad_temperature,
-                    fluid_boundaries, holder_boundaries,
+                    fluid_all_boundaries, holder_boundaries,
                     interface_noslip=True, interface_radiation=use_radiation,
                     wall_emissivity=holder_emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
@@ -2110,15 +2106,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 force_eval(actx, current_dt + fluid_zeros))))
     dt_sample = force_eval(actx, current_dt + sample_zeros)
     dt_holder = force_eval(actx, current_dt + holder_zeros)
-    dt = make_obj_array([dt_fluid, fluid_zeros,
-                         dt_sample, sample_zeros,
+    dt = make_obj_array([dt_fluid, fluid_zeros, dt_sample, sample_zeros,
                          dt_holder, interface_zeros])
 
     t_fluid = force_eval(actx, current_t + fluid_zeros)
     t_sample = force_eval(actx, current_t + sample_zeros)
     t_holder = force_eval(actx, current_t + holder_zeros)
-    t = make_obj_array([t_fluid, t_fluid,
-                        t_sample, t_sample,
+    t = make_obj_array([t_fluid, t_fluid, t_sample, t_sample,
                         t_holder, interface_zeros])
 
     if rank == 0:
@@ -2186,7 +2180,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # for writing output
-    casename = "burner_mix"
+    casename = "burner"
     if(args.casename):
         print(f"Custom casename {args.casename}")
         casename = (args.casename).replace("'", "")
