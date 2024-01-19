@@ -465,9 +465,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     fuel = "C2H4:1"
     cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
                                        fuel=fuel, oxidizer=air)
-    x_reference = cantera_soln.X
     temp_unburned = 300.0
     pres_unburned = 101325.0
+    cantera_soln.TP = temp_unburned, pres_unburned
+    x_reference = cantera_soln.X
+    y_reference = cantera_soln.Y
     rho_int = cantera_soln.density
 
     r_int = 2.38*25.4/2000.0
@@ -512,24 +514,36 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Set Cantera internal gas temperature, pressure, and mole fractios
     cantera_soln.TPX = temp_unburned, pres_unburned, x_reference
 
-    # Pull temperature, density, mass fractions, and pressure from Cantera
-    # set the mass flow rate at the inlet
-    sim = cantera.ImpingingJet(gas=cantera_soln, width=0.01)
-    sim.inlet.mdot = rhoU_int
-    sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
-    sim.set_initial_guess(products='equil')
-    sim.solve(loglevel=0, refine_grid=True, auto=True)
+    if prescribe_species:
+        # Pull temperature, density, mass fractions, and pressure from Cantera
+        # set the mass flow rate at the inlet
+        sim = cantera.ImpingingJet(gas=cantera_soln, width=0.01)
+        sim.inlet.mdot = rhoU_int
+        sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
+        sim.set_initial_guess(products='equil')
+        sim.solve(loglevel=0, refine_grid=True, auto=True)
 
-    # ~~~ Reactants
-    assert np.absolute(sim.density[0]*sim.velocity[0] - rhoU_int) < 1e-11
-    rho_unburned = sim.density[0]
-    y_unburned = sim.Y[:,0]
-    
-    # ~~~ Products
-    index_burned = np.argmax(sim.T) 
-    temp_burned = sim.T[index_burned]
-    rho_burned = sim.density[index_burned]
-    y_burned = sim.Y[:,index_burned]
+        # ~~~ Reactants
+        assert np.absolute(sim.density[0]*sim.velocity[0] - rhoU_int) < 1e-11
+        rho_unburned = sim.density[0]
+        y_unburned = sim.Y[:,0]
+        
+        # ~~~ Products
+        index_burned = np.argmax(sim.T) 
+        temp_burned = sim.T[index_burned]
+        rho_burned = sim.density[index_burned]
+        y_burned = sim.Y[:,index_burned]
+
+    else:
+        # ~~~ Reactants
+        y_unburned = y_reference*1.0
+        _, rho_unburned, y_unburned = cantera_soln.TDY
+
+        # ~~~ Products
+
+        cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
+        cantera_soln.equilibrate("TP")
+        temp_burned, rho_burned, y_burned = cantera_soln.TDY
 
     # ~~~ Atmosphere
     x = np.zeros(nspecies)
@@ -996,10 +1010,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from mirgecom.viscous import viscous_flux
     from mirgecom.flux import num_flux_lfr
 
-    """
-    """
+    """ """
     class MyPrescribedBoundary(PrescribedFluidBoundary):
-        r"""My prescribed boundary function. """
+        r"""Prescribed my boundary function."""
 
         def __init__(self, bnd_state_func, temperature_func):
             """Initialize the boundary condition object."""
