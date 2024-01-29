@@ -352,7 +352,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_start = time.time()
     t_shutdown = 720*60
 
-    mesh_filename = "mesh_11m_10mm_020um_heatProbe-v2.msh"
+    mesh_filename = "mesh_11m_25mm_020um_heatProbe-v2.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -382,11 +382,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
     speedup_factor = 7.5
 
+    width = 0.025
     my_mechanism = "uiuc_7sp"
-    prescribe_species = True
     equiv_ratio = 1.0
     total_flow_rate = 17.0
     # air_flow_rate = 18.8
+    prescribe_species = True
     chem_rate = 1.0
     shroud_rate = 11.85
 
@@ -517,7 +518,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if prescribe_species:
         # Pull temperature, density, mass fractions, and pressure from Cantera
         # set the mass flow rate at the inlet
-        sim = cantera.ImpingingJet(gas=cantera_soln, width=0.01)
+        sim = cantera.ImpingingJet(gas=cantera_soln, width=width)
         sim.inlet.mdot = rhoU_int
         sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
         sim.set_initial_guess(products='equil')
@@ -958,6 +959,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     sponge_sigma = force_eval(actx, sponge_init(x_vec=fluid_nodes))
     ref_cv = force_eval(actx, ref_state(fluid_nodes, eos, flow_rate,
+                                        state_minus=fluid_state,
                                         prescribe_species=prescribe_species))
 
 #########################################################################
@@ -1081,10 +1083,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             else:
                 normal_velocity = state_minus.cv.velocity@normal
 
+                inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
+                                           flow_rate=flow_rate,
+                                           prescribe_species=True)
+                y_reference = inflow_cv_cond.species_mass_fractions
+
                 grad_y_bc = 0.*grad_cv_minus.species_mass
                 grad_species_mass_bc = 0.*grad_cv_minus.species_mass
                 for i in range(nspecies):
-                    delta_y = state_minus.cv.species_mass_fractions[i] - y_unburned[i]
+                    delta_y = state_minus.cv.species_mass_fractions[i] - y_reference[i]
                     dij = state_minus.tv.species_diffusivity[i]
                     grad_y_bc[i] = + (normal_velocity*delta_y/dij) * normal
                     grad_species_mass_bc[i] = (
