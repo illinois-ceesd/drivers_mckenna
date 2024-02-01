@@ -685,8 +685,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from mirgecom.wall_model import SolidWallModel, SolidWallState
     from mirgecom.wall_model import SolidWallConservedVars
 
-    def _solid_density_func(**kwargs):
-        return wall_copper_rho + solid_zeros
+    #def _solid_density_func(**kwargs):
+    #    return wall_copper_rho + solid_zeros
 
     def _solid_enthalpy_func(temperature, **kwargs):
         return wall_copper_cp*temperature
@@ -698,7 +698,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return wall_copper_kappa + solid_zeros
 
     wall_model = SolidWallModel(
-        density_func=_solid_density_func,
+        #density_func=_solid_density_func,
         enthalpy_func=_solid_enthalpy_func,
         heat_capacity_func=_solid_heat_capacity_func,
         thermal_conductivity_func=_solid_thermal_cond_func)
@@ -855,7 +855,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~~~~~~~~
 
     from mirgecom.materials.initializer import SolidWallInitializer
-    solid_init = SolidWallInitializer(temperature=300.0)
+    solid_init = SolidWallInitializer(temperature=300.0,
+                                      material_densities=wall_copper_rho)
 
 #########################################################################
 
@@ -1228,9 +1229,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         wv = solid_state.cv
         wdv = solid_state.dv
-        wall_alpha = wall_model.thermal_diffusivity(
-            mass=wv.mass, temperature=wdv.temperature,
-            thermal_conductivity=wdv.thermal_conductivity)
+        wall_alpha = wall_model.thermal_diffusivity(solid_state)
         solid_viz_fields = [
             ("wv", wv),
             ("cfl", solid_zeros),  # FIXME
@@ -1542,10 +1541,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wdv = solid_state.dv
 
         actx = wv.mass.array_context
-        wall_diffusivity = \
-            wall_model.thermal_diffusivity(
-                mass=wv.mass, temperature=wdv.temperature,
-                thermal_conductivity=wdv.thermal_conductivity)
+        wall_diffusivity = wall_model.thermal_diffusivity(solid_state)
         dt = char_length_solid**2/(wall_diffusivity)
         if local_dt:
             mydt = current_cfl*dt
