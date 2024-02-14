@@ -689,6 +689,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # my_material = "fiber"
     my_material = "composite"
     solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
+
     wall_time_scale = 10.0*speedup_factor  # wall speed-up
 
     temp_wall = 300.0
