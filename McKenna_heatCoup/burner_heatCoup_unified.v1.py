@@ -613,7 +613,7 @@ class MyRuntimeError(RuntimeError):
 
 @mpi_entry_point
 def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
-         use_leap=False, use_profiling=False, casename=None, lazy=False,
+         use_tpe=False, use_profiling=False, casename=None, lazy=False,
          restart_file=None):
 
     from mpi4py import MPI
@@ -636,7 +636,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_start = time.time()
     t_shutdown = 720*60
 
-    mesh_filename = "mesh_12m_10mm_015um_2domains-v2.msh"
+    if use_tpe:
+        mesh_filename = "mesh_13m_10mm_015um_2domains_quads_v2-v2.msh"
+    else:
+        mesh_filename = "mesh_12m_10mm_015um_2domains-v2.msh"
     width = 0.010
 
     # mesh_filename= "mesh_11m_25mm_020um_heatProbe-v2.msh"
@@ -781,10 +784,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             mesh, tag_to_elements = read_gmsh(
                 mesh_filename, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
-            volume_to_tags = {
-                "fluid": ["fluid"],
-                "solid": solid_domains
-                }
+            volume_to_tags = {"fluid": ["fluid"], "solid": solid_domains}
             # XXX adiabatic
             return mesh, tag_to_elements, volume_to_tags
 
@@ -813,7 +813,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         volume_meshes={
             vol: mesh
             for vol, (mesh, _) in volume_to_local_mesh_data.items()},
-        order=order)
+        order=order,
+        tensor_product_elements=use_tpe)
 
     quadrature_tag = DISCR_TAG_BASE
 #    from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
@@ -2609,6 +2610,8 @@ if __name__ == "__main__":
         help="enable lazy evaluation [OFF]")
     parser.add_argument("--numpy", action="store_true",
         help="use numpy-based eager actx.")
+    parser.add_argument("--tpe", action="store_true",
+        help="use quadrilateral elements.")
 
     args = parser.parse_args()
 
@@ -2646,5 +2649,5 @@ if __name__ == "__main__":
     actx_class = get_reasonable_array_context_class(
         lazy=args.lazy, distributed=True, profiling=args.profiling, numpy=args.numpy)
 
-    main(actx_class, use_logmgr=args.log, casename=casename, 
+    main(actx_class, use_logmgr=args.log, casename=casename, use_tpe=args.tpe,
          restart_file=restart_file)
