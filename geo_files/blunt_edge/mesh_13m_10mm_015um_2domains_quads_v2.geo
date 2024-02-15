@@ -312,11 +312,11 @@ Plane Surface(18) = {72};
 
 /*#########################*/
 
-Physical Line("inlet") = {1,2,5};
-Physical Line("symmetry") = {6,20:22,50,31,32,59};
-Physical Line("burner") = {44,14,15};
-Physical Line("outlet") = {40};
-Physical Line("linear") = {41,42,43};
+Physical Line("inlet") = {1,2};
+Physical Line("symmetry") = {4,15,40,41,50,59};
+Physical Line("burner") = {46,9};
+Physical Line("outlet") = {42};
+Physical Line("linear") = {43,44,45};
 Physical Line("wall_sym") = {63,65,67};
 Physical Surface("fluid") = {1:9,11:15};
 Physical Surface("wall_sample") = {18};
