@@ -622,6 +622,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rank = comm.Get_rank()
     nparts = comm.Get_size()
 
+    from mirgecom.simutil import global_reduce as _global_reduce
+    global_reduce = partial(_global_reduce, comm=comm)
+
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
                                mode="wo", mpi_comm=comm)
 
@@ -632,23 +635,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    import time
-    t_start = time.time()
-    t_shutdown = 720*60
+    my_material = "copper"
+    # my_material = "fiber"
+    # my_material = "composite"
 
-    if use_tpe:
-        mesh_filename = "mesh_13m_10mm_015um_2domains_quads_v2-v2.msh"
-    else:
-        mesh_filename = "mesh_12m_10mm_015um_2domains-v2.msh"
-    width = 0.010
+    width = 0.025
+    # width = 0.010
 
-    # mesh_filename= "mesh_11m_25mm_020um_heatProbe-v2.msh"
-    # width = 0.025
+    ignore_wall = False
 
-    rst_path = "restart_data/"
-    viz_path = "viz_data/"
-    vizname = viz_path+casename
-    rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
+    # ~~~~~~~~~~~~~~~~~~
 
     # default i/o frequencies
     nviz = 25000
@@ -667,10 +663,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # discretization and model control
     order = 2
 
-    x0_sponge = 0.150
-    sponge_amp = 400.0
-    theta_factor = 0.02
-    speedup_factor = 7.5
     chem_rate = 1.0
 
     equiv_ratio = 1.0
@@ -679,24 +671,29 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     shroud_rate = 11.85
     prescribe_species = True
 
-    transport = "Mixture"
+    width_mm = str('02i' % width*1000)
+    if my_material == "copper":
+        current_dt = 1.0e-7
+        wall_time_scale = 100.0  # wall speed-up
+        my_mechanism = "uiuc_7sp"
+        solid_domains = ["solid"]
 
-    # current_dt = 1.0e-7  # order == 2
-    # my_mechanism = "uiuc_7sp"
-    # my_material = "copper"
-    # solid_domains = ["solid"]
-    # wall_time_scale = 100.0  # wall speed-up
+        if use_tpe:
+            mesh_filename = None
+        else:
+            mesh_filename = "mesh_11m_{width_mm}mm_020um_heatProbe-v2.msh"
+    else:
+        current_dt = 1.0e-6
+        wall_time_scale = 10.0*speedup_factor  # wall speed-up
+        my_mechanism = "uiuc_8sp_phenol"
+        solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
 
-    current_dt = 1.0e-6  # order == 2
-    my_mechanism = "uiuc_8sp_phenol"
-    # my_material = "fiber"
-    my_material = "composite"
-    solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
-
-    wall_time_scale = 10.0*speedup_factor  # wall speed-up
+        if use_tpe:
+            mesh_filename = f"mesh_13m_{width_mm}mm_015um_2domains_quads-v2.msh"
+        else:
+            mesh_filename = f"mesh_12m_{width_mm}mm_015um_2domains-v2.msh"
 
     temp_wall = 300.0
-    ignore_wall = False
     wall_penalty_amount = 1.0
     use_radiation = True
 
@@ -739,9 +736,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_graphite_cp = 770.0
     wall_graphite_kappa = 200.0
 
-##########################################################################
-    
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    import time
+    t_start = time.time()
+    t_shutdown = 720*60
+
+    x0_sponge = 0.150
+    sponge_amp = 400.0
+    theta_factor = 0.02
+    speedup_factor = 7.5
+
+    transport = "Mixture"
+
+# ############################################################################
+
     dim = 2
+
+    rst_path = "restart_data/"
+    viz_path = "viz_data/"
+    vizname = viz_path+casename
+    rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
     def _compiled_stepper_wrapper(state, t, dt, rhs):
         return compiled_lsrk45_step(actx, state, t, dt, rhs)
@@ -767,7 +782,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         print(f"\torder = {order}")
         print(f"\tTime integration = {integrator}")
 
-##############################################################################
+# ############################################################################
 
     restart_step = None
     if restart_file is None:
@@ -912,6 +927,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # mdot_ext = rho_ext*u_ext*A_ext
     rhoU_ext = rho_ext*u_ext  # noqa
 
+    print("width=", width_mm, "(mm)")
     print("V_dot=", flow_rate, "(L/min)")
     print(f"{A_int= }", "(m^2)")
     print(f"{A_ext= }", "(m^2)")
@@ -2586,8 +2602,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 
 if __name__ == "__main__":
-    import sys
-    logging.basicConfig(format="%(message)s", level=logging.INFO)
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        level=logging.INFO)
 
     import argparse
     parser = argparse.ArgumentParser(description="MIRGE-Com 1D Flame Driver")
