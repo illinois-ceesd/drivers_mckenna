@@ -671,17 +671,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     shroud_rate = 11.85
     prescribe_species = True
 
-    width_mm = str('02i' % width*1000)
+    width_mm = str('%02i' % (width*1000)) + "mm"
     if my_material == "copper":
         current_dt = 1.0e-7
         wall_time_scale = 100.0  # wall speed-up
         my_mechanism = "uiuc_7sp"
-        solid_domains = ["solid"]
+        solid_domains = ["wall_sample"]
 
         if use_tpe:
-            mesh_filename = None
+            mesh_filename = f"mesh_13m_{width_mm}_020um_heatProbe_quads-v2.msh"
         else:
-            mesh_filename = "mesh_11m_{width_mm}mm_020um_heatProbe-v2.msh"
+            mesh_filename = f"mesh_11m_{width_mm}_020um_heatProbe-v2.msh"
     else:
         current_dt = 1.0e-6
         wall_time_scale = 10.0*speedup_factor  # wall speed-up
@@ -689,9 +689,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
 
         if use_tpe:
-            mesh_filename = f"mesh_13m_{width_mm}mm_015um_2domains_quads-v2.msh"
+            mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads-v2.msh"
         else:
-            mesh_filename = f"mesh_12m_{width_mm}mm_015um_2domains-v2.msh"
+            mesh_filename = f"mesh_12m_{width_mm}_015um_2domains-v2.msh"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
