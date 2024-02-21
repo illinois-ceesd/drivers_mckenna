@@ -635,12 +635,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    my_material = "copper"
+    # my_material = "copper"
     # my_material = "fiber"
-    # my_material = "composite"
+    my_material = "composite"
 
-    width = 0.025
-    # width = 0.010
+    # width = 0.025
+    width = 0.010
 
     ignore_wall = False
 
@@ -664,6 +664,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     order = 2
 
     chem_rate = 1.0
+    speedup_factor = 7.5
 
     equiv_ratio = 1.0
     total_flow_rate = 17.0
@@ -676,7 +677,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_dt = 1.0e-7
         wall_time_scale = 100.0  # wall speed-up
         my_mechanism = "uiuc_7sp"
-        solid_domains = ["wall_sample"]
+        solid_domains = ["solid"]
 
         if use_tpe:
             mesh_filename = f"mesh_13m_{width_mm}_020um_heatProbe_quads-v2.msh"
@@ -745,7 +746,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     x0_sponge = 0.150
     sponge_amp = 400.0
     theta_factor = 0.02
-    speedup_factor = 7.5
 
     transport = "Mixture"
 
@@ -1080,10 +1080,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #            #decomposition = material_sample.Y3_Oxidation_Model(wall_material=material)
 #            decomposition = No_Oxidation_Model()
 
-            wall_sample_density = 0.1*1600.0 + solid_zeros
+            wall_sample_density = 0.12*1400.0 + solid_zeros
 
             import mirgecom.materials.carbon_fiber as material_sample
-            material = material_sample.FiberEOS(char_mass=0.0, virgin_mass=160.0)
+            material = material_sample.FiberEOS(char_mass=0.0, virgin_mass=168.0)
             #decomposition = material_sample.Y3_Oxidation_Model(wall_material=material)
             decomposition = No_Oxidation_Model()
 
@@ -1674,6 +1674,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             return f_ext@normal
 
     linear_bnd = LinearizedOutflow2DBoundary(
+        dim=dim,
         free_stream_density=rho_atmosphere, free_stream_pressure=101325.0,
         free_stream_velocity=np.zeros(shape=(dim,)),
         free_stream_species_mass_fractions=y_atmosphere)
@@ -1798,7 +1799,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             print("Writing restart file...")
 
-        cv, tseed, wv, wv_tseed, _ = state
+        if my_material == "copper":
+            cv, tseed, wv = state
+        else:
+            cv, tseed, wv, wv_tseed, _ = state
+
         restart_fname = rst_pattern.format(cname=casename, step=step,
                                            rank=rank)
         if restart_fname != restart_file:
@@ -2145,7 +2150,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def _my_get_timestep_fluid(fluid_state, t, dt):
         return get_sim_timestep(
-            dcoll, fluid_state, t, dt, current_cfl, gas_model,
+            dcoll, fluid_state, t, dt, current_cfl,
             constant_cfl=constant_cfl, local_dt=local_dt, fluid_dd=dd_vol_fluid)
 
     my_get_timestep_wall = actx.compile(_my_get_timestep_wall)
@@ -2204,8 +2209,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #        dt_solid = force_eval(actx, actx.np.minimum(
 #            1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
         dt_solid = force_eval(actx, current_dt + solid_zeros)
-        dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros,
-                             interface_zeros])
+
+        if my_material == "copper":
+            dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
+        else:
+            dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros,
+                                 interface_zeros])
 
         try:
             if my_material == "copper":
@@ -2436,6 +2445,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 solid_rhs = wall_time_scale * (
                     SolidWallConservedVars(mass=solid_zeros,
                                            energy=solid_energy_rhs))
+
+                return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                                       solid_rhs + solid_sources])
             else:
 
                 solid_mass_rhs = decomposition.get_source_terms(
@@ -2460,11 +2472,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     mass=solid_mass_rhs*wall_sample_mask,
                     energy=solid_energy_rhs)
 
-        #~~~~~~~~~~~~~
+                return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                                       solid_rhs + solid_sources, solid_zeros,
+                                       interface_zeros])
 
-        return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
-                               solid_rhs + solid_sources, solid_zeros,
-                               interface_zeros])
+        #~~~~~~~~~~~~~
 
     get_rhs_compiled = actx.compile(_get_rhs)
 
