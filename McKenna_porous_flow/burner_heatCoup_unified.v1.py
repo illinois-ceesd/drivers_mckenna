@@ -71,7 +71,7 @@ from mirgecom.boundary import (
 from mirgecom.fluid import (
     velocity_gradient, species_mass_fraction_gradient, make_conserved
 )
-from mirgecom.transport import MixtureAveragedTransport
+from mirgecom.transport import SimpleTransport #MixtureAveragedTransport
 from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.gas_model import (
@@ -100,7 +100,9 @@ from mirgecom.diffusion import (
 from mirgecom.wall_model import (
     SolidWallModel, SolidWallState, SolidWallConservedVars
 )
-
+from mirgecom.wall_model import (
+    PorousWallTransport, PorousFlowModel, PorousWallVars
+)
 
 #########################################################################
 
@@ -164,7 +166,8 @@ class Burner2D_Reactive:  # noqa
 
     def __init__(self, *, sigma, sigma_flame, flame_loc, pressure,
                  temperature, speedup_factor, mass_rate_burner, mass_rate_shroud,
-                 species_unburn, species_burned, species_shroud, species_atm):
+                 species_unburn, species_burned, species_shroud, species_atm,
+                 porous_domain, material_densities):
 
         self._sigma = sigma
         self._sigma_flame = sigma_flame
@@ -177,11 +180,14 @@ class Burner2D_Reactive:  # noqa
         self._temp = temperature
         self._flaLoc = flame_loc
 
+        self._plug = porous_domain
+        self._solid_mass = material_densities
+
         self._mass_rate_burner = mass_rate_burner
         self._mass_rate_shroud = mass_rate_shroud
 
-    def __call__(self, x_vec, eos, flow_rate, state_minus=None,
-                 prescribe_species=False, time=None):
+    def __call__(self, x_vec, gas_model, flow_rate,
+        state_minus=None, prescribe_species=False, boundary=False, time=None):
 
         actx = x_vec[0].array_context
 
@@ -189,7 +195,9 @@ class Burner2D_Reactive:  # noqa
         _yb = self._yb
         _ys = self._ys
         _yu = self._yu
-        cool_temp = 300.0
+
+        #cool_temp = 300.0
+        cool_temp = 1800.0
 
         upper_bnd = 0.105
 
@@ -237,9 +245,12 @@ class Burner2D_Reactive:  # noqa
 
         if state_minus is None:
             pressure = self._pres + 0.0*x_vec[0]
-            mass = eos.get_density(pressure, temperature, species_mass_fractions=y)
+            mass = gas_model.eos.get_density(pressure, temperature, species_mass_fractions=y)
         else:
             mass = state_minus.cv.mass
+
+        if boundary is False:
+            mass = mass*( (1.0 - self._plug)*0.12 + 0.88)
 
         # ~~~ velocity and/or momentum
         mom_burner = self._mass_rate_burner*self._speedup_factor
@@ -254,9 +265,15 @@ class Burner2D_Reactive:  # noqa
         specmass = mass * y
 
         # ~~~
-        internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
+        internal_energy = gas_model.eos.get_internal_energy(temperature, species_mass_fractions=y)
         kinetic_energy = 0.5 * np.dot(velocity, velocity)
-        energy = mass * (internal_energy + kinetic_energy)
+        solid_energy = mass*0.0
+        if boundary is False:
+            material_dens = self._plug * self._solid_mass + x_vec[0]*0.0
+            eps_rho_solid = gas_model.solid_density(material_dens)
+            tau = gas_model.decomposition_progress(material_dens)
+            solid_energy = eps_rho_solid * gas_model.wall_eos.enthalpy(temperature, tau)
+        energy = mass * (internal_energy + kinetic_energy) + solid_energy
 
         return make_conserved(dim=2, mass=mass, energy=energy,
                               momentum=mass*velocity, species_mass=specmass)
@@ -366,227 +383,67 @@ class InitSponge:
         return actx.np.maximum(sponge_x,sponge_y)
 
 
-class Pyrolysis:
-    r"""Evaluate the source terms for the pyrolysis decomposition.
+class PorousMaterial:
 
-    The source terms follow as Arrhenius-like equation given by
+    def __init__(self, *, x_min=None, x_thickness=None,
+                 y_min=None, y_thickness=None):
+        self._x_min = x_min
+        self._y_min = y_min
+        self._x_thickness = x_thickness
+        self._y_thickness = y_thickness
 
-    .. math::
+    def __call__(self, x_vec):
+        xpos = x_vec[0]
+        ypos = x_vec[1]
+        actx = xpos.array_context
+        zeros = 0*xpos
 
-        \dot{\omega}_i^p = \mathcal{A}_{i} T^{n_{i}}
-        \exp\left(- \frac{E_{i}}{RT} \right)
-        \left( \frac{\epsilon_i \rho_i -
-            \epsilon^c_i \rho^c_i}{\epsilon^0_i \rho^0_i} \right)^{m_i}
+        sponge_x = xpos*0.0
+        sponge_y = xpos*0.0
 
-    For TACOT, 2 different reactions, which are assumed to only happen after
-    a minimum temperature, are considered based on the resin constituents.
-    The third reaction is the fiber oxidation, which is not handled here for now.
+        #np.where(np.less(x,xc-xt*0.5), 0.0, np.where(np.greater(x, xc+xt*0.5), 1.0, ))
+        #   yy = (ypos-(self._y_min-self._y_thickness*0.5))/(self._y_thickness)
+        # -20.0*xx**7 + 70*xx**6 - 84*xx**5 + 35*xx**4
 
-    .. automethod:: get_source_terms
-    """
+        y0 = self._y_min
+        #dy = -((ypos - y0)/self._y_thickness)
+        dy = (ypos-(y0-self._y_thickness*0.5))/(self._y_thickness)
+        sponge_y = actx.np.where(
+            actx.np.less(ypos, y0-self._y_thickness*0.5),
+                0.0,
+                actx.np.where(actx.np.greater(ypos, y0+self._y_thickness*0.5),
+                              #1.0, 3.0*dy**2 - 2.0*dy**3
+                              1.0, -20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
+            )
 
-    def __init__(self, virgin_mass, char_mass, fiber_mass, pre_exponential):
-        """Temperature in which each reaction starts."""
-        self._Tcrit = np.array([333.3, 555.6])
-        self._virgin_mass = virgin_mass
-        self._char_mass = char_mass
-        self._fiber_mass = fiber_mass
-        self._pre_exp = pre_exponential
+        sponge_y = actx.np.where(actx.np.greater(ypos, 0.14405+0.00001), 0.0, sponge_y)
 
-        print("virgin mass", self._virgin_mass)
-        print("virgin mass (2)", self._virgin_mass*0.75, self._virgin_mass*0.5, self._virgin_mass*0.25)
-        print("char mass", self._char_mass)
-        print("pre exp", self._pre_exp)
+        x0 = self._x_min-self._x_thickness*0.5
+        dx = (xpos-(x0-self._x_thickness*0.5))/(self._x_thickness)
+        sponge_x = actx.np.where(
+            actx.np.less(xpos, x0-self._x_thickness*0.5),
+                0.0,
+                actx.np.where(actx.np.greater(xpos, x0+self._x_thickness*0.5),
+                              1.0, -20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
+            )
 
-    def get_source_terms(self, temperature, chi):
-        r"""Return the source terms of pyrolysis decomposition for TACOT.
-
-        Parameters
-        ----------
-        temperature: :class:`~meshmode.dof_array.DOFArray`
-            The temperature of the bulk material.
-
-        chi: numpy.ndarray
-            Either the solid mass $\rho_i$ of all fractions of the resin or
-            the progress ratio $\chi$ of the decomposition. The actual
-            parameter depends on the modeling itself.
-
-        Returns
-        -------
-        source: numpy.ndarray
-            The source terms for the pyrolysis
-        """
-        actx = temperature.array_context
-
-        # The density parameters are hard-coded for TACOT. They depend on the
-        # virgin and char volume fraction.
-        return make_obj_array([
-            # reaction 1
-            actx.np.where(actx.np.less(temperature, self._Tcrit[0]),
-                0.0, (
-#                    -(30.*((chi[0] - 0.00)/30.)**3)*12000.
-                    -(self._virgin_mass*0.25*((chi[0] - 0.00)/self._virgin_mass*0.25)**3)*self._pre_exp[0]
-                    * actx.np.exp(-8556.000/temperature))),
-            actx.np.where(actx.np.less(temperature, self._Tcrit[1]),
-            # reaction 2
-                0.0, (
-#                    -(90.*((chi[1] - 60.0)/90.)**3)*4.48e9
-                    -(self._virgin_mass*0.75*((chi[1] - self._virgin_mass*0.5)/self._virgin_mass*0.75)**3)*self._pre_exp[1]
-                    * actx.np.exp(-20444.44/temperature))),
-            # fiber oxidation: include in the RHS but dont do anything with it.
-            actx.np.zeros_like(temperature)])
-
-
-from mirgecom.wall_model import PorousWallEOS
-class TacotEOS(PorousWallEOS):
-    """Evaluate the properties of the solid state containing resin and fibers.
-
-    A linear weighting between the virgin and chared states is applied to
-    yield the material properties. Polynomials were generated offline to avoid
-    interpolation and they are not valid for temperatures above 3200K.
-
-    .. automethod:: void_fraction
-    .. automethod:: enthalpy
-    .. automethod:: heat_capacity
-    .. automethod:: thermal_conductivity
-    .. automethod:: volume_fraction
-    .. automethod:: permeability
-    .. automethod:: emissivity
-    .. automethod:: tortuosity
-    .. automethod:: decomposition_progress
-    """
-
-    def __init__(self, virgin_volume_fraction, char_volume_fraction,
-                       fiber_volume_fraction, kappa0_virgin, kappa0_char,
-                       h0_virgin, h0_char, char_mass, virgin_mass,
-                       virgin_emissivity, char_emissivity):
-        """Bulk density considering the porosity and intrinsic density.
-
-        The fiber and all resin components must be considered.
-        """
-        self._char_mass = char_mass
-        self._virgin_mass = virgin_mass
-        self._fiber_volume_fraction = fiber_volume_fraction
-        self._virgin_volume_fraction = virgin_volume_fraction
-        self._char_volume_fraction = char_volume_fraction
-        self._kappa0_virgin = kappa0_virgin
-        self._kappa0_char = kappa0_char
-        self._h0_virgin = h0_virgin
-        self._h0_char = h0_char
-        self._emissivity_virgin = virgin_emissivity
-        self._emissivity_char = char_emissivity
-
-        print("char mass:", self._char_mass)
-        print("virgin mass:", self._virgin_mass)
-        print("fiber frac:", self._fiber_volume_fraction)
-        print("virgin frac:", self._virgin_volume_fraction)
-        print("char frac:", self._char_volume_fraction)
-        print("kappa_0 virgin:", self._kappa0_virgin)
-        print("kappa_0 char", self._kappa0_char)
-        print("h0 virgin:", self._h0_virgin)
-        print("h0 char:", self._h0_char)
-        print("emissivity virgin:", self._emissivity_virgin)
-        print("emissivity char:", self._emissivity_char)
-
-    def void_fraction(self, tau: DOFArray) -> DOFArray:
-        r"""Return the volumetric fraction $\epsilon$ filled with gas.
-
-        The fractions of gas and solid phases must sum to one,
-        $\epsilon_g + \epsilon_s = 1$. Both depend only on the pyrolysis
-        progress ratio $\tau$.
-        """
-        return 1.0 - self.volume_fraction(tau)
-
-    def enthalpy(self, temperature: DOFArray, tau: DOFArray) -> DOFArray:
-        """Solid enthalpy as a function of pyrolysis progress."""
-        virgin = (
-            - 1.360688853105e-11*temperature**5 + 1.521029626150e-07*temperature**4
-            - 6.733769958659e-04*temperature**3 + 1.497082282729e+00*temperature**2
-            + 3.009865156984e+02*temperature + self._h0_virgin)
-
-        char = (
-            - 1.279887694729e-11*temperature**5 + 1.491175465285e-07*temperature**4
-            - 6.994595296860e-04*temperature**3 + 1.691564018109e+00*temperature**2
-            - 3.441837408320e+01*temperature + self._h0_char)
-
-        return virgin*tau + char*(1.0 - tau)
-
-    def heat_capacity(self, temperature: DOFArray,
-                      tau: DOFArray) -> DOFArray:
-        r"""Solid heat capacity $C_{p_s}$ as a function of pyrolysis progress."""
-        actx = temperature.array_context
-
-        virgin = (
-            - 6.803444000e-11*temperature**4 + 6.0841184e-07*temperature**3
-            - 2.020131033e-03*temperature**2 + 2.9941644e+00*temperature**1
-            + 3.0098651e+02)
-
-        char = (
-            - 6.39943845e-11*temperature**4 + 5.96470188e-07*temperature**3
-            - 2.09837859e-03*temperature**2 + 3.38312804e+00*temperature**1
-            - 3.44183741e+01)
-
-        return virgin*tau + char*(1.0 - tau)
-
-    def thermal_conductivity(self, temperature: DOFArray,
-                             tau: DOFArray) -> DOFArray:
-        """Solid thermal conductivity as a function of pyrolysis progress."""
-        virgin = (
-            + 2.31290019732353e-17*temperature**5 - 2.167785032562e-13*temperature**4
-            + 8.24498395180905e-10*temperature**3 - 1.221612456223e-06*temperature**2
-            + 8.46459266618945e-04*temperature + self._kappa0_virgin)
-
-        char = (
-            - 7.378279908877e-18*temperature**5 + 4.709353498411e-14*temperature**4
-            + 1.530236899258e-11*temperature**3 - 2.305611352452e-07*temperature**2
-            + 3.668624886569e-04*temperature + self._kappa0_char)
-
-        return virgin*tau + char*(1.0 - tau)
-
-    def volume_fraction(self, tau: DOFArray) -> DOFArray:
-        r"""Fraction $\phi$ occupied by the solid."""
-        fiber = self._fiber_volume_fraction
-        virgin = self._virgin_volume_fraction
-        char = self._char_volume_fraction
-        return virgin*tau + char*(1.0 - tau) + fiber
-
-    def permeability(self, tau: DOFArray) -> DOFArray:
-        r"""Permeability $K$ of the composite material."""
-        virgin = 1.6e-11
-        char = 2.0e-11
-        return virgin*tau + char*(1.0 - tau)
-
-    def emissivity(self, temperature: DOFArray, tau: DOFArray) -> DOFArray:
-        """Emissivity for energy radiation."""
-        virgin = self._emissivity_virgin
-        char = self._emissivity_char
-        return virgin*tau + char*(1.0 - tau)
-
-    def tortuosity(self, tau: DOFArray) -> DOFArray:
-        r"""Tortuosity $\eta$ affects the species diffusivity."""
-        virgin = 1.2
-        char = 1.1
-        return virgin*tau + char*(1.0 - tau)
-
-    def decomposition_progress(self, mass: DOFArray) -> DOFArray:
-        r"""Evaluate the progress ratio $\tau$ of the phenolics decomposition.
-
-        Where $\tau=1$, the material is locally virgin. On the other hand, if
-        $\tau=0$, then the pyrolysis is locally complete and only charred
-        material exists:
-
-        .. math::
-            \tau = \frac{\rho_0}{\rho_0 - \rho_c}
-                    \left( 1 - \frac{\rho_c}{\rho(t)} \right)
-        """
-        char_mass = self._char_mass
-        virgin_mass = self._virgin_mass
-        return virgin_mass/(virgin_mass - char_mass)*(1.0 - char_mass/mass)
+        return (1.0-sponge_x)*sponge_y
 
 
 class No_Oxidation_Model():  # noqa N801
     def get_source_terms(self, temperature, **kwargs):
         return temperature*0.0
+
+
+from mirgecom.materials.carbon_fiber import FiberEOS as OriginalFiberEOS
+class FiberEOS(OriginalFiberEOS):
+    """Inherits and modified the original carbon fiber."""
+
+    def permeability(self, tau: DOFArray) -> DOFArray:
+        r"""Permeability $K$ of the carbon fiber."""
+        virgin = 1.0e-5
+        char = 1e+9
+        return virgin*tau + char*(1.0 - tau)
 
 
 class SingleLevelFilter(logging.Filter):
@@ -635,12 +492,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    # my_material = "copper"
-    # my_material = "fiber"
-    my_material = "composite"
+    my_material = "fiber"
 
-    # width = 0.025
-    width = 0.010
+    width = 0.025
+    # width = 0.010
 
     ignore_wall = False
 
@@ -661,7 +516,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.2
 
     # discretization and model control
-    order = 2
+    order = 8
 
     chem_rate = 1.0
     speedup_factor = 7.5
@@ -673,58 +528,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     prescribe_species = True
 
     width_mm = str('%02i' % (width*1000)) + "mm"
-    if my_material == "copper":
-        current_dt = 1.0e-7
-        wall_time_scale = 100.0  # wall speed-up
-        my_mechanism = "uiuc_7sp"
-        solid_domains = ["solid"]
+    current_dt = 1.0e-6
+    wall_time_scale = 1.0*speedup_factor  # wall speed-up
+    my_mechanism = "air_3sp"
+    # my_mechanism = "uiuc_8sp_phenol"
+    solid_domains = ["wall_alumina", "wall_graphite"]
 
-        if use_tpe:
-            mesh_filename = f"mesh_13m_{width_mm}_020um_heatProbe_quads-v2.msh"
-        else:
-            mesh_filename = f"mesh_11m_{width_mm}_020um_heatProbe-v2.msh"
+    if use_tpe:
+        mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads-v2.msh"
     else:
-        current_dt = 1.0e-6
-        wall_time_scale = 10.0*speedup_factor  # wall speed-up
-        my_mechanism = "uiuc_8sp_phenol"
-        solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
-
-        if use_tpe:
-            mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads-v2.msh"
-        else:
-            mesh_filename = f"mesh_12m_{width_mm}_015um_2domains-v2.msh"
+        mesh_filename = f"mesh_14m_{width_mm}_020um_porous-v2.msh"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
-    use_radiation = True
+    use_radiation = False
 
     restart_iterations = False
     #restart_iterations = True
-
-    # heat conductivity at T=0K for polynomial fitting
-    kappa0_virgin = 2.38711269e-01
-    kappa0_char = 3.12089881e-01
-
-    # reference enthalps at T=0K for polynomial fitting
-    h0_virgin = -1.0627680e+06
-    h0_char = -1.23543810e+05
-
-    # wall emissivity for radiation
-    virgin_wall_emissivity = 0.80
-    char_wall_emissivity = 0.90
-
-    # volume occupied by the solid components in the bulk volume
-    virgin_volume_fraction = 0.10
-    char_volume_fraction = virgin_volume_fraction/2.0
-    fiber_volume_fraction = 0.10    
-
-    pre_exponential = np.array([12000.0, 4.480e9])
-
-    # https://www.azom.com/article.aspx?ArticleID=2850
-    # https://matweb.com/search/DataSheet.aspx?MatGUID=9aebe83845c04c1db5126fada6f76f7e&ckck=1
-    wall_copper_rho = 8920.0
-    wall_copper_cp = 385.0
-    wall_copper_kappa = 391.1
 
     # Average from https://www.azom.com/properties.aspx?ArticleID=52 for alumina
     wall_alumina_rho = 3500.0
@@ -799,8 +619,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             mesh, tag_to_elements = read_gmsh(
                 mesh_filename, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
-            volume_to_tags = {"fluid": ["fluid"], "solid": solid_domains}
-            # XXX adiabatic
+            volume_to_tags = {"fluid": ["fluid", "sample"],
+                              "solid": solid_domains}
             return mesh, tag_to_elements, volume_to_tags
 
         volume_to_local_mesh_data, global_nelements = distribute_mesh(
@@ -820,7 +640,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     local_nelements = (
           volume_to_local_mesh_data["fluid"][0].nelements +
           volume_to_local_mesh_data["solid"][0].nelements)
-    # XXX adiabatic
 
     from mirgecom.discretization import create_discretization_collection
     dcoll = create_discretization_collection(
@@ -832,38 +651,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         tensor_product_elements=use_tpe)
 
     quadrature_tag = DISCR_TAG_BASE
-#    from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
-#    if use_overintegration:
-#        quadrature_tag = DISCR_TAG_QUAD
-#    else:
-#        quadrature_tag = DISCR_TAG_BASE
 
     if rank == 0:
         logger.info("Done making discretization")
 
     dd_vol_fluid = DOFDesc(VolumeDomainTag("fluid"), DISCR_TAG_BASE)
     dd_vol_solid = DOFDesc(VolumeDomainTag("solid"), DISCR_TAG_BASE)
-    # XXX adiabatic
 
-    if my_material != "copper":
-        from mirgecom.utils import mask_from_elements
-        wall_vol_discr = dcoll.discr_from_dd(dd_vol_solid)
-        wall_tag_to_elements = volume_to_local_mesh_data["solid"][1]
-        wall_sample_mask = mask_from_elements(
-            dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_sample"])
-        wall_alumina_mask = mask_from_elements(
-            dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_alumina"])
-        wall_graphite_mask = mask_from_elements(
-            dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_graphite"])
-    # XXX adiabatic
+    from mirgecom.utils import mask_from_elements
+    wall_vol_discr = dcoll.discr_from_dd(dd_vol_solid)
+    wall_tag_to_elements = volume_to_local_mesh_data["solid"][1]
+    wall_alumina_mask = mask_from_elements(
+        dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_alumina"])
+    wall_graphite_mask = mask_from_elements(
+        dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_graphite"])
 
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
     solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
-    # XXX adiabatic
 
     fluid_zeros = force_eval(actx, fluid_nodes[0]*0.0)
     solid_zeros = force_eval(actx, solid_nodes[0]*0.0)
-    # XXX adiabatic
 
     # ~~~~~~~~~~
     from grudge.dt_utils import characteristic_lengthscales
@@ -871,7 +678,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid))
     char_length_solid = force_eval(
         actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid))
-    # XXX adiabatic
+
+    # ~~~~~~~~~~
+    fluid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_fluid)
+    solid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_solid)
 
 ##########################################################################
 
@@ -890,10 +700,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Initial temperature, pressure, and mixture mole fractions are needed to
     # set up the initial state in Cantera.
 
-    air = "O2:0.21,N2:0.79"
-    fuel = "C2H4:1"
-    cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
-                                       fuel=fuel, oxidizer=air)
+#    air = "O2:0.21,N2:0.79"
+#    fuel = "C2H4:1"
+#    cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
+#                                       fuel=fuel, oxidizer=air)
+    x_cantera = np.zeros(3,)
+    x_cantera[0] = 0.21
+    x_cantera[2] = 0.79
+    cantera_soln.X = x_cantera    
+
     temp_unburned = 300.0
     pres_unburned = 101325.0
     cantera_soln.TP = temp_unburned, pres_unburned
@@ -927,51 +742,49 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # mdot_ext = rho_ext*u_ext*A_ext
     rhoU_ext = rho_ext*u_ext  # noqa
 
-    print("width=", width_mm, "(mm)")
-    print("V_dot=", flow_rate, "(L/min)")
-    print(f"{A_int= }", "(m^2)")
-    print(f"{A_ext= }", "(m^2)")
-    print(f"{u_int= }", "(m/s)")
-    print(f"{u_ext= }", "(m/s)")
-    print(f"{rho_int= }", "(kg/m^3)")
-    print(f"{rho_ext= }", "(kg/m^3)")
-    print(f"{rhoU_int= }")
-    print(f"{rhoU_ext= }")
-    print("ratio=", u_ext/u_int,"\n")
-
     # Set Cantera internal gas temperature, pressure, and mole fractios
     cantera_soln.TPX = temp_unburned, pres_unburned, x_reference
 
-    if prescribe_species:
-        # Pull temperature, density, mass fractions, and pressure from Cantera
-        # set the mass flow rate at the inlet
-        sim = cantera.ImpingingJet(gas=cantera_soln, width=width)
-        sim.inlet.mdot = rhoU_int
-        sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
-        sim.set_initial_guess(products='equil')
-        sim.solve(loglevel=0, refine_grid=True, auto=True)
+#    if prescribe_species:
+#        # Pull temperature, density, mass fractions, and pressure from Cantera
+#        # set the mass flow rate at the inlet
+#        sim = cantera.ImpingingJet(gas=cantera_soln, width=width)
+#        sim.inlet.mdot = rhoU_int
+#        sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
+#        sim.set_initial_guess(products='equil')
+#        sim.solve(loglevel=0, refine_grid=True, auto=True)
 
-        # ~~~ Reactants
-        assert np.absolute(sim.density[0]*sim.velocity[0] - rhoU_int) < 1e-11
-        rho_unburned = sim.density[0]
-        y_unburned = sim.Y[:,0]
-        
-        # ~~~ Products
-        index_burned = np.argmax(sim.T) 
-        temp_burned = sim.T[index_burned]
-        rho_burned = sim.density[index_burned]
-        y_burned = sim.Y[:,index_burned]
+#        # ~~~ Reactants
+#        assert np.absolute(sim.density[0]*sim.velocity[0] - rhoU_int) < 1e-11
+#        rho_unburned = sim.density[0]
+#        y_unburned = sim.Y[:,0]
+#        
+#        # ~~~ Products
+#        index_burned = np.argmax(sim.T) 
+#        temp_burned = sim.T[index_burned]
+#        rho_burned = sim.density[index_burned]
+#        y_burned = sim.Y[:,index_burned]
 
-    else:
-        # ~~~ Reactants
-        y_unburned = y_reference*1.0
-        _, rho_unburned, y_unburned = cantera_soln.TDY
+#    else:
+#        # ~~~ Reactants
+#        y_unburned = y_reference*1.0
+#        _, rho_unburned, y_unburned = cantera_soln.TDY
 
-        # ~~~ Products
+#        # ~~~ Products
 
-        cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
-        cantera_soln.equilibrate("TP")
-        temp_burned, rho_burned, y_burned = cantera_soln.TDY
+#        cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
+#        cantera_soln.equilibrate("TP")
+#        temp_burned, rho_burned, y_burned = cantera_soln.TDY
+
+    # ~~~ Reactants
+    y_unburned = y_reference*1.0
+    _, rho_unburned, y_unburned = cantera_soln.TDY
+
+    # ~~~ Products
+
+    cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
+    cantera_soln.equilibrate("TP")
+    temp_burned, rho_burned, y_burned = cantera_soln.TDY
 
     # ~~~ Atmosphere
     x = np.zeros(nspecies)
@@ -1004,10 +817,36 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     species_names = pyrometheus_mechanism.species_names
 
-    transport_model = MixtureAveragedTransport(pyrometheus_mechanism,
-                                               factor=speedup_factor)
+    #base_transport = MixtureAveragedTransport(pyrometheus_mechanism,
+    #                                           factor=speedup_factor)
+    base_transport = SimpleTransport(viscosity=1e-4,
+                                      thermal_conductivity=1e-2,
+                                      species_diffusivity=1e-3*np.ones(3,))
 
-    gas_model = GasModel(eos=eos, transport=transport_model)
+    transport_model = PorousWallTransport(base_transport=base_transport)
+
+    # {{{
+
+    if my_material == "fiber":
+
+        material_densities = 168.0 + fluid_zeros
+
+        import mirgecom.materials.carbon_fiber as material_sample
+        material = FiberEOS(dim=1, char_mass=0.0, virgin_mass=168.0, 
+                            anisotropic_direction=0)
+        decomposition = No_Oxidation_Model()
+
+    plug_region = PorousMaterial(x_min=0.015875, x_thickness=0.001,
+                                 y_min=0.125, y_thickness=0.001)
+
+    plug = force_eval(actx, plug_region(x_vec=fluid_nodes))
+
+    # }}}
+
+    gas_model = PorousFlowModel(eos=eos, transport=transport_model,
+                                wall_eos=material)
+
+    # {{{
 
     print(f"Pyrometheus mechanism species names {species_names}\n")
     print("Unburned:")
@@ -1027,163 +866,59 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     print(f"D = {rho_shroud}")
     print(f"Y = {y_shroud}\n")
 
+    print("width=", width_mm, "(mm)")
+    print("V_dot=", flow_rate, "(L/min)")
+    print(f"{A_int= }", "(m^2)")
+    print(f"{A_ext= }", "(m^2)")
+    print(f"{u_int= }", "(m/s)")
+    print(f"{u_ext= }", "(m/s)")
+    print(f"{rho_int= }", "(kg/m^3)")
+    print(f"{rho_ext= }", "(kg/m^3)")
+    print(f"{rhoU_int= }")
+    print(f"{rhoU_ext= }")
+    print("ratio=", u_ext/u_int,"\n")
+
     # }}}
 
     # {{{ Initialize wall model
 
-    if my_material == "copper":
+    from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
+        add_interface_boundaries,
+        add_interface_boundaries_no_grad
+    )
 
-        use_wv_tseed = False
+    wall_densities = (
+        + wall_alumina_rho * wall_alumina_mask
+        + wall_graphite_rho * wall_graphite_mask)
 
-        from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
-            add_interface_boundaries,
-            add_interface_boundaries_no_grad
-        )
+    def _get_solid_enthalpy(temperature, tau):
+        wall_alumina_h = wall_alumina_cp * temperature
+        wall_graphite_h = wall_graphite_cp * temperature
+        return (wall_alumina_h * wall_alumina_mask
+                + wall_graphite_h * wall_graphite_mask)
 
-        emissivity = 0.03*speedup_factor
+    def _get_solid_heat_capacity(temperature, tau):
+        return (wall_alumina_cp * wall_alumina_mask
+                + wall_graphite_cp * wall_graphite_mask)
 
-        # def _solid_density_func(**kwargs):
-        #     return wall_copper_rho + solid_zeros
+    def _get_solid_thermal_conductivity(temperature, tau):
+        return (wall_alumina_kappa * wall_alumina_mask
+                + wall_graphite_kappa * wall_graphite_mask)
 
-        def _solid_enthalpy_func(temperature, **kwargs):
-            return wall_copper_cp*temperature
+    def _get_solid_decomposition_progress(mass):
+        return (1.0 * wall_alumina_mask
+                + 1.0 * wall_graphite_mask)
 
-        def _solid_heat_capacity_func(temperature, **kwargs):
-            return wall_copper_cp + solid_zeros
+    def _get_emissivity(temperature, tau):
+        return speedup_factor*(
+            0.00 * wall_alumina_mask
+            + 0.85 * wall_graphite_mask)
 
-        def _solid_thermal_cond_func(temperature, **kwargs):
-            return wall_copper_kappa + solid_zeros
-
-        solid_wall_model = SolidWallModel(
-            #density_func=_solid_density_func,
-            enthalpy_func=_solid_enthalpy_func,
-            heat_capacity_func=_solid_heat_capacity_func,
-            thermal_conductivity_func=_solid_thermal_cond_func)
-
-    else:
-
-        use_wv_tseed = True
-
-        if my_material == "fiber":
-
-            from mirgecom.multiphysics.thermally_coupled_fluid_wall import (
-                add_interface_boundaries,
-                add_interface_boundaries_no_grad
-            )
-
-#            wall_sample_density = 0.12*1400.0 + solid_zeros
-
-#            import mirgecom.materials.carbon_fiber as material_sample
-#            material = material_sample.FiberEOS(
-#                dim=dim, normal=1, char_mass=0.0, virgin_mass=0.12*1400.0)
-
-#            #decomposition = material_sample.Y3_Oxidation_Model(wall_material=material)
-#            decomposition = No_Oxidation_Model()
-
-            wall_sample_density = 0.12*1400.0 + solid_zeros
-
-            import mirgecom.materials.carbon_fiber as material_sample
-            material = material_sample.FiberEOS(char_mass=0.0, virgin_mass=168.0)
-            #decomposition = material_sample.Y3_Oxidation_Model(wall_material=material)
-            decomposition = No_Oxidation_Model()
-
-        if my_material == "composite":
-
-            from mirgecom.multiphysics.phenolics_coupled_fluid_wall import (
-                add_interface_boundaries,
-                add_interface_boundaries_no_grad
-            )
-
-            wall_sample_density = np.empty((3,), dtype=object)
-
-            wall_sample_density[0] = virgin_volume_fraction*1200.0*0.25 + solid_zeros
-            wall_sample_density[1] = virgin_volume_fraction*1200.0*0.75 + solid_zeros
-            wall_sample_density[2] = fiber_volume_fraction*1600.0 + solid_zeros
-
-            char_mass = fiber_volume_fraction*1600.0 + virgin_volume_fraction*1200.0*0.5
-            virgin_mass = fiber_volume_fraction*1600.0 + virgin_volume_fraction*1200.0*1.0
-            material = TacotEOS(virgin_volume_fraction=virgin_volume_fraction,
-                                char_volume_fraction=char_volume_fraction,
-                                fiber_volume_fraction=fiber_volume_fraction,
-                                kappa0_virgin=kappa0_virgin, kappa0_char=kappa0_char,
-                                h0_virgin=h0_virgin, h0_char=h0_char,
-                                char_mass=char_mass, virgin_mass=virgin_mass,
-                                char_emissivity=char_wall_emissivity,
-                                virgin_emissivity=virgin_wall_emissivity)
-            decomposition = Pyrolysis(virgin_mass=virgin_volume_fraction*1200.0*1.0,
-                                      char_mass=virgin_volume_fraction*1200.0*0.5,
-                                      fiber_mass=fiber_volume_fraction*1600.0,
-                                      pre_exponential=pre_exponential)
-
-#            wall_sample_density = np.empty((3,), dtype=object)
-
-#            wall_sample_density[0] = 30.0 + solid_zeros
-#            wall_sample_density[1] = 90.0 + solid_zeros
-#            wall_sample_density[2] = 160. + solid_zeros
-
-#            import mirgecom.materials.tacot as material_sample
-#            material = material_sample.TacotEOS(char_mass=220.0,
-#                                                virgin_mass=280.0)
-#            decomposition = material_sample.Pyrolysis()
-
-        if isinstance(wall_sample_density, DOFArray) is False:
-            wall_alumina_density = actx.np.zeros_like(wall_sample_density)
-            wall_alumina_density[-1] = wall_alumina_rho
-
-            wall_graphite_density = actx.np.zeros_like(wall_sample_density)
-            wall_graphite_density[-1] = wall_graphite_rho
-
-        wall_densities = (
-            wall_sample_density * wall_sample_mask
-            + wall_alumina_rho * wall_alumina_mask
-            + wall_graphite_rho * wall_graphite_mask)
-    # XXX adiabatic
-
-        def _get_solid_enthalpy(temperature, tau):
-            wall_sample_h = material.enthalpy(temperature, tau)
-            wall_alumina_h = wall_alumina_cp * temperature
-            wall_graphite_h = wall_graphite_cp * temperature
-            return (wall_sample_h * wall_sample_mask
-                    + wall_alumina_h * wall_alumina_mask
-                    + wall_graphite_h * wall_graphite_mask)
-    # XXX adiabatic
-
-        def _get_solid_heat_capacity(temperature, tau):
-            wall_sample_cp = material.heat_capacity(temperature, tau)
-            return (wall_sample_cp * wall_sample_mask
-                    + wall_alumina_cp * wall_alumina_mask
-                    + wall_graphite_cp * wall_graphite_mask)
-    # XXX adiabatic
-
-        def _get_solid_thermal_conductivity(temperature, tau):
-            wall_sample_kappa = material.thermal_conductivity(temperature, tau)
-            return (wall_sample_kappa * wall_sample_mask
-                    + wall_alumina_kappa * wall_alumina_mask
-                    + wall_graphite_kappa * wall_graphite_mask)
-    # XXX adiabatic
-
-        def _get_solid_decomposition_progress(mass):
-            wall_sample_tau = material.decomposition_progress(mass)
-            return (wall_sample_tau * wall_sample_mask
-                    + 1.0 * wall_alumina_mask
-                    + 1.0 * wall_graphite_mask)
-    # XXX adiabatic
-
-        def _get_emissivity(temperature, tau):
-            wall_sample_emissivity = material.emissivity(temperature, tau)
-            return speedup_factor*(
-                wall_sample_emissivity * wall_sample_mask
-                 + 0.00 * wall_alumina_mask
-                 + 0.85 * wall_graphite_mask)
-    # XXX adiabatic
-
-        solid_wall_model = SolidWallModel(
-            #density_func=_get_solid_density,
-            enthalpy_func=_get_solid_enthalpy,
-            heat_capacity_func=_get_solid_heat_capacity,
-            thermal_conductivity_func=_get_solid_thermal_conductivity,
-            decomposition_func=_get_solid_decomposition_progress)
-    # XXX adiabatic
+    solid_wall_model = SolidWallModel(
+        enthalpy_func=_get_solid_enthalpy,
+        heat_capacity_func=_get_solid_heat_capacity,
+        thermal_conductivity_func=_get_solid_thermal_conductivity,
+        decomposition_func=_get_solid_decomposition_progress)
 
     # }}}
 
@@ -1275,7 +1010,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return theta*(field - cell_avgs) + cell_avgs
 
-    def _limit_fluid_cv(cv, pressure, temperature, dd=None):
+    def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
 
         # limit species
         spec_lim = make_obj_array([
@@ -1292,15 +1027,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         spec_lim = spec_lim/aux
 
         # recompute density
-        mass_lim = eos.get_density(pressure=pressure,
-                                   temperature=temperature,
-                                   species_mass_fractions=spec_lim)
+        mass_lim = wv.void_fraction*eos.get_density(pressure=pressure,
+                                                    temperature=temperature,
+                                                    species_mass_fractions=spec_lim)
 
         # recompute energy
         energy_lim = mass_lim*(gas_model.eos.get_internal_energy(
             temperature, species_mass_fractions=spec_lim)
             + 0.5*np.dot(cv.velocity, cv.velocity)
-        )
+        ) + wv.density*gas_model.wall_eos.enthalpy(temperature, wv.tau)
+        
 
         # make a new CV with the limited variables
         return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
@@ -1336,14 +1072,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         flame_loc=0.10025, speedup_factor=speedup_factor,
         mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
-        species_unburn=y_unburned, species_burned=y_burned)
+        species_unburn=y_unburned, species_burned=y_burned,
+        porous_domain=plug, material_densities=material_densities)
 
     ref_state = Burner2D_Reactive(sigma=0.00020,
         sigma_flame=0.00001, temperature=temp_burned, pressure=101325.0,
         flame_loc=0.1050, speedup_factor=speedup_factor,
         mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
-        species_unburn=y_unburned, species_burned=y_burned)
+        species_unburn=y_unburned, species_burned=y_burned,
+        porous_domain=plug, material_densities=material_densities)
 
 ###############################################################################
 
@@ -1352,63 +1090,61 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     reaction_rates_damping = force_eval(
             actx, reaction_damping(dcoll, fluid_nodes))
 
-    def _get_fluid_state(cv, temp_seed):
+    def _get_fluid_state(cv, wv, temp_seed):
         return make_fluid_state(
-            cv=cv, gas_model=gas_model,
-            temperature_seed=temp_seed, limiter_func=_limit_fluid_cv,
-            limiter_dd=dd_vol_fluid,
+            cv=cv, gas_model=gas_model, temperature_seed=temp_seed,
+            material_densities=wv.material_densities,
+            limiter_func=_limit_fluid_cv, limiter_dd=dd_vol_fluid,
         )
 
     get_fluid_state = actx.compile(_get_fluid_state)
 
-    def _get_porous_solid_state(wv, wv_tseed):
-        wdv = solid_wall_model.dependent_vars(wv=wv, tseed=wv_tseed)
-        return SolidWallState(cv=wv, dv=wdv)
-    # XXX adiabatic
-
-    def _get_copper_solid_state(cv):
+    def _get_solid_state(cv):
         wdv = solid_wall_model.dependent_vars(cv)
         return SolidWallState(cv=cv, dv=wdv)
-    # XXX adiabatic
 
-    if my_material == "copper":
-        get_solid_state = actx.compile(_get_copper_solid_state)
-    else:
-        get_solid_state = actx.compile(_get_porous_solid_state)
-        
+    get_solid_state = actx.compile(_get_solid_state)
 
 ##############################################################################
 
     if restart_file is None:
         if rank == 0:
             logging.info("Initializing soln.")
-        fluid_cv = fluid_init(fluid_nodes, eos, flow_rate=flow_rate,
-                              prescribe_species=prescribe_species)
+
+        # ~~~ FLUID
+
+        fluid_cv = fluid_init(
+            x_vec=fluid_nodes, gas_model=gas_model, flow_rate=flow_rate,
+            prescribe_species=prescribe_species)
         tseed = force_eval(actx, 300.0 + fluid_zeros)
-        wv_tseed = force_eval(actx, temp_wall + solid_zeros)
 
-        if my_material == "copper":
-            from mirgecom.materials.initializer import SolidWallInitializer
-            solid_init = SolidWallInitializer(temperature=300.0,
-                                              material_densities=wall_copper_rho)
-            solid_cv = solid_init(solid_nodes, solid_wall_model)
-        else:
-    # XXX adiabatic
-            tau = solid_wall_model.decomposition_progress(wall_densities)
-            wall_mass = solid_wall_model.solid_density(wall_densities)
+        # ~~~ SAMPLE
 
-            wall_sample_h = material.enthalpy(wv_tseed, tau)
-            wall_alumina_h = wall_alumina_cp * wv_tseed
-            wall_graphite_h = wall_graphite_cp * wv_tseed
-            wall_enthalpy = (
-                wall_sample_h * wall_sample_mask
-                + wall_alumina_h * wall_alumina_mask
-                + wall_graphite_h * wall_graphite_mask)
+        eps_rho_solid = plug*material_densities
+        tau = gas_model.decomposition_progress(eps_rho_solid)
+        sample_wv = PorousWallVars(
+            material_densities=eps_rho_solid,
+            tau=tau,
+            density=gas_model.solid_density(eps_rho_solid),
+            void_fraction=gas_model.wall_eos.void_fraction(tau=tau),
+            permeability=gas_model.wall_eos.permeability(tau=tau),
+            tortuosity=gas_model.wall_eos.tortuosity(tau=tau)
+        )
 
-            wall_energy = wall_mass * wall_enthalpy
+        # ~~~ HOLDER
 
-            solid_cv = SolidWallConservedVars(mass=wall_densities,
-                                              energy=wall_energy)
+        # tau = solid_wall_model.decomposition_progress(wall_densities)
+        wall_mass = solid_wall_model.solid_density(wall_densities)
+
+        wall_alumina_h = wall_alumina_cp*300.0 + solid_zeros
+        wall_graphite_h = wall_graphite_cp*300.0 + solid_zeros
+        wall_enthalpy = (wall_alumina_h * wall_alumina_mask
+                         + wall_graphite_h * wall_graphite_mask)
+
+        wall_energy = wall_mass * wall_enthalpy
+
+        solid_cv = SolidWallConservedVars(mass=wall_densities,
+                                          energy=wall_energy)
 
         last_stored_time = -1.0
         my_file = open("temperature_file.dat", "w")
@@ -1452,17 +1188,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 restart_dcoll.discr_from_dd(dd_vol_solid))
             fluid_cv = fluid_connection(restart_data["cv"])
             tseed = fluid_connection(restart_data["temperature_seed"])
-            solid_cv = wall_connection(restart_data["wv"])
-            if use_wv_tseed:
-                wv_tseed = wall_connection(restart_data["wall_temperature_seed"])
-    # XXX adiabatic
+            solid_cv = wall_connection(restart_data["wall_cv"])
         else:
             fluid_cv = restart_data["cv"]
             tseed = restart_data["temperature_seed"]
-            solid_cv = restart_data["wv"]
-            if use_wv_tseed:
-                wv_tseed = restart_data["wall_temperature_seed"]
-    # XXX adiabatic
+            solid_cv = restart_data["wall_cv"]
 
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
@@ -1471,15 +1201,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     tseed = force_eval(actx, tseed)
     fluid_cv = force_eval(actx, fluid_cv)
-    fluid_state = get_fluid_state(fluid_cv, tseed)
+    sample_wv = force_eval(actx, sample_wv)
+    fluid_state = get_fluid_state(fluid_cv, sample_wv, tseed)
 
     solid_cv = force_eval(actx, solid_cv)
-    if use_wv_tseed:
-        wv_tseed = force_eval(actx, wv_tseed)
-        solid_state = get_solid_state(solid_cv, wv_tseed)
-    # XXX adiabatic
-    else:
-        solid_state = get_solid_state(solid_cv)
+    solid_state = get_solid_state(solid_cv)
 
 #########################################################################
 
@@ -1531,9 +1257,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         y_thickness=sponge_y_thickness)
 
     sponge_sigma = force_eval(actx, sponge_init(x_vec=fluid_nodes))
-    ref_cv = force_eval(actx, ref_state(fluid_nodes, eos, flow_rate,
-                                        state_minus=fluid_state,
-                                        prescribe_species=prescribe_species))
+
+    ref_cv = ref_state(fluid_nodes, gas_model, flow_rate,
+                       state_minus=fluid_state,
+                       prescribe_species=prescribe_species)
+
+    ref_cv = force_eval(actx, ref_cv)                        
 
 ##############################################################################
 
@@ -1544,11 +1273,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return inflow_temperature
 
     def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-        inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
+        inflow_cv_cond = ref_state(x_vec=inflow_nodes, gas_model=gas_model,
             flow_rate=flow_rate, state_minus=state_minus,
-            prescribe_species=prescribe_species)
+            prescribe_species=prescribe_species, boundary=True)
         return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-                                temperature_seed=300.0)
+            material_densities=state_minus.wv.material_densities,
+            temperature_seed=300.0)
 
     from mirgecom.inviscid import inviscid_flux
     from mirgecom.flux import num_flux_central
@@ -1582,12 +1312,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             kin_energy_ref = 0.5*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)/state_plus.cv.mass
             kin_energy_mod = 0.5*np.dot(mom_plus, mom_plus)/state_plus.cv.mass
             energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
+            # no need for solid energy at the boundary
 
             cv = make_conserved(dim=2, mass=state_plus.cv.mass,
                                 energy=energy_plus, momentum=mom_plus,
                                 species_mass=state_plus.cv.species_mass)
 
-            return make_fluid_state(cv=cv, gas_model=gas_model, temperature_seed=300.0)
+            return make_fluid_state(cv=cv, gas_model=gas_model,
+                material_densities=state_minus.wv.material_densities,
+                temperature_seed=300.0)
 
         def prescribed_state_for_diffusion(
                 self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
@@ -1613,8 +1346,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             lam = actx.np.maximum(state_pair.int.wavespeed,
                                   state_pair.ext.wavespeed)
             return num_flux_lfr(
-                f_minus_normal=inviscid_flux(state_pair.int)@normal,
-                f_plus_normal=inviscid_flux(state_pair.ext)@normal,
+                f_minus_normal=inviscid_flux(state_pair.int, gas_model)@normal,
+                f_plus_normal=inviscid_flux(state_pair.ext, gas_model)@normal,
                 q_minus=state_pair.int.cv,
                 q_plus=state_pair.ext.cv, lam=lam)
 
@@ -1689,8 +1422,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             AdiabaticNoslipWallBoundary(),
         dd_vol_fluid.trace("linear").domain_tag:
             linear_bnd,
-        dd_vol_fluid.trace("outlet").domain_tag:
-            PressureOutflowBoundary(boundary_pressure=101325.0),
     }
 
     wall_symmetry = NeumannDiffusionBoundary(0.0)
@@ -1699,10 +1430,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     }
 
 ##############################################################################
-
-    fluid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_fluid)
-    solid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_solid)
-    # XXX adiabatic
 
     initname = original_casename
     eosname = eos.__class__.__name__
@@ -1722,8 +1449,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             step, t, dt, fluid_state, solid_state, smoothness=None,
             grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None):
 
-#        heat_rls = pyrometheus_mechanism.heat_release(fluid_state)
-
         rho = fluid_state.cv.mass
         cp = eos.heat_capacity_cp(fluid_state.cv, fluid_state.temperature)
         fluid_viz_fields = [
@@ -1734,14 +1459,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("DV_T", fluid_state.temperature),
             ("DV_U", fluid_state.velocity[0]),
             ("DV_V", fluid_state.velocity[1]),
-            ("sponge", sponge_sigma),
-            ("smoothness", 1.0 - theta_factor*smoothness),
-            # ("dt", dt[0] if local_dt else None),
-            # ("mu", fluid_state.tv.viscosity),
-            # ("alpha", fluid_state.tv.thermal_conductivity/(rho*cp)),
-            # ("kappa", fluid_state.tv.thermal_conductivity),
-            # ("Dij", fluid_state.tv.species_diffusivity[0]),
-            # ("RR", chem_rate*reaction_rates_damping),
+            ("plug", plug),
+            ("WV", fluid_state.wv),
+            # ("sponge", sponge_sigma),
+            # ("smoothness", 1.0 - theta_factor*smoothness),
         ]
 
         # species mass fractions
@@ -1749,24 +1470,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             "Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
             for i in range(nspecies))
 
-        # if grad_cv_fluid is not None:
-        #     fluid_viz_fields.extend((
-        #         ("fluid_grad_cv_rho", grad_cv_fluid.mass),
-        #         ("fluid_grad_cv_rhoU", grad_cv_fluid.momentum[0]),
-        #         ("fluid_grad_cv_rhoV", grad_cv_fluid.momentum[1]),
-        #         ("fluid_grad_cv_rhoE", grad_cv_fluid.energy),
-        #     ))
-
-        # if grad_t_fluid is not None:
-        #     fluid_viz_fields.append(("fluid_grad_t", grad_t_fluid))
-
-        wv = solid_state.cv
+        wall_cv = solid_state.cv
         wdv = solid_state.dv
-        # wall_alpha = solid_wall_model.thermal_diffusivity(
-        #     mass=wv.mass, temperature=wdv.temperature,
-        #     thermal_conductivity=wdv.thermal_conductivity)
         solid_viz_fields = [
-            ("wv_energy", wv.energy),
+            ("wv_energy", wall_cv.energy),
             ("cfl", solid_zeros),  # FIXME
             ("wall_kappa", wdv.thermal_conductivity),
             ("wall_progress", wdv.tau),
@@ -1774,16 +1481,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("wall_grad_t", grad_t_solid),
         ]
 
-        if use_wv_tseed:
-            solid_mass_rhs = decomposition.get_source_terms(
-                temperature=wdv.temperature, chi=wv.mass)
-        if wv.mass.shape[0] > 1:
-            solid_viz_fields.extend(("wv_mass_" + str(i), wv.mass[i])
-                                     for i in range(wv.mass.shape[0]))
-            solid_viz_fields.extend(("mass_rhs" + str(i), solid_mass_rhs[i])
-                                     for i in range(wv.mass.shape[0]))
-        else:
-            solid_viz_fields.append(("wv_mass", wv.mass))
+        solid_viz_fields.append(("wv_mass", wall_cv.mass))
 
         print("Writing solution file...")
         write_visfile(
@@ -1793,17 +1491,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         write_visfile(
             dcoll, solid_viz_fields, solid_visualizer,
             vizname=vizname+"-wall", step=step, t=t, overwrite=True, comm=comm)
-    # XXX adiabatic
 
     def my_write_restart(step, t, state):
         if rank == 0:
             print("Writing restart file...")
 
-        if my_material == "copper":
-            cv, tseed, wv = state
-        else:
-            cv, tseed, wv, wv_tseed, _ = state
-
+        cv, tseed, wall_cv = state
         restart_fname = rst_pattern.format(cname=casename, step=step,
                                            rank=rank)
         if restart_fname != restart_file:
@@ -1811,9 +1504,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 "volume_to_local_mesh_data": volume_to_local_mesh_data,
                 "cv": cv,
                 "temperature_seed": tseed,
+                # "sample_densities": sample_densities,
                 "nspecies": nspecies,
-                "wv": wv,
-                "wall_temperature_seed": wv_tseed if use_wv_tseed else None,
+                "wall_cv": wall_cv,
                 "t": t,
                 "step": step,
                 "order": order,
@@ -1822,7 +1515,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             }
             
             write_restart_file(actx, restart_data, restart_fname, comm)
-    # XXX adiabatic
 
 #########################################################################
 
@@ -1847,28 +1539,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from grudge.trace_pair import interior_trace_pairs, tracepair_with_discr_tag
     from grudge import op
     from meshmode.discretization.connection import FACE_RESTR_ALL
-
-#    fluid_field = fluid_nodes[0]*0.0
-#    wall_field = solid_nodes[0]*0.0
-#    pairwise_field = {
-#        (dd_vol_fluid, dd_vol_solid): (fluid_field, wall_field)}
-#    pairwise_field_tpairs = inter_volume_trace_pairs(
-#        dcoll, pairwise_field, comm_tag=_MyGradTag_Bdry)
-#    field_tpairs_F = pairwise_field_tpairs[dd_vol_solid, dd_vol_fluid]
-#    field_tpairs_W = pairwise_field_tpairs[dd_vol_fluid, dd_vol_solid]
-
-#    from mirgecom.boundary import DummyBoundary
-#    axisym_fluid_boundaries = {}
-#    axisym_fluid_boundaries.update(fluid_boundaries)
-#    axisym_fluid_boundaries.update({
-#            tpair.dd.domain_tag: DummyBoundary()
-#            for tpair in field_tpairs_F})
-
-#    axisym_wall_boundaries = {}
-#    axisym_wall_boundaries.update(solid_boundaries)
-#    axisym_wall_boundaries.update({
-#            tpair.dd.domain_tag: DummyDiffusionBoundary()
-#            for tpair in field_tpairs_W})
 
     def my_derivative_function(actx, dcoll, field, field_bounds, dd_vol,
                                bnd_cond, comm_tag):    
@@ -1928,9 +1598,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def axisym_source_fluid(actx, dcoll, state, grad_cv, grad_t):
         cv = state.cv
         dv = state.dv
+        wv = state.wv
 
         mu = state.tv.viscosity
-        beta = transport_model.volume_viscosity(cv, dv, gas_model.eos)
+        beta = transport_model.volume_viscosity(cv, dv, wv, gas_model.eos)
         kappa = state.tv.thermal_conductivity
         d_ij = state.tv.species_diffusivity
 
@@ -2069,66 +1740,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return chem_rate*speedup_factor*reaction_rates_damping*(
             eos.get_species_source_terms(cv, temperature))
 
-    # ~~~~~~
-
-    from grudge.discretization import filter_part_boundaries
-    from grudge.reductions import integral
-    solid_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_solid,
-                                           neighbor_volume_dd=dd_vol_fluid)
-
-    if my_material == "copper":
-        interface_nodes = op.project(
-            dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes)
-        interface_zeros = actx.np.zeros_like(interface_nodes[0])
-
-    else:
-
-        pairwise_mask = {(dd_vol_fluid, dd_vol_solid):
-                         (fluid_zeros + 1.0, wall_sample_mask)}
-        mask_pairs = inter_volume_trace_pairs(dcoll, pairwise_mask,
-                                              comm_tag=_SampleMaskTag)
-        interface_sample = mask_pairs[dd_vol_solid, dd_vol_fluid][0].exterior
-
-        interface_nodes = op.project(
-            dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes*wall_sample_mask)
-        interface_zeros = actx.np.zeros_like(interface_nodes[0])
-
-        # surface integral of the density
-        # dS = 2 pi r dx
-        dS = 2.0*np.pi*interface_nodes[0]
-        dV = 2.0*np.pi*solid_nodes[0]
-
-        integral_volume = integral(dcoll, dd_vol_solid, wall_sample_mask*dV)
-        integral_surface = integral(dcoll, solid_dd_list[0], dS)
-
-        radius = 0.015875
-        height = 0.01905
-
-        volume = np.pi*radius**2*height
-        area = np.pi*radius**2 + 2.0*np.pi*radius*height
-
-    #    print(integral_volume - volume)
-    #    print(integral_surface - area)
-
-    #    assert integral_volume - volume < 1e-9
-    #    assert integral_surface - area < 1e-9
-
-        def blowing_momentum(source):
-
-            # volume integral of the source terms
-            integral_volume_source = \
-                integral(dcoll, dd_vol_solid, source*wall_sample_mask*dV)
-
-            # surface integral of the density
-            integral_surface = \
-                integral(dcoll, solid_dd_list[0], dS)
-
-            momentum = \
-                -1.0*integral_volume_source/integral_surface*interface_sample
-
-            return force_eval(actx, momentum)
-
-
 ##############################################################################
 
     from grudge.op import nodal_min, nodal_max
@@ -2161,10 +1772,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if logmgr:
             logmgr.tick_before()
 
-        if my_material == "copper":
-            cv, tseed, wv = state
-        else:
-            cv, tseed, wv, wv_tseed, _ = state
+        cv, tseed, wall_cv = state
 
         cv = force_eval(actx, cv)
         tseed = force_eval(actx, tseed)
@@ -2176,32 +1784,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         cv = drop_order_cv(cv, smoothness, theta_factor)
 
         # construct species-limited fluid state
-        fluid_state = get_fluid_state(cv, tseed)
+        fluid_state = get_fluid_state(cv, sample_wv, tseed)
         cv = fluid_state.cv
 
         # wall variables
-        wv = force_eval(actx, wv)
-        if my_material == "copper":
-            solid_state = get_solid_state(wv)            
-        else:
-            wv_tseed = force_eval(actx, wv_tseed)
-            solid_state = get_solid_state(wv, wv_tseed)
-        wv = solid_state.cv
+        wall_cv = force_eval(actx, wall_cv)
+        solid_state = get_solid_state(wall_cv)            
+        wall_cv = solid_state.cv
         wdv = solid_state.dv
-
-        # wall approximated blowing
-        if my_material == "copper":
-            boundary_momentum = interface_zeros
-
-        if my_material == "fiber":
-            boundary_momentum = interface_zeros
-
-        if my_material == "composite":
-            solid_mass_rhs = decomposition.get_source_terms(
-                temperature=solid_state.dv.temperature, chi=solid_state.cv.mass)
-
-            boundary_momentum = \
-                speedup_factor * blowing_momentum(-1.0*sum(solid_mass_rhs))
 
         t = force_eval(actx, t)
         dt_fluid = force_eval(actx, actx.np.minimum(
@@ -2209,23 +1799,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #        dt_solid = force_eval(actx, actx.np.minimum(
 #            1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
         dt_solid = force_eval(actx, current_dt + solid_zeros)
-
-        if my_material == "copper":
-            dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
-        else:
-            dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros,
-                                 interface_zeros])
+        dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
 
         try:
-            if my_material == "copper":
-                state = make_obj_array([
-                    fluid_state.cv, fluid_state.dv.temperature,
-                    solid_state.cv])          
-            else:
-                state = make_obj_array([
-                    fluid_state.cv, fluid_state.dv.temperature,
-                    solid_state.cv, solid_state.dv.temperature,
-                    boundary_momentum])
+            state = make_obj_array([
+                fluid_state.cv, fluid_state.dv.temperature,
+                solid_state.cv])
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
@@ -2295,42 +1874,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def _get_rhs(t, state):
 
-        if my_material == "copper":
-            fluid_state, solid_state = state
-        else:
-            fluid_state, solid_state, boundary_momentum = state
+        fluid_state, solid_state = state
 
         cv = fluid_state.cv
-        wv = solid_state.cv
+
+        wall_cv = solid_state.cv
         wdv = solid_state.dv
 
         #~~~~~~~~~~~~~
-        if my_material == "copper":
-            fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
-                add_interface_boundaries_no_grad(
-                    dcoll, gas_model,
-                    dd_vol_fluid, dd_vol_solid,
-                    fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                    fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=use_radiation)
-
-        if my_material == "fiber":
-            fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
-                add_interface_boundaries_no_grad(
-                    dcoll, gas_model,
-                    dd_vol_fluid, dd_vol_solid,
-                    fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                    fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=True)
-
-        if my_material == "composite":
-            fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
-                add_interface_boundaries_no_grad(
-                    dcoll, gas_model,
-                    dd_vol_fluid, dd_vol_solid,
-                    fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                    boundary_momentum,
-                    fluid_boundaries, solid_boundaries)
+        fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
+            add_interface_boundaries_no_grad(
+                dcoll, gas_model,
+                dd_vol_fluid, dd_vol_solid,
+                fluid_state, wdv.thermal_conductivity, wdv.temperature,
+                fluid_boundaries, solid_boundaries,
+                interface_noslip=True, interface_radiation=use_radiation)
 
         fluid_operator_states_quad = make_operator_fluid_states(
             dcoll, fluid_state, gas_model, fluid_all_boundaries_no_grad,
@@ -2360,52 +1918,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #            numerical_flux_func=grad_facial_flux_central,
             comm_tag=_SolidGradTempTag)
 
-        if my_material == "copper":
-            fluid_all_boundaries, solid_all_boundaries = \
-                add_interface_boundaries(
-                    dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
-                    fluid_state, wdv.thermal_conductivity,
-                    wdv.temperature,
-                    fluid_grad_temperature, solid_grad_temperature,
-                    fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=use_radiation,
-                    wall_emissivity=emissivity, sigma=5.67e-8,
-                    ambient_temperature=300.0,
-                    wall_penalty_amount=wall_penalty_amount)
+        wall_emissivity = _get_emissivity(temperature=wdv.temperature,
+                                          tau=wdv.tau)
 
-        if my_material == "fiber":
-            wall_emissivity = _get_emissivity(temperature=wdv.temperature,
-                                              tau=wdv.tau)
-
-            fluid_all_boundaries, solid_all_boundaries = \
-                add_interface_boundaries(
-                    dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
-                    fluid_state, wdv.thermal_conductivity,
-                    wdv.temperature,
-                    fluid_grad_temperature, solid_grad_temperature,
-                    fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=use_radiation,
-                    wall_emissivity=wall_emissivity, sigma=5.67e-8,
-                    ambient_temperature=300.0,
-                    wall_penalty_amount=wall_penalty_amount)
-
-        if my_material == "composite":
-            wall_emissivity = _get_emissivity(temperature=wdv.temperature,
-                                              tau=wdv.tau)
-
-            fluid_all_boundaries, solid_all_boundaries = \
-                add_interface_boundaries(
-                    dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
-                    fluid_state, wdv.thermal_conductivity,
-                    wdv.temperature,
-                    boundary_momentum,
-                    fluid_grad_temperature, solid_grad_temperature,
-                    fluid_boundaries, solid_boundaries,
-                    porous_wall=interface_sample,
-                    interface_noslip=True, interface_radiation=use_radiation,
-                    wall_emissivity=wall_emissivity, sigma=5.67e-8,
-                    ambient_temperature=300.0,
-                    wall_penalty_amount=wall_penalty_amount)
+        fluid_all_boundaries, solid_all_boundaries = \
+            add_interface_boundaries(
+                dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
+                fluid_state, wdv.thermal_conductivity,
+                wdv.temperature,
+                fluid_grad_temperature, solid_grad_temperature,
+                fluid_boundaries, solid_boundaries,
+                interface_noslip=True, interface_radiation=use_radiation,
+                wall_emissivity=wall_emissivity, sigma=5.67e-8,
+                ambient_temperature=300.0,
+                wall_penalty_amount=wall_penalty_amount)
 
         fluid_rhs = ns_operator(
             dcoll, gas_model, fluid_state, fluid_all_boundaries,
@@ -2414,77 +1940,57 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
             comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
 
+        # ~~~~
+        tv = fluid_state.tv
+        wv = fluid_state.wv
+        darcy_source = make_conserved(dim=2,
+            mass=fluid_zeros,
+            energy=fluid_zeros,
+            momentum=-1.0*tv.viscosity*wv.void_fraction/wv.permeability*fluid_state.velocity,
+            species_mass=fluid_state.cv.species_mass*0.0,
+        )
+
         fluid_sources = (
-            chemical_source_term(fluid_state.cv, fluid_state.temperature)
-            + sponge_func(cv=fluid_state.cv, cv_ref=ref_cv,
-                          sigma=sponge_sigma)
+            # chemical_source_term(fluid_state.cv, fluid_state.temperature)
+            + sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
             + gravity_source_terms(fluid_state.cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
-                                  fluid_grad_temperature))
+                                  fluid_grad_temperature)
+            + darcy_source
+        )
 
         #~~~~~~~~~~~~~
         if ignore_wall:
-            solid_rhs = SolidWallConservedVars(mass=wv.mass*0.0,
+            solid_rhs = SolidWallConservedVars(mass=solid_zeros,
                                                energy=solid_zeros)
-            solid_sources = 0.0
-
+            solid_sources = solid_zeros
         else:
-            if my_material == "copper":
-                solid_energy_rhs = diffusion_operator(
-                    dcoll, wdv.thermal_conductivity, solid_all_boundaries,
-                    wdv.temperature,
-                    penalty_amount=wall_penalty_amount,
-                    quadrature_tag=quadrature_tag,
-                    dd=dd_vol_solid,
-                    grad_u=solid_grad_temperature,
-                    comm_tag=_SolidOperatorTag)
+            solid_energy_rhs = diffusion_operator(
+                dcoll, wdv.thermal_conductivity, solid_all_boundaries,
+                wdv.temperature,
+                penalty_amount=wall_penalty_amount,
+                quadrature_tag=quadrature_tag,
+                dd=dd_vol_solid,
+                grad_u=solid_grad_temperature,
+                comm_tag=_SolidOperatorTag,
+                diffusion_numerical_flux_func=diffusion_facial_flux_harmonic,
+            )
 
-                solid_sources = wall_time_scale * axisym_source_solid(
-                        actx, dcoll, solid_state, solid_grad_temperature)
+            solid_sources = wall_time_scale * axisym_source_solid(
+                actx, dcoll, solid_state, solid_grad_temperature)
 
-                solid_rhs = wall_time_scale * (
-                    SolidWallConservedVars(mass=solid_zeros,
-                                           energy=solid_energy_rhs))
-
-                return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
-                                       solid_rhs + solid_sources])
-            else:
-
-                solid_mass_rhs = decomposition.get_source_terms(
-                    temperature=solid_state.dv.temperature,
-                    chi=solid_state.cv.mass)
-
-                solid_energy_rhs = diffusion_operator(
-                    dcoll, wdv.thermal_conductivity, solid_all_boundaries,
-                    wdv.temperature,
-                    penalty_amount=wall_penalty_amount,
-                    quadrature_tag=quadrature_tag,
-                    dd=dd_vol_solid,
-                    grad_u=solid_grad_temperature,
-                    comm_tag=_SolidOperatorTag,
-                    diffusion_numerical_flux_func=diffusion_facial_flux_harmonic,
-                )
-
-                solid_sources = wall_time_scale * axisym_source_solid(
-                    actx, dcoll, solid_state, solid_grad_temperature)
-
-                solid_rhs = wall_time_scale * SolidWallConservedVars(
-                    mass=solid_mass_rhs*wall_sample_mask,
-                    energy=solid_energy_rhs)
-
-                return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
-                                       solid_rhs + solid_sources, solid_zeros,
-                                       interface_zeros])
+            solid_rhs = wall_time_scale * SolidWallConservedVars(
+                mass=solid_zeros, energy=solid_energy_rhs)
 
         #~~~~~~~~~~~~~
+
+        return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                               solid_rhs + solid_sources])
 
     get_rhs_compiled = actx.compile(_get_rhs)
 
     def my_rhs(t, state):
-        if my_material == "copper":
-            cv, tseed, wv = state
-        else:
-            cv, tseed, wv, wv_tseed, boundary_momentum = state
+        cv, tseed, wall_cv = state
 
         cv = force_eval(actx, cv)
         tseed = force_eval(actx, tseed)
@@ -2496,40 +2002,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         cv = drop_order_cv(cv, smoothness, theta_factor)
 
         # construct species-limited fluid state
-        fluid_state = get_fluid_state(cv, tseed)
+        fluid_state = get_fluid_state(cv, sample_wv, tseed)
         fluid_state = force_eval(actx, fluid_state)
         cv = fluid_state.cv
 
         # construct wall state
-        wv = force_eval(actx, wv)
-        if my_material == "copper":
-            solid_state = get_solid_state(wv)
-        else:
-            wv_tseed = force_eval(actx, wv_tseed)
-            solid_state = get_solid_state(wv, wv_tseed)
+        wall_cv = force_eval(actx, wall_cv)
+        solid_state = get_solid_state(wall_cv)
 
         solid_state = force_eval(actx, solid_state)
-        wv = solid_state.cv
+        wall_cv = solid_state.cv
         wdv = solid_state.dv
 
-        if my_material == "copper":
-            actual_state = make_obj_array([fluid_state, solid_state])
-        else:
-            boundary_momentum = force_eval(actx, boundary_momentum)
+        actual_state = make_obj_array([fluid_state, solid_state])
 
-            actual_state = make_obj_array([fluid_state, solid_state,
-                                           boundary_momentum])
-
-        rhs_state = get_rhs_compiled(t, actual_state)
-
-#        if use_rhs_filtered:
-#            filtered_sample_rhs = filter_sample_rhs_compiled(rhs_state[2])
-#            return make_obj_array([
-#                rhs_state[0], fluid_zeros,
-#                filtered_sample_rhs, sample_zeros, rhs_state[4],
-#                rhs_state[5], interface_zeros])
-
-        return rhs_state
+        return get_rhs_compiled(t, actual_state)
 
     def my_post_step(step, t, dt, state):
 
@@ -2565,19 +2052,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_fluid = force_eval(actx, current_t + fluid_zeros)
     t_solid = force_eval(actx, current_t + solid_zeros)
 
-    if my_material == "copper":
-        stepper_state = make_obj_array([fluid_state.cv, fluid_state.dv.temperature,
-                                        solid_state.cv])
+    stepper_state = make_obj_array([fluid_state.cv, fluid_state.dv.temperature,
+                                    solid_state.cv])
 
-        dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
-        t = make_obj_array([t_fluid, t_fluid, t_solid])
-    else:
-        stepper_state = make_obj_array([fluid_state.cv, fluid_state.dv.temperature,
-                                        solid_state.cv, solid_state.dv.temperature,
-                                        interface_zeros])
-
-        dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros, interface_zeros])
-        t = make_obj_array([t_fluid, t_fluid, t_solid, t_solid, interface_zeros])
+    dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
+    t = make_obj_array([t_fluid, t_fluid, t_solid])
 
     if rank == 0:
         logging.info("Stepping.")
@@ -2590,20 +2069,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                       max_steps=niter, local_dt=local_dt,
                       force_eval=force_eval_stepper, state=stepper_state,
                       compile_rhs=False)
- 
-    # final_cv, tseed, final_wv, wv_tseed = stepper_state
-    # final_state = get_fluid_state(final_cv, tseed)
-    # final_wdv = solid_wall_model.dependent_vars(final_wv, wv_tseed)
-
-    # # Dump the final data
-    # if rank == 0:
-    #     logger.info("Checkpointing final state ...")
-
-    # my_write_restart(step=final_step, t=final_t, state=stepper_state)
-
-    # my_write_viz(step=final_step, t=final_t, dt=current_dt,
-    #              cv=final_state.cv, dv=current_state.dv,
-    #              wv=final_wv, wdv=final_wdv)
 
     if logmgr:
         logmgr.close()
