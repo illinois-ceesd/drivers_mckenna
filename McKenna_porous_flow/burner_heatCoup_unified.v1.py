@@ -43,7 +43,8 @@ from pytools.obj_array import make_obj_array
 from meshmode.dof_array import DOFArray
 
 from grudge.trace_pair import TracePair, inter_volume_trace_pairs
-from grudge.geometry.metrics import normal as normal_vector
+#from grudge.geometry.metrics import normal as normal_vector
+from grudge.geometry import normal as normal_vector
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import (
@@ -71,7 +72,7 @@ from mirgecom.boundary import (
 from mirgecom.fluid import (
     velocity_gradient, species_mass_fraction_gradient, make_conserved
 )
-from mirgecom.transport import SimpleTransport #MixtureAveragedTransport
+from mirgecom.transport import MixtureAveragedTransport
 from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.gas_model import (
@@ -196,10 +197,9 @@ class Burner2D_Reactive:  # noqa
         _ys = self._ys
         _yu = self._yu
 
-        #cool_temp = 300.0
-        cool_temp = 1800.0
+        cool_temp = 300.0
 
-        upper_bnd = 0.105
+        upper_bnd = 0.115
 
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
         _sigma = self._sigma*(
@@ -228,7 +228,6 @@ class Burner2D_Reactive:  # noqa
         upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(2.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
         # ~~~ flame ignition
-        #flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
         flame = actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - 0.1))
 
         # ~~~ species
@@ -401,12 +400,7 @@ class PorousMaterial:
         sponge_x = xpos*0.0
         sponge_y = xpos*0.0
 
-        #np.where(np.less(x,xc-xt*0.5), 0.0, np.where(np.greater(x, xc+xt*0.5), 1.0, ))
-        #   yy = (ypos-(self._y_min-self._y_thickness*0.5))/(self._y_thickness)
-        # -20.0*xx**7 + 70*xx**6 - 84*xx**5 + 35*xx**4
-
         y0 = self._y_min
-        #dy = -((ypos - y0)/self._y_thickness)
         dy = (ypos-(y0-self._y_thickness*0.5))/(self._y_thickness)
         sponge_y = actx.np.where(
             actx.np.less(ypos, y0-self._y_thickness*0.5),
@@ -502,8 +496,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~~~~~~~~~~~~
 
     # default i/o frequencies
-    nviz = 25000
-    nrestart = 10000
+    nviz = 10000
+    nrestart = 25000
     nhealth = 1
     nstatus = 100
 
@@ -516,7 +510,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.2
 
     # discretization and model control
-    order = 8
+    order = 2
 
     chem_rate = 1.0
     speedup_factor = 7.5
@@ -528,10 +522,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     prescribe_species = True
 
     width_mm = str('%02i' % (width*1000)) + "mm"
-    current_dt = 1.0e-6
-    wall_time_scale = 1.0*speedup_factor  # wall speed-up
-    my_mechanism = "air_3sp"
-    # my_mechanism = "uiuc_8sp_phenol"
+    current_dt = 5.0e-7
+    wall_time_scale = 10.0*speedup_factor  # wall speed-up
+#    mechanism_file = "air_3sp"
+    mechanism_file = "uiuc_7sp"
     solid_domains = ["wall_alumina", "wall_graphite"]
 
     if use_tpe:
@@ -688,9 +682,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{ Set up initial state using Cantera
 
     # Use Cantera for initialization
-    current_path = os.path.abspath(os.getcwd()) + "/"
-    mechanism_file = current_path + my_mechanism
-
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -700,14 +691,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Initial temperature, pressure, and mixture mole fractions are needed to
     # set up the initial state in Cantera.
 
-#    air = "O2:0.21,N2:0.79"
-#    fuel = "C2H4:1"
-#    cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
-#                                       fuel=fuel, oxidizer=air)
-    x_cantera = np.zeros(3,)
-    x_cantera[0] = 0.21
-    x_cantera[2] = 0.79
-    cantera_soln.X = x_cantera    
+    air = "O2:0.21,N2:0.79"
+    fuel = "C2H4:1"
+    cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
+                                       fuel=fuel, oxidizer=air)
 
     temp_unburned = 300.0
     pres_unburned = 101325.0
@@ -745,46 +732,36 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Set Cantera internal gas temperature, pressure, and mole fractios
     cantera_soln.TPX = temp_unburned, pres_unburned, x_reference
 
-#    if prescribe_species:
-#        # Pull temperature, density, mass fractions, and pressure from Cantera
-#        # set the mass flow rate at the inlet
-#        sim = cantera.ImpingingJet(gas=cantera_soln, width=width)
-#        sim.inlet.mdot = rhoU_int
-#        sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
-#        sim.set_initial_guess(products='equil')
-#        sim.solve(loglevel=0, refine_grid=True, auto=True)
+    if prescribe_species:
+        # Pull temperature, density, mass fractions, and pressure from Cantera
+        # set the mass flow rate at the inlet
+        sim = cantera.ImpingingJet(gas=cantera_soln, width=width)
+        sim.inlet.mdot = rhoU_int
+        sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
+        sim.set_initial_guess(products='equil')
+        sim.solve(loglevel=0, refine_grid=True, auto=True)
 
-#        # ~~~ Reactants
-#        assert np.absolute(sim.density[0]*sim.velocity[0] - rhoU_int) < 1e-11
-#        rho_unburned = sim.density[0]
-#        y_unburned = sim.Y[:,0]
-#        
-#        # ~~~ Products
-#        index_burned = np.argmax(sim.T) 
-#        temp_burned = sim.T[index_burned]
-#        rho_burned = sim.density[index_burned]
-#        y_burned = sim.Y[:,index_burned]
+        # ~~~ Reactants
+        assert np.absolute(sim.density[0]*sim.velocity[0] - rhoU_int) < 1e-11
+        rho_unburned = sim.density[0]
+        y_unburned = sim.Y[:,0]
+        
+        # ~~~ Products
+        index_burned = np.argmax(sim.T) 
+        temp_burned = sim.T[index_burned]
+        rho_burned = sim.density[index_burned]
+        y_burned = sim.Y[:,index_burned]
 
-#    else:
-#        # ~~~ Reactants
-#        y_unburned = y_reference*1.0
-#        _, rho_unburned, y_unburned = cantera_soln.TDY
+    else:
+        # ~~~ Reactants
+        y_unburned = y_reference*1.0
+        _, rho_unburned, y_unburned = cantera_soln.TDY
 
-#        # ~~~ Products
+        # ~~~ Products
 
-#        cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
-#        cantera_soln.equilibrate("TP")
-#        temp_burned, rho_burned, y_burned = cantera_soln.TDY
-
-    # ~~~ Reactants
-    y_unburned = y_reference*1.0
-    _, rho_unburned, y_unburned = cantera_soln.TDY
-
-    # ~~~ Products
-
-    cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
-    cantera_soln.equilibrate("TP")
-    temp_burned, rho_burned, y_burned = cantera_soln.TDY
+        cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
+        cantera_soln.equilibrate("TP")
+        temp_burned, rho_burned, y_burned = cantera_soln.TDY
 
     # ~~~ Atmosphere
     x = np.zeros(nspecies)
@@ -811,17 +788,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     pyrometheus_mechanism = get_pyrometheus_wrapper_class_from_cantera(
                                 cantera_soln, temperature_niter=3)(actx.np)
 
-    temperature_seed = 1000.0
+    temperature_seed = 1234.56789
     eos = PyrometheusMixture(pyrometheus_mechanism,
                              temperature_guess=temperature_seed)
 
     species_names = pyrometheus_mechanism.species_names
 
-    #base_transport = MixtureAveragedTransport(pyrometheus_mechanism,
-    #                                           factor=speedup_factor)
-    base_transport = SimpleTransport(viscosity=1e-4,
-                                      thermal_conductivity=1e-2,
-                                      species_diffusivity=1e-3*np.ones(3,))
+    base_transport = MixtureAveragedTransport(pyrometheus_mechanism,
+                                               factor=speedup_factor)
+#    base_transport = SimpleTransport(viscosity=1e-4,
+#                                      thermal_conductivity=1e-2,
+#                                      species_diffusivity=1e-3*np.ones(3,))
 
     transport_model = PorousWallTransport(base_transport=base_transport)
 
@@ -868,14 +845,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     print("width=", width_mm, "(mm)")
     print("V_dot=", flow_rate, "(L/min)")
-    print(f"{A_int= }", "(m^2)")
-    print(f"{A_ext= }", "(m^2)")
-    print(f"{u_int= }", "(m/s)")
-    print(f"{u_ext= }", "(m/s)")
-    print(f"{rho_int= }", "(kg/m^3)")
-    print(f"{rho_ext= }", "(kg/m^3)")
-    print(f"{rhoU_int= }")
-    print(f"{rhoU_ext= }")
+    print(f"{A_int = }", "(m^2)")
+    print(f"{A_ext = }", "(m^2)")
+    print(f"{u_int = }", "(m/s)")
+    print(f"{u_ext = }", "(m/s)")
+    print(f"{rho_int = }", "(kg/m^3)")
+    print(f"{rho_ext = }", "(kg/m^3)")
+    print(f"{rhoU_int = }")
+    print(f"{rhoU_ext = }")
     print("ratio=", u_ext/u_int,"\n")
 
     # }}}
