@@ -15,7 +15,7 @@ burner_base_radius = 4.725*25.4/2000;
 burner_height = 0.10;
 flame_dist = 0.0015;
 
-mat_location = burner_height + 0.01;  //arbitrary value
+mat_location = burner_height + 0.015;  //arbitrary value
 mat_wide = 0.5*1.25*25.4/1000;
 mat_thick = 0.75*25.4/1000;
 insulator = 1.00*25.4/1000 + mat_thick;
@@ -27,7 +27,7 @@ mat_BL_layer_y = 0.0030;
 
 Point(2) = {ext_radius, burner_height, 0.0, 0.000200};
 Point(3) = {int_radius, burner_height, 0.0, 1.0};
-Point(4) = {            0.005, burner_height, 0.0, 1.0};
+Point(4) = {mat_wide + mat_BL_layer_x, burner_height, 0.0, 1.0};
 Point(5) = {               0., burner_height, 0.0, 1.0};
 
 delta = (mat_location - mat_BL_layer_y - burner_height - flame_dist);
@@ -61,7 +61,7 @@ Point(28) = { burner_base_radius, burner_height + flame_dist, 0.,  1.0};
 Point(29) = {               aux, burner_height + flame_dist, 0.0, clB};
 Point(30) = {ext_radius + offset, burner_height + flame_dist, 0.,  1.0};
 Point(31) = {         int_radius, burner_height + flame_dist, 0.,  1.0};
-Point(32) = {              0.005, burner_height + flame_dist, 0.,  1.0};
+Point(32) = {mat_wide + mat_BL_layer_x, burner_height + flame_dist, 0.,  1.0};
 Point(33) = {                 0., burner_height + flame_dist, 0.,  clS};
 
 
@@ -154,18 +154,21 @@ Line(68) = {16, 51};
 /*horizontal*/
 Transfinite Line {  1} = 19 Using Bump 0.75;
 Transfinite Line { 17} = 19 Using Bump 0.75;
-Transfinite Line {  2} = 61 Using Progression 1.01;
-Transfinite Line { 18} = 61 Using Progression 1.01;
-Transfinite Line {- 5} = 10 Using Progression 1.01;
-Transfinite Line {-19} = 10  Using Progression 1.01;
+Transfinite Line {  2} = 27 Using Progression 1.025;
+Transfinite Line { 18} = 27 Using Progression 1.025;
+
+Transfinite Line {- 5} = 36 Using Progression 1.006;
+Transfinite Line {-19} = 36 Using Progression 1.006;
+Transfinite Line { 23} = 36 Using Progression 1.006;
+Transfinite Line {-51} = 36 Using Progression 1.005;
 
 /*vertical*/
-Transfinite Line {  3} = 24 Using Progression 1.095;
-Transfinite Line { 16} = 24 Using Progression 1.095;
-Transfinite Line { 13} = 24 Using Progression 1.0;
-Transfinite Line { 10} = 24 Using Progression 1.0;
-Transfinite Line {  4} = 24 Using Progression 1.095;
-Transfinite Line {  6} = 24 Using Progression 1.095;
+Transfinite Line {  3} = 27 Using Progression 1.1;
+Transfinite Line { 16} = 27 Using Progression 1.1;
+Transfinite Line {  4} = 27 Using Progression 1.1;
+Transfinite Line {  6} = 27 Using Progression 1.1;
+Transfinite Line { 13} = 27 Using Progression 1.0;
+Transfinite Line { 10} = 27 Using Progression 1.0;
 
 /*burner*/
 Transfinite Line {-15} = 21 Using Progression 1.055;
@@ -174,24 +177,20 @@ Transfinite Line { 14} = 11 Using Progression 1.00;
 Transfinite Line { 11} = 11 Using Progression 1.00;
 
 /*material*/
-Transfinite Line {-50} = 13 Using Progression 1.100;
-Transfinite Line { 52} = 13 Using Progression 1.100;
-Transfinite Line { 53} = 13 Using Progression 1.100;
-Transfinite Line {-58} = 13 Using Progression 1.100;
-Transfinite Line {-60} = 13 Using Progression 1.100;
-Transfinite Line { 66} = 13 Using Progression 1.100;
-Transfinite Line { 59} = 13 Using Progression 1.100;
+Transfinite Line {-50} = 14 Using Progression 1.100;
+Transfinite Line { 52} = 14 Using Progression 1.100;
+Transfinite Line { 53} = 14 Using Progression 1.100;
+Transfinite Line {-58} = 14 Using Progression 1.100;
+Transfinite Line {-60} = 14 Using Progression 1.100;
+Transfinite Line { 66} = 14 Using Progression 1.100;
+Transfinite Line { 59} = 14 Using Progression 1.100;
 
-Transfinite Line { 67} = 8 Using Progression 1.020;
-Transfinite Line { 30} = 8 Using Progression 1.020;
+Transfinite Line { 67} = 6 Using Progression 1.020;
+Transfinite Line { 30} = 6 Using Progression 1.020;
 
 Transfinite Line { 26} = 31 Using Progression 1.018;
 Transfinite Line { 54} = 31 Using Progression 1.030;
 /*Transfinite Line { 66} = 31 Using Progression 1.033;*/
-
-Transfinite Line { 23} = 36 Using Progression 1.006;
-Transfinite Line {-51} = 36 Using Progression 1.005;
-/*Transfinite Line {-67} = 31 Using Progression 1.02;*/
 
 Transfinite Line { 27} = 21 Using Progression 1.02;
 Transfinite Line { 55} = 21 Using Progression 1.02;
@@ -199,8 +198,8 @@ Transfinite Line { 55} = 21 Using Progression 1.02;
 Transfinite Line {-28} = 16 Using Progression 1.005;
 Transfinite Line {-56} = 16 Using Progression 1.02;
 
-Transfinite Line { 57} = 19 Using Progression 1.0;
-Transfinite Line {-29} = 19 Using Progression 1.027;
+Transfinite Line { 57} = 14 Using Progression 1.00;
+Transfinite Line {-29} = 14 Using Progression 1.027;
 
 Line Loop(40) = {10:12,17:23,26:32,40:44};
 Plane Surface(1) = {40};
