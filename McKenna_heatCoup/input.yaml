@@ -1,0 +1,10 @@
+kappa0_virgin: 2.38711269e-01
+kappa0_char: 3.12089881e-01
+h0_virgin: -1.0627680e+06
+h0_char: -1.23543810e+05
+virgin_wall_emissivity: 0.80
+char_wall_emissivity: 0.90
+virgin_volume_fraction: 0.10
+fiber_volume_fraction: 0.10
+pre_exponential_0: 12000.0
+pre_exponential_1: 4.48e9
