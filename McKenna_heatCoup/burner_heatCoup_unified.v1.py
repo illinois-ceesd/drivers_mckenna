@@ -635,14 +635,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    # my_material = "copper"
+    my_material = "copper"
     # my_material = "fiber"
-    my_material = "composite"
+    # my_material = "composite"
 
+    # width = 0.005
+    # width = 0.010
+    # width = 0.015
+    # width = 0.020
     # width = 0.025
-    width = 0.010
 
-    ignore_wall = False
+    ignore_wall = True
 
     # ~~~~~~~~~~~~~~~~~~
 
@@ -802,6 +805,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
             os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
 
+            os.system(f"rm -rf {mesh1_path}")
             print(f"Reading mesh from {mesh2_path}")
 
         comm.Barrier()
@@ -2083,13 +2087,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~
 
-#    from grudge.discretization import filter_part_boundaries
-#    solid_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_solid,
-#                                           neighbor_volume_dd=dd_vol_fluid)
-
     from grudge.reductions import integral
 
     if my_material == "copper":
+        from grudge.discretization import filter_part_boundaries
+        solid_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_solid,
+                                               neighbor_volume_dd=dd_vol_fluid)
+
         interface_nodes = op.project(
             dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes)
         interface_zeros = actx.np.zeros_like(interface_nodes[0])
@@ -2443,6 +2447,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             solid_rhs = SolidWallConservedVars(mass=wv.mass*0.0,
                                                energy=solid_zeros)
             solid_sources = 0.0
+
+            return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                                   solid_rhs + solid_sources])
 
         else:
             if my_material == "copper":
