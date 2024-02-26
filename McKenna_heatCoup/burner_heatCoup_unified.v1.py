@@ -680,9 +680,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         solid_domains = ["solid"]
 
         if use_tpe:
-            mesh_filename = f"mesh_13m_{width_mm}_020um_heatProbe_quads-v2.msh"
+            mesh_filename = f"mesh_v1_{width_mm}_020um_heatProbe_quads"
         else:
-            mesh_filename = f"mesh_11m_{width_mm}_020um_heatProbe-v2.msh"
+            mesh_filename = f"mesh_v1_{width_mm}_020um_heatProbe"
+
     else:
         current_dt = 1.0e-6
         wall_time_scale = 10.0*speedup_factor  # wall speed-up
@@ -690,9 +691,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
 
         if use_tpe:
-            mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads-v2.msh"
+            mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads"
         else:
-            mesh_filename = f"mesh_12m_{width_mm}_015um_2domains-v2.msh"
+            mesh_filename = f"mesh_12m_{width_mm}_015um_2domains"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -792,12 +793,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_t = 0.0
 
         if rank == 0:
-            print(f"Reading mesh from {mesh_filename}")
+            local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
+            geo_path = local_path + mesh_filename + ".geo"
+            mesh2_path = local_path + mesh_filename + "-v2.msh"
+            mesh1_path = local_path + mesh_filename + "-v1.msh"
+
+            os.system(f"rm -rf {mesh1_path} {mesh2_path}")
+            os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
+            os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
+
+            print(f"Reading mesh from {mesh2_path}")
+
+        comm.Barrier()
 
         def get_mesh_data():
             from meshmode.mesh.io import read_gmsh
             mesh, tag_to_elements = read_gmsh(
-                mesh_filename, force_ambient_dim=dim,
+                mesh2_path, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             volume_to_tags = {"fluid": ["fluid"], "solid": solid_domains}
             # XXX adiabatic
@@ -2071,10 +2083,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~
 
-    from grudge.discretization import filter_part_boundaries
+#    from grudge.discretization import filter_part_boundaries
+#    solid_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_solid,
+#                                           neighbor_volume_dd=dd_vol_fluid)
+
     from grudge.reductions import integral
-    solid_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_solid,
-                                           neighbor_volume_dd=dd_vol_fluid)
 
     if my_material == "copper":
         interface_nodes = op.project(
@@ -2083,14 +2096,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     else:
 
-        pairwise_mask = {(dd_vol_fluid, dd_vol_solid):
-                         (fluid_zeros + 1.0, wall_sample_mask)}
-        mask_pairs = inter_volume_trace_pairs(dcoll, pairwise_mask,
-                                              comm_tag=_SampleMaskTag)
-        interface_sample = mask_pairs[dd_vol_solid, dd_vol_fluid][0].exterior
+#        pairwise_mask = {(dd_vol_fluid, dd_vol_solid):
+#                         (fluid_zeros + 1.0, wall_sample_mask)}
+#        mask_pairs = inter_volume_trace_pairs(dcoll, pairwise_mask,
+#                                              comm_tag=_SampleMaskTag)
+#        interface_sample = mask_pairs[dd_vol_solid, dd_vol_fluid][0].exterior
 
-        interface_nodes = op.project(
-            dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes*wall_sample_mask)
+#        interface_nodes = op.project(
+#            dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes*wall_sample_mask)
+
+        from mirgecom.multiphysics.phenolics_coupled_fluid_wall import (
+            get_porous_domain_interface)
+        interface_sample, interface_nodes, solid_dd_list = \
+            get_porous_domain_interface(actx, dcoll, dd_vol_fluid,
+                                        dd_vol_solid, wall_sample_mask)
+
         interface_zeros = actx.np.zeros_like(interface_nodes[0])
 
         # surface integral of the density
@@ -2320,8 +2340,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     dcoll, gas_model,
                     dd_vol_fluid, dd_vol_solid,
                     fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                    fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=True)
+                    fluid_boundaries, solid_boundaries)
 
         if my_material == "composite":
             fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
@@ -2329,7 +2348,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     dcoll, gas_model,
                     dd_vol_fluid, dd_vol_solid,
                     fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                    boundary_momentum,
+                    boundary_momentum, interface_sample,
                     fluid_boundaries, solid_boundaries)
 
         fluid_operator_states_quad = make_operator_fluid_states(
@@ -2384,7 +2403,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     wdv.temperature,
                     fluid_grad_temperature, solid_grad_temperature,
                     fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=use_radiation,
                     wall_emissivity=wall_emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
                     wall_penalty_amount=wall_penalty_amount)
@@ -2398,11 +2416,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
                     fluid_state, wdv.thermal_conductivity,
                     wdv.temperature,
-                    boundary_momentum,
+                    boundary_momentum, interface_sample,
                     fluid_grad_temperature, solid_grad_temperature,
                     fluid_boundaries, solid_boundaries,
-                    porous_wall=interface_sample,
-                    interface_noslip=True, interface_radiation=use_radiation,
                     wall_emissivity=wall_emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
                     wall_penalty_amount=wall_penalty_amount)
