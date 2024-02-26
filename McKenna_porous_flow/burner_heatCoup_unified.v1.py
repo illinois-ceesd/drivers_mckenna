@@ -749,8 +749,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # ~~~ Products
         index_burned = np.argmax(sim.T) 
         temp_burned = sim.T[index_burned]
-        rho_burned = sim.density[index_burned]
         y_burned = sim.Y[:,index_burned]
+        rho_burned = sim.density[index_burned]
 
     else:
         # ~~~ Reactants
@@ -759,7 +759,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         # ~~~ Products
 
-        cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
+        cantera_soln.TPY = 2400.0, pres_unburned, y_unburned
         cantera_soln.equilibrate("TP")
         temp_burned, rho_burned, y_burned = cantera_soln.TDY
 
@@ -1097,6 +1097,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         # ~~~ SAMPLE
 
+        # FIXME
         eps_rho_solid = plug*material_densities
         tau = gas_model.decomposition_progress(eps_rho_solid)
         sample_wv = PorousWallVars(
@@ -1171,6 +1172,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             tseed = restart_data["temperature_seed"]
             solid_cv = restart_data["wall_cv"]
 
+            # FIXME
+            eps_rho_solid = plug*material_densities
+            tau = gas_model.decomposition_progress(eps_rho_solid)
+            sample_wv = PorousWallVars(
+                material_densities=eps_rho_solid,
+                tau=tau,
+                density=gas_model.solid_density(eps_rho_solid),
+                void_fraction=gas_model.wall_eos.void_fraction(tau=tau),
+                permeability=gas_model.wall_eos.permeability(tau=tau),
+                tortuosity=gas_model.wall_eos.tortuosity(tau=tau)
+            )
+
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
 
@@ -1239,7 +1252,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                        state_minus=fluid_state,
                        prescribe_species=prescribe_species)
 
-    ref_cv = force_eval(actx, ref_cv)                        
+    ref_cv = force_eval(actx, ref_cv)
 
 ##############################################################################
 
@@ -1438,7 +1451,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("DV_V", fluid_state.velocity[1]),
             ("plug", plug),
             ("WV", fluid_state.wv),
-            # ("sponge", sponge_sigma),
+            ("sponge", sponge_sigma),
             # ("smoothness", 1.0 - theta_factor*smoothness),
         ]
 
@@ -1481,7 +1494,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 "volume_to_local_mesh_data": volume_to_local_mesh_data,
                 "cv": cv,
                 "temperature_seed": tseed,
-                # "sample_densities": sample_densities,
+                "sample_densities": sample_wv.material_densities,
                 "nspecies": nspecies,
                 "wall_cv": wall_cv,
                 "t": t,
@@ -1928,7 +1941,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
 
         fluid_sources = (
-            # chemical_source_term(fluid_state.cv, fluid_state.temperature)
+            chemical_source_term(fluid_state.cv, fluid_state.temperature)
             + sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
             + gravity_source_terms(fluid_state.cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
