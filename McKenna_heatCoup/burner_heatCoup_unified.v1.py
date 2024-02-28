@@ -395,10 +395,14 @@ class Pyrolysis:
         self._fiber_mass = fiber_mass
         self._pre_exp = pre_exponential
 
-        print("virgin mass", self._virgin_mass)
-        print("virgin mass (2)", self._virgin_mass*0.75, self._virgin_mass*0.5, self._virgin_mass*0.25)
-        print("char mass", self._char_mass)
-        print("pre exp", self._pre_exp)
+        print("virgin mass:", self._virgin_mass)
+        print("char mass:", self._char_mass)
+        print("fiber mass:", self._fiber_mass)
+        print("total virgin mass:", self._virgin_mass + self._fiber_mass)
+        print("total charred mass:", self._char_mass + self._fiber_mass)
+        print("reaction weights:", self._virgin_mass*0.75, self._virgin_mass*0.5, self._virgin_mass*0.25)
+        print("pre exponential:", self._pre_exp, "\n")
+
 
     def get_source_terms(self, temperature, chi):
         r"""Return the source terms of pyrolysis decomposition for TACOT.
@@ -647,6 +651,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # width = 0.020
     # width = 0.025
 
+    flame_grid_spacing = 20
+
     ignore_wall = False
 
     # ~~~~~~~~~~~~~~~~~~
@@ -678,6 +684,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     prescribe_species = True
 
     width_mm = str('%02i' % (width*1000)) + "mm"
+    flame_grid_um = str('%03i' % flame_grid_spacing) + "um"
     if my_material == "copper":
         current_dt = 1.0e-7
         wall_time_scale = 100.0  # wall speed-up
@@ -687,7 +694,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if use_tpe:
             mesh_filename = f"mesh_v1_{width_mm}_020um_heatProbe_quads"
         else:
-            mesh_filename = f"mesh_v1_{width_mm}_020um_heatProbe"
+            mesh_filename = f"mesh_v1_{width_mm}_{flame_grid_um}_heatProbe"
 
     else:
         current_dt = 1.0e-6
@@ -883,6 +890,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_alumina"])
         wall_graphite_mask = mask_from_elements(
             dcoll, dd_vol_solid, actx, wall_tag_to_elements["wall_graphite"])
+
+        wall_sample_mask = force_eval(actx, wall_sample_mask)
+        wall_alumina_mask = force_eval(actx, wall_alumina_mask)
+        wall_graphite_mask = force_eval(actx, wall_graphite_mask)
     # XXX adiabatic
 
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
@@ -2248,7 +2259,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                         my_file.close()
 
             if do_health:
-                ## FIXME warning in lazy compilation
                 health_errors = global_reduce(
                     my_health_check(fluid_state.cv, fluid_state.dv), op="lor")
                 if health_errors:
