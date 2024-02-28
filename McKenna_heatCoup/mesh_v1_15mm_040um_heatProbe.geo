@@ -13,7 +13,7 @@ ext_radius = 2.89*25.4/2000;
 burner_base_radius = 4.725*25.4/2000;
 
 burner_height = 0.10;
-flame_dist = 0.0015;
+flame_dist = 0.0025;
 
 mat_location = burner_height + 0.015;  //arbitrary value
 mat_wide = 0.5*1.25*25.4/1000;
@@ -163,12 +163,12 @@ Transfinite Line { 23} = 36 Using Progression 1.006;
 Transfinite Line {-51} = 36 Using Progression 1.005;
 
 /*vertical*/
-Transfinite Line {  3} = 16 Using Progression 1.1;
-Transfinite Line { 16} = 16 Using Progression 1.1;
-Transfinite Line {  4} = 16 Using Progression 1.1;
-Transfinite Line {  6} = 16 Using Progression 1.1;
-Transfinite Line { 13} = 16 Using Progression 1.0;
-Transfinite Line { 10} = 16 Using Progression 1.0;
+Transfinite Line {  3} = 21 Using Progression 1.1;
+Transfinite Line { 16} = 21 Using Progression 1.1;
+Transfinite Line {  4} = 21 Using Progression 1.1;
+Transfinite Line {  6} = 21 Using Progression 1.1;
+Transfinite Line { 13} = 21 Using Progression 1.0;
+Transfinite Line { 10} = 21 Using Progression 1.0;
 
 /*burner*/
 Transfinite Line {-15} = 21 Using Progression 1.055;
@@ -232,7 +232,7 @@ Point(100) = {0.1, 0.1, 0., 1.0};
 Point(101) = {             0.000500, flame_dist + burner_height, 0., 1.0};
 Point(102) = {int_radius + 0.000281,              burner_height, 0., 1.0};
 Point(103) = {int_radius - 0.000281,              burner_height, 0., 1.0};
-Point(104) = {int_radius           ,   0.000050 + burner_height, 0., 1.0};
+Point(104) = {int_radius           ,   0.000040 + burner_height, 0., 1.0};
 Point(105) = {      0.005 - 0.00050, flame_dist + burner_height, 0., 1.0};
 Point(106) = {      0.005 + 0.00050, flame_dist + burner_height, 0., 1.0};
 Point(107) = {        0.           ,  -0.000120 + mat_location , 0., 1.0};
