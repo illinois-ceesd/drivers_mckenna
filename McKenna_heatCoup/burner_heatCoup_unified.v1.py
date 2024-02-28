@@ -925,8 +925,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         dS = 2.0*np.pi*interface_nodes[0]
         dV = 2.0*np.pi*solid_nodes[0]
 
-        integral_volume = integral(dcoll, dd_vol_solid, wall_sample_mask*dV)
-        integral_surface = integral(dcoll, solid_dd_list[0], dS)
+        integral_volume = actx.to_numpy(integral(dcoll, dd_vol_solid, wall_sample_mask*dV))
+        integral_surface = actx.to_numpy(integral(dcoll, solid_dd_list[0], dS))
 
         radius = 0.015875
         height = 0.01905
@@ -2229,19 +2229,19 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     my_file.close()
 
                     if rank == 0:
-                        logger.info(f"Temperature (center) = {max_temp_center:.8f} at t = {wall_time:.8f}")
-                        logger.info(f"Temperature (edge) = {max_temp:.8f} at t = {wall_time:.8f}")
+                        logger.info(f"Temperature (top) = {min_temp_center:.8f} at t = {wall_time:.8f}")
+                        logger.info(f"Temperature (center) = {max_temp_center:.8f}")
+                        logger.info(f"Temperature (edge) = {max_temp:.8f}")
 
                     # mass loss
                     if my_material != "copper":
 
-                        wall_mass = solid_wall_model.solid_density(solid_state.cv.mass)
-                        sample_mass = integral(dcoll, dd_vol_solid,
-                             wall_mass * wall_sample_mask * dV)
+                        sample_density = wall_sample_mask * solid_wall_model.solid_density(solid_state.cv.mass)
+                        sample_mass = actx.to_numpy(integral(dcoll, dd_vol_solid, sample_density * dV))
                         mass_loss = initial_mass - sample_mass
 
                         if rank == 0:
-                            logger.info(f"Mass loss = {mass_loss} at t = {wall_time:.8f}")
+                            logger.info(f"Mass loss = {mass_loss}")
 
                         my_file = open("massloss_file.dat", "a")
                         my_file.write(f"{wall_time:.8f}, {mass_loss} \n")
