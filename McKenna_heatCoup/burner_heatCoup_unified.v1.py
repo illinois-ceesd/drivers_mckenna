@@ -643,11 +643,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # my_material = "copper"
     # my_material = "fiber"
-    # my_material = "composite"
+    my_material = "composite"
 
     # width = 0.005
     # width = 0.010
-    # width = 0.015
+    width = 0.015
     # width = 0.020
     # width = 0.025
 
@@ -705,7 +705,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if use_tpe:
             mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads"
         else:
-            mesh_filename = f"mesh_12m_{width_mm}_015um_2domains"
+            mesh_filename = f"mesh_v1_15mm_{flame_grid_um}_2dom-phenol"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -923,21 +923,30 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         interface_zeros = actx.np.zeros_like(interface_nodes[0])
 
     else:
-        from mirgecom.multiphysics.phenolics_coupled_fluid_wall import (
+        from mirgecom.multiphysics.phenolics_coupled_fluid_wall import(
             get_porous_domain_interface)
-        interface_sample, interface_nodes, solid_dd_list = \
-            get_porous_domain_interface(actx, dcoll, dd_vol_fluid,
-                                        dd_vol_solid, wall_sample_mask)
 
-        interface_zeros = actx.np.zeros_like(interface_nodes[0])
+        interface_sample_fluid, interface_sample_solid, fluid_dd_list, solid_dd_list = \
+            get_porous_domain_interface(actx, dcoll, dd_vol_fluid, dd_vol_solid,
+                                        wall_sample_mask)
 
-        # surface integral of the density
+        interface_nodes = op.project(
+            dcoll, dd_vol_solid, solid_dd_list[0], solid_nodes*wall_sample_mask)
+
+        # metrics for cylindrical coordiantes integration
         # dS = 2 pi r dx
         dS = 2.0*np.pi*interface_nodes[0]
         dV = 2.0*np.pi*solid_nodes[0]
 
+        # area of the porous material
+        integral_surf = sum(
+            integral(dcoll, dd, sample*dS)
+            for dd, sample in zip(solid_dd_list, interface_sample_solid))
+
+        interface_zeros = interface_nodes[0]*0.0
+
         integral_volume = actx.to_numpy(integral(dcoll, dd_vol_solid, wall_sample_mask*dV))
-        integral_surface = actx.to_numpy(integral(dcoll, solid_dd_list[0], dS))
+        integral_surf = force_eval(actx, integral_surf)
 
         radius = 0.015875
         height = 0.01905
@@ -945,8 +954,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         volume = np.pi*radius**2*height
         area = np.pi*radius**2 + 2.0*np.pi*radius*height
 
+        print("surface = ", area, integral_surf - area)
         print("volume = ", volume, integral_volume - volume)
-        print("surface = ", area, integral_surface - area)
 
 ##########################################################################
 
@@ -961,7 +970,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # Initial temperature, pressure, and mixture mole fractions are needed to
     # set up the initial state in Cantera.
-
     air = "O2:0.21,N2:0.79"
     fuel = "C2H4:1"
     cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
@@ -1040,7 +1048,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         _, rho_unburned, y_unburned = cantera_soln.TDY
 
         # ~~~ Products
-
         cantera_soln.TPY = 1800.0, pres_unburned, y_unburned
         cantera_soln.equilibrate("TP")
         temp_burned, rho_burned, y_burned = cantera_soln.TDY
@@ -2096,18 +2103,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         def blowing_momentum(source):
 
             # volume integral of the source terms
-            integral_volume_source = \
-                integral(dcoll, dd_vol_solid, source*wall_sample_mask*dV)
+            integral_volume_source = integral(dcoll, dd_vol_solid, source*wall_sample_mask*dV)
 
-            # surface integral of the density
-            integral_surface = \
-                integral(dcoll, solid_dd_list[0], dS)
-
-            momentum = \
-                -1.0*integral_volume_source/integral_surface*interface_sample
+            momentum = -1.0*integral_volume_source/integral_surf
 
             return force_eval(actx, momentum)
-
 
 ##############################################################################
 
@@ -2327,7 +2327,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     dcoll, gas_model,
                     dd_vol_fluid, dd_vol_solid,
                     fluid_state, wdv.thermal_conductivity, wdv.temperature,
-                    boundary_momentum, interface_sample,
+                    boundary_momentum, interface_sample_fluid,
                     fluid_boundaries, solid_boundaries)
 
         fluid_operator_states_quad = make_operator_fluid_states(
@@ -2394,7 +2394,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     dcoll, gas_model, dd_vol_fluid, dd_vol_solid,
                     fluid_state, wdv.thermal_conductivity,
                     wdv.temperature,
-                    boundary_momentum, interface_sample,
+                    boundary_momentum, interface_sample_fluid,
                     fluid_grad_temperature, solid_grad_temperature,
                     fluid_boundaries, solid_boundaries,
                     wall_emissivity=wall_emissivity, sigma=5.67e-8,
