@@ -52,7 +52,10 @@ from grudge.dof_desc import (
 )
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
-from mirgecom.utils import force_evaluation as force_eval
+from mirgecom.utils import (
+    force_evaluation as force_eval,
+    normalize_boundaries
+)
 from mirgecom.simutil import (
     check_step, get_sim_timestep, distribute_mesh, write_visfile,
     check_naninf_local, check_range_local, global_reduce
@@ -63,7 +66,7 @@ from mirgecom.mpi import mpi_entry_point
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     IsothermalWallBoundary,
-    PressureOutflowBoundary,
+    # PressureOutflowBoundary,
     AdiabaticSlipBoundary,
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
@@ -160,6 +163,10 @@ class _MyGradTag_5:
 
 
 class _MyGradTag_6:
+    pass
+
+
+class _RadiationTag:
     pass
 
 
@@ -264,6 +271,7 @@ class Burner2D_Reactive:  # noqa
         specmass = mass * y
 
         # ~~~
+        # FIXME prescribe temperature or use internal value?
         internal_energy = gas_model.eos.get_internal_energy(temperature, species_mass_fractions=y)
         kinetic_energy = 0.5 * np.dot(velocity, velocity)
         solid_energy = mass*0.0
@@ -384,42 +392,35 @@ class InitSponge:
 
 class PorousMaterial:
 
-    def __init__(self, *, x_min=None, x_thickness=None,
-                 y_min=None, y_thickness=None):
+    def __init__(self, x_min, y_min, thickness):
         self._x_min = x_min
         self._y_min = y_min
-        self._x_thickness = x_thickness
-        self._y_thickness = y_thickness
+        self._thickness = thickness
 
     def __call__(self, x_vec):
         xpos = x_vec[0]
         ypos = x_vec[1]
         actx = xpos.array_context
-        zeros = 0*xpos
 
         sponge_x = xpos*0.0
         sponge_y = xpos*0.0
 
         y0 = self._y_min
-        dy = (ypos-(y0-self._y_thickness*0.5))/(self._y_thickness)
-        sponge_y = actx.np.where(
-            actx.np.less(ypos, y0-self._y_thickness*0.5),
-                0.0,
-                actx.np.where(actx.np.greater(ypos, y0+self._y_thickness*0.5),
-                              #1.0, 3.0*dy**2 - 2.0*dy**3
-                              1.0, -20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
+        dy = actx.np.where(
+            actx.np.less(ypos, y0),
+                0.5, actx.np.where(actx.np.greater(ypos, y0+self._thickness*0.5),
+                                   1.0, (ypos-(y0-self._thickness*0.5))/self._thickness)
             )
+        sponge_y = -1.0 + 2.0*(-20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
+        sponge_y = actx.np.where(actx.np.greater(ypos, 0.14405+0.01), 0.0, sponge_y)
 
-        sponge_y = actx.np.where(actx.np.greater(ypos, 0.14405+0.00001), 0.0, sponge_y)
-
-        x0 = self._x_min-self._x_thickness*0.5
-        dx = (xpos-(x0-self._x_thickness*0.5))/(self._x_thickness)
-        sponge_x = actx.np.where(
-            actx.np.less(xpos, x0-self._x_thickness*0.5),
-                0.0,
-                actx.np.where(actx.np.greater(xpos, x0+self._x_thickness*0.5),
-                              1.0, -20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
+        x0 = self._x_min
+        dx = actx.np.where(
+            actx.np.less(xpos, x0-self._thickness*0.5),
+                0.0, actx.np.where(actx.np.greater(xpos, x0),
+                                   0.5, (xpos-(x0-self._thickness*0.5))/self._thickness)
             )
+        sponge_x = 2.0*(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
 
         return (1.0-sponge_x)*sponge_y
 
@@ -488,8 +489,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     my_material = "fiber"
 
-    width = 0.025
-    # width = 0.010
+    width = 0.015
+    flame_grid_spacing = 20
 
     ignore_wall = False
 
@@ -521,17 +522,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     shroud_rate = 11.85
     prescribe_species = True
 
-    width_mm = str('%02i' % (width*1000)) + "mm"
     current_dt = 5.0e-7
     wall_time_scale = 10.0*speedup_factor  # wall speed-up
 #    mechanism_file = "air_3sp"
     mechanism_file = "uiuc_7sp"
     solid_domains = ["wall_alumina", "wall_graphite"]
 
-    if use_tpe:
-        mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads-v2.msh"
-    else:
-        mesh_filename = f"mesh_14m_{width_mm}_020um_porous-v2.msh"
+    width_mm = str('%02i' % (width*1000)) + "mm"
+    flame_grid_um = str('%03i' % flame_grid_spacing) + "um"
+
+    mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_porous"
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -606,12 +608,24 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_t = 0.0
 
         if rank == 0:
-            print(f"Reading mesh from {mesh_filename}")
+            local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
+            geo_path = local_path + mesh_filename + ".geo"
+            mesh2_path = local_path + mesh_filename + "-v2.msh"
+            mesh1_path = local_path + mesh_filename + "-v1.msh"
+
+            os.system(f"rm -rf {mesh1_path} {mesh2_path}")
+            os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
+            os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
+
+            os.system(f"rm -rf {mesh1_path}")
+            print(f"Reading mesh from {mesh2_path}")
+
+        comm.Barrier()
 
         def get_mesh_data():
             from meshmode.mesh.io import read_gmsh
             mesh, tag_to_elements = read_gmsh(
-                mesh_filename, force_ambient_dim=dim,
+                mesh2_path, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             volume_to_tags = {"fluid": ["fluid", "sample"],
                               "solid": solid_domains}
@@ -796,9 +810,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     base_transport = MixtureAveragedTransport(pyrometheus_mechanism,
                                                factor=speedup_factor)
-#    base_transport = SimpleTransport(viscosity=1e-4,
-#                                      thermal_conductivity=1e-2,
-#                                      species_diffusivity=1e-3*np.ones(3,))
 
     transport_model = PorousWallTransport(base_transport=base_transport)
 
@@ -813,9 +824,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                             anisotropic_direction=0)
         decomposition = No_Oxidation_Model()
 
-    plug_region = PorousMaterial(x_min=0.015875, x_thickness=0.001,
-                                 y_min=0.125, y_thickness=0.001)
-
+    plug_region = PorousMaterial(x_min=0.015875, y_min=0.125, thickness=0.001)
     plug = force_eval(actx, plug_region(x_vec=fluid_nodes))
 
     # }}}
@@ -886,10 +895,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return (1.0 * wall_alumina_mask
                 + 1.0 * wall_graphite_mask)
 
-    def _get_emissivity(temperature, tau):
+    def _get_solid_emissivity(temperature=None, tau=None):
         return speedup_factor*(
             0.00 * wall_alumina_mask
             + 0.85 * wall_graphite_mask)
+
+    wall_emissivity = _get_solid_emissivity()
 
     solid_wall_model = SolidWallModel(
         enthalpy_func=_get_solid_enthalpy,
@@ -902,6 +913,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #############################################################################
 
     def reaction_damping(dcoll, nodes, **kwargs):
+        """Region where chemistry is frozen."""
 
         ypos = nodes[1]
 
@@ -922,6 +934,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #############################################################################
 
     def smoothness_region(dcoll, nodes):
+        """Region where numerical viscosity is added for smooth outflow."""
         ypos = nodes[1]
 
         y_max = 0.55
@@ -945,6 +958,39 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from grudge.discretization import DiscretizationCollection
     from grudge.dof_desc import DISCR_TAG_MODAL
     from meshmode.transform_metadata import FirstAxisIsElementsTag
+
+    def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
+
+        # limit species
+        spec_lim = make_obj_array([
+            bound_preserving_limiter(dcoll, cv.species_mass_fractions[i],
+                                     mmin=0.0, mmax=1.0, modify_average=True,
+                                     dd=dd)
+            for i in range(nspecies)
+        ])
+
+        # normalize to ensure sum_Yi = 1.0
+        aux = cv.mass*0.0
+        for i in range(0, nspecies):
+            aux = aux + spec_lim[i]
+        spec_lim = spec_lim/aux
+
+        # recompute density
+        mass_lim = wv.void_fraction*eos.get_density(pressure=pressure,
+                                                    temperature=temperature,
+                                                    species_mass_fractions=spec_lim)
+
+        # recompute energy
+        energy_lim = mass_lim*(gas_model.eos.get_internal_energy(
+            temperature, species_mass_fractions=spec_lim)
+            + 0.5*np.dot(cv.velocity, cv.velocity)
+        ) + wv.density*gas_model.wall_eos.enthalpy(temperature, wv.tau)
+        
+
+        # make a new CV with the limited variables
+        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                            momentum=mass_lim*cv.velocity,
+                            species_mass=mass_lim*spec_lim)
 
     def drop_order(dcoll: DiscretizationCollection, field, theta,
                    positivity_preserving=False, dd=None):
@@ -986,39 +1032,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                                       cell_avgs, 1e-13)    
 
         return theta*(field - cell_avgs) + cell_avgs
-
-    def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
-
-        # limit species
-        spec_lim = make_obj_array([
-            bound_preserving_limiter(dcoll, cv.species_mass_fractions[i],
-                                     mmin=0.0, mmax=1.0, modify_average=True,
-                                     dd=dd)
-            for i in range(nspecies)
-        ])
-
-        # normalize to ensure sum_Yi = 1.0
-        aux = cv.mass*0.0
-        for i in range(0, nspecies):
-            aux = aux + spec_lim[i]
-        spec_lim = spec_lim/aux
-
-        # recompute density
-        mass_lim = wv.void_fraction*eos.get_density(pressure=pressure,
-                                                    temperature=temperature,
-                                                    species_mass_fractions=spec_lim)
-
-        # recompute energy
-        energy_lim = mass_lim*(gas_model.eos.get_internal_energy(
-            temperature, species_mass_fractions=spec_lim)
-            + 0.5*np.dot(cv.velocity, cv.velocity)
-        ) + wv.density*gas_model.wall_eos.enthalpy(temperature, wv.tau)
-        
-
-        # make a new CV with the limited variables
-        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
-                            momentum=mass_lim*cv.velocity,
-                            species_mass=mass_lim*spec_lim)
 
     def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
 
@@ -1439,6 +1452,24 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             step, t, dt, fluid_state, solid_state, smoothness=None,
             grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None):
 
+        wall_cv = solid_state.cv
+        wdv = solid_state.dv
+
+#        fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
+#            add_interface_boundaries_no_grad(
+#                dcoll, gas_model,
+#                dd_vol_fluid, dd_vol_solid,
+#                fluid_state, wdv.thermal_conductivity, wdv.temperature,
+#                fluid_boundaries, solid_boundaries,
+#                interface_noslip=True, interface_radiation=use_radiation)
+
+#        radiation = radiation_sink_terms(fluid_all_boundaries_no_grad,
+#            fluid_state.temperature, fluid_state.wv.tau)
+
+#        radiation_boundaries = normalize_boundaries(fluid_all_boundaries_no_grad)
+#        grad_phi = my_derivative_function(actx, dcoll, tau, radiation_boundaries,
+#                                          dd_vol_fluid, "replicate", _RadiationTag)
+
         rho = fluid_state.cv.mass
         cp = eos.heat_capacity_cp(fluid_state.cv, fluid_state.temperature)
         fluid_viz_fields = [
@@ -1449,9 +1480,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("DV_T", fluid_state.temperature),
             ("DV_U", fluid_state.velocity[0]),
             ("DV_V", fluid_state.velocity[1]),
-            ("plug", plug),
             ("WV", fluid_state.wv),
-            ("sponge", sponge_sigma),
+            # ("radiation", radiation),
+            # ("grad_phi", grad_phi),
+            # ("plug", plug),
             # ("smoothness", 1.0 - theta_factor*smoothness),
         ]
 
@@ -1460,8 +1492,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             "Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
             for i in range(nspecies))
 
-        wall_cv = solid_state.cv
-        wdv = solid_state.dv
         solid_viz_fields = [
             ("wv_energy", wall_cv.energy),
             ("cfl", solid_zeros),  # FIXME
@@ -1727,8 +1757,32 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~
     def chemical_source_term(cv, temperature):
+        """Chemistry."""
         return chem_rate*speedup_factor*reaction_rates_damping*(
             eos.get_species_source_terms(cv, temperature))
+
+    # ~~~~~~~
+    def darcy_source_terms(cv, tv, wv):
+        """Source term to mimic Darcy's law."""
+        cyl_coords_factor = make_obj_array([fluid_nodes[0], fluid_zeros+1.0])
+        return make_conserved(dim=2,
+            mass=fluid_zeros,
+            energy=fluid_zeros,
+            momentum=(
+                -1.0 * tv.viscosity * wv.void_fraction/wv.permeability *
+                cv.velocity * cyl_coords_factor),
+            species_mass=cv.species_mass*0.0)
+
+    # ~~~~~~~
+    def radiation_sink_terms(boundaries, temperature, tau):
+        """Radiation sink term"""
+        radiation_boundaries = normalize_boundaries(boundaries)
+        grad_phi = my_derivative_function(actx, dcoll, tau, radiation_boundaries,
+                                          dd_vol_fluid, "replicate", _RadiationTag)
+        phi_0 = 1.0
+        f_phi = 1.0/phi_0*actx.np.sqrt( grad_phi[0]**2 + grad_phi[1]**2 )
+        
+        return - 1.0*5.67e-8*f_phi*(temperature**4 - 300.0**4)
 
 ##############################################################################
 
@@ -1866,9 +1920,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         fluid_state, solid_state = state
 
-        cv = fluid_state.cv
-
-        wall_cv = solid_state.cv
         wdv = solid_state.dv
 
         #~~~~~~~~~~~~~
@@ -1905,11 +1956,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             solid_all_boundaries_no_grad, wdv.temperature,
             quadrature_tag=quadrature_tag, dd=dd_vol_solid,
             numerical_flux_func=grad_facial_flux_weighted,
-#            numerical_flux_func=grad_facial_flux_central,
             comm_tag=_SolidGradTempTag)
-
-        wall_emissivity = _get_emissivity(temperature=wdv.temperature,
-                                          tau=wdv.tau)
 
         fluid_all_boundaries, solid_all_boundaries = \
             add_interface_boundaries(
@@ -1931,22 +1978,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
 
         # ~~~~
-        tv = fluid_state.tv
-        wv = fluid_state.wv
-        darcy_source = make_conserved(dim=2,
-            mass=fluid_zeros,
-            energy=fluid_zeros,
-            momentum=-1.0*tv.viscosity*wv.void_fraction/wv.permeability*fluid_state.velocity,
-            species_mass=fluid_state.cv.species_mass*0.0,
-        )
-
         fluid_sources = (
             chemical_source_term(fluid_state.cv, fluid_state.temperature)
             + sponge_func(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
             + gravity_source_terms(fluid_state.cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
                                   fluid_grad_temperature)
-            + darcy_source
+            + darcy_source_terms(fluid_state.cv, fluid_state.tv, fluid_state.wv)
+            + radiation_sink_terms(fluid_all_boundaries_no_grad,
+                                   fluid_state.temperature, fluid_state.wv.tau)
         )
 
         #~~~~~~~~~~~~~
