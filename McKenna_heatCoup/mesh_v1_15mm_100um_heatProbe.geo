@@ -13,7 +13,7 @@ ext_radius = 2.89*25.4/2000;
 burner_base_radius = 4.725*25.4/2000;
 
 burner_height = 0.10;
-flame_dist = 0.0015;
+flame_dist = 0.0025;
 
 mat_location = burner_height + 0.015;  //arbitrary value
 mat_wide = 0.5*1.25*25.4/1000;
@@ -163,12 +163,12 @@ Transfinite Line { 23} = 36 Using Progression 1.006;
 Transfinite Line {-51} = 36 Using Progression 1.005;
 
 /*vertical*/
-Transfinite Line {  3} = 11 Using Progression 1.1;
-Transfinite Line { 16} = 11 Using Progression 1.1;
-Transfinite Line {  4} = 11 Using Progression 1.1;
-Transfinite Line {  6} = 11 Using Progression 1.1;
-Transfinite Line { 13} = 11 Using Progression 1.0;
-Transfinite Line { 10} = 11 Using Progression 1.0;
+Transfinite Line {  3} = 14 Using Progression 1.1;
+Transfinite Line { 16} = 14 Using Progression 1.1;
+Transfinite Line {  4} = 14 Using Progression 1.1;
+Transfinite Line {  6} = 14 Using Progression 1.1;
+Transfinite Line { 13} = 14 Using Progression 1.0;
+Transfinite Line { 10} = 14 Using Progression 1.0;
 
 /*burner*/
 Transfinite Line {-15} = 21 Using Progression 1.055;
