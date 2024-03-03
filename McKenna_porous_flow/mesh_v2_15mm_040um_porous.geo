@@ -15,7 +15,7 @@ burner_base_radius = 4.725*25.4/2000;
 burner_height = 0.10;
 flame_dist = 0.0025;
 
-mat_location = burner_height + 0.025;  //arbitrary value
+mat_location = burner_height + 0.015;  //arbitrary value
 mat_wide = 0.5*1.25*25.4/1000;
 mat_thick = 0.75*25.4/1000;
 insulator = 1.00*25.4/1000 + mat_thick;
@@ -27,8 +27,8 @@ mat_BL_layer_y = 0.0030;
 
 Point(2) = {ext_radius, burner_height, 0.0, 0.000200};
 Point(3) = {int_radius, burner_height, 0.0, 1.0};
-Point(4) = {            0.005, burner_height, 0.0, 1.0};
-Point(5) = {               0., burner_height, 0.0, 1.0};
+Point(4) = {mat_wide + mat_BL_layer_x, burner_height, 0.0, 1.0};
+Point(5) = {                       0., burner_height, 0.0, 1.0};
 
 delta = (mat_location - mat_BL_layer_y - burner_height - flame_dist);
 flame_pos = burner_height + flame_dist;
@@ -57,12 +57,12 @@ Point(26) = {burner_base_radius, burner_height-0.0110, 0.0, clB};
 Point(27) = {               aux, burner_height-0.0055, 0.0, clB};
 
 offset = 0.0;
-Point(28) = { burner_base_radius, burner_height + flame_dist, 0., 1.0};
-Point(29) = {                aux, burner_height + flame_dist, 0., clB};
-Point(30) = {ext_radius + offset, burner_height + flame_dist, 0., 1.0};
-Point(31) = {         int_radius, burner_height + flame_dist, 0., 1.0};
-Point(32) = {              0.005, burner_height + flame_dist, 0., 1.0};
-Point(33) = {                 0., burner_height + flame_dist, 0., clS};
+Point(28) = {       burner_base_radius, burner_height + flame_dist, 0., 1.0};
+Point(29) = {                      aux, burner_height + flame_dist, 0., clB};
+Point(30) = {      ext_radius + offset, burner_height + flame_dist, 0., 1.0};
+Point(31) = {               int_radius, burner_height + flame_dist, 0., 1.0};
+Point(32) = {mat_wide + mat_BL_layer_x, burner_height + flame_dist, 0., 1.0};
+Point(33) = {                       0., burner_height + flame_dist, 0., clS};
 
 
 Point(41) = {mat_wide + mat_BL_layer_x, mat_location - mat_BL_layer_y, 0., 1.0};
@@ -139,23 +139,25 @@ Line(70) = {54, 55};
 Line(71) = {55, 56};
 Line(72) = {55, 12};
 
-/*Transfinite Line {21} = 16 Using Bump 0.6;*/
-
 /*horizontal*/
 Transfinite Line {  1} = 19 Using Bump 0.75;
 Transfinite Line { 17} = 19 Using Bump 0.75;
-Transfinite Line {  2} = 61 Using Progression 1.01;
-Transfinite Line { 18} = 61 Using Progression 1.01;
-Transfinite Line {- 5} = 10 Using Progression 1.01;
-Transfinite Line {-19} = 10  Using Progression 1.01;
+Transfinite Line {  2} = 27 Using Progression 1.025;
+Transfinite Line { 18} = 27 Using Progression 1.025;
+
+Transfinite Line {- 5} = 36 Using Progression 1.006;
+Transfinite Line {-19} = 36 Using Progression 1.006;
+Transfinite Line { 23} = 36 Using Progression 1.006;
+Transfinite Line {-51} = 36 Using Progression 1.005;
+Transfinite Line {-71} = 36 Using Progression 1.0;
 
 /*vertical*/
-Transfinite Line {  3} = 27 Using Progression 1.1;
-Transfinite Line { 16} = 27 Using Progression 1.1;
-Transfinite Line {  4} = 27 Using Progression 1.1;
-Transfinite Line {  6} = 27 Using Progression 1.1;
-Transfinite Line { 13} = 27 Using Progression 1.0;
-Transfinite Line { 10} = 27 Using Progression 1.0;
+Transfinite Line {  3} = 21 Using Progression 1.1;
+Transfinite Line { 16} = 21 Using Progression 1.1;
+Transfinite Line {  4} = 21 Using Progression 1.1;
+Transfinite Line {  6} = 21 Using Progression 1.1;
+Transfinite Line { 13} = 21 Using Progression 1.0;
+Transfinite Line { 10} = 21 Using Progression 1.0;
 
 /*burner*/
 Transfinite Line {-15} = 21 Using Progression 1.055;
@@ -174,10 +176,6 @@ Transfinite Line {-60} = 13 Using Progression 1.100;
 Transfinite Line { 26} = 41 Using Progression 1.000;
 Transfinite Line { 54} = 41 Using Progression 1.005;
 Transfinite Line { 70} = 41 Using Progression 1.0;
-
-Transfinite Line { 23} = 35 Using Progression 1.002;
-Transfinite Line {-51} = 35 Using Progression 1.010;
-Transfinite Line {-71} = 35 Using Progression 1.0;
 
 Transfinite Line { 27} = 26 Using Progression 1.04;
 Transfinite Line { 55} = 26 Using Progression 1.04;
@@ -301,21 +299,21 @@ Point(87) = {  0.250, burner_height + 0.500, 0., 5.500*clF};
 Point(88) = {  0.250, burner_height + 0.550, 0., 6.000*clF};
 Point{70:88} In Surface{1};
 
-Point(90) = {    0.0050, flame_pos + 0.33*delta, 0., 1.5*clS};
-Point(91) = {    0.0175, flame_pos + 0.33*delta, 0., 1.5*clS};
-Point(92) = {int_radius, flame_pos + 0.33*delta, 0., 1.5*clS};
-Point(93) = {    0.0175, flame_pos + 0.66*delta, 0., 1.5*clS};
-Point(94) = {    0.0050, flame_pos + 0.66*delta, 0., 1.5*clS};
-Point(95) = {int_radius, flame_pos + 0.66*delta, 0., 1.5*clS};
-Point(96) = {int_radius, flame_pos + 1.00*delta, 0., 1.5*clS};
-Point(97) = {int_radius, flame_pos + 1.33*delta, 0., 1.5*clS};
-Point{90:97} In Surface{1};
+/*Point(90) = {    0.0050, flame_pos + 0.33*delta, 0., 1.5*clS};*/
+/*Point(91) = {    0.0175, flame_pos + 0.33*delta, 0., 1.5*clS};*/
+/*Point(92) = {int_radius, flame_pos + 0.33*delta, 0., 1.5*clS};*/
+/*Point(93) = {    0.0175, flame_pos + 0.66*delta, 0., 1.5*clS};*/
+/*Point(94) = {    0.0050, flame_pos + 0.66*delta, 0., 1.5*clS};*/
+/*Point(95) = {int_radius, flame_pos + 0.66*delta, 0., 1.5*clS};*/
+/*Point(96) = {int_radius, flame_pos + 1.00*delta, 0., 1.5*clS};*/
+/*Point(97) = {int_radius, flame_pos + 1.33*delta, 0., 1.5*clS};*/
+/*Point{90:97} In Surface{1};*/
 
 Point(100) = {0.1, 0.1, 0., 1.0};
 Point(101) = {             0.000500, flame_dist + burner_height, 0., 1.0};
 Point(102) = {int_radius + 0.000281,              burner_height, 0., 1.0};
 Point(103) = {int_radius - 0.000281,              burner_height, 0., 1.0};
-Point(104) = {int_radius           ,   0.000020 + burner_height, 0., 1.0};
+Point(104) = {int_radius           ,   0.000040 + burner_height, 0., 1.0};
 Point(105) = {      0.005 - 0.00050, flame_dist + burner_height, 0., 1.0};
 Point(106) = {      0.005 + 0.00050, flame_dist + burner_height, 0., 1.0};
 Point(107) = {        0.           ,  -0.000120 + mat_location , 0., 1.0};

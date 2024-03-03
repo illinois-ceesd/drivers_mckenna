@@ -70,7 +70,7 @@ from mirgecom.boundary import (
     AdiabaticSlipBoundary,
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
-    LinearizedOutflow2DBoundary
+    LinearizedOutflowBoundary
 )
 from mirgecom.fluid import (
     velocity_gradient, species_mass_fraction_gradient, make_conserved
@@ -206,7 +206,7 @@ class Burner2D_Reactive:  # noqa
 
         cool_temp = 300.0
 
-        upper_bnd = 0.115
+        upper_bnd = 0.110
 
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
         _sigma = self._sigma*(
@@ -411,7 +411,7 @@ class PorousMaterial:
                 0.5, actx.np.where(actx.np.greater(ypos, y0+self._thickness*0.5),
                                    1.0, (ypos-(y0-self._thickness*0.5))/self._thickness)
             )
-        sponge_y = -1.0 + 2.0*(-20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
+        sponge_y = actx.np.absolute(-1.0 + 2.0*(-20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4))
         sponge_y = actx.np.where(actx.np.greater(ypos, 0.14405+0.01), 0.0, sponge_y)
 
         x0 = self._x_min
@@ -420,9 +420,41 @@ class PorousMaterial:
                 0.0, actx.np.where(actx.np.greater(xpos, x0),
                                    0.5, (xpos-(x0-self._thickness*0.5))/self._thickness)
             )
-        sponge_x = 2.0*(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
+        sponge_x = actx.np.absolute(2.0*(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4))
 
         return (1.0-sponge_x)*sponge_y
+
+#    def __call__(self, x_vec):
+#        xpos = x_vec[0]
+#        ypos = x_vec[1]
+#        actx = xpos.array_context
+#        zeros = 0*xpos
+
+#        sponge_x = xpos*0.0
+#        sponge_y = xpos*0.0
+
+#        y0 = self._y_min
+#        dy = (ypos-(y0-self._thickness*0.5))/(self._thickness)
+#        sponge_y = actx.np.where(
+#            actx.np.less(ypos, y0-self._thickness*0.5),
+#                0.0,
+#                actx.np.where(actx.np.greater(ypos, y0+self._thickness*0.5),
+#                              #1.0, 3.0*dy**2 - 2.0*dy**3
+#                              1.0, -20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
+#            )
+
+#        sponge_y = actx.np.where(actx.np.greater(ypos, 0.14405+0.00001), 0.0, sponge_y)
+
+#        x0 = self._x_min-self._thickness*0.5
+#        dx = (xpos-(x0-self._thickness*0.5))/(self._thickness)
+#        sponge_x = actx.np.where(
+#            actx.np.less(xpos, x0-self._thickness*0.5),
+#                0.0,
+#                actx.np.where(actx.np.greater(xpos, x0+self._thickness*0.5),
+#                              1.0, -20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
+#            )
+
+#        return (1.0-sponge_x)*sponge_y
 
 
 class No_Oxidation_Model():  # noqa N801
@@ -492,7 +524,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     my_material = "fiber"
 
     width = 0.015
-    flame_grid_spacing = 20
+    flame_grid_spacing = 40
 
     ignore_wall = False
 
@@ -510,7 +542,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     niter = 4000001
     local_dt = True
     constant_cfl = True
-    current_cfl = 0.2
+    current_cfl = 0.4
 
     # discretization and model control
     order = 2
@@ -519,14 +551,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     speedup_factor = 7.5
 
     equiv_ratio = 1.0
-    total_flow_rate = 17.0
+    total_flow_rate = 25.0
     # air_flow_rate = 18.8
     shroud_rate = 11.85
     prescribe_species = True
 
     current_dt = 5.0e-7
-    wall_time_scale = 10.0*speedup_factor  # wall speed-up
-#    mechanism_file = "air_3sp"
+    wall_time_scale = speedup_factor  # wall speed-up
     mechanism_file = "uiuc_7sp"
     solid_domains = ["wall_alumina", "wall_graphite"]
 
@@ -826,7 +857,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                             anisotropic_direction=0)
         decomposition = No_Oxidation_Model()
 
-    plug_region = PorousMaterial(x_min=0.015875, y_min=0.125, thickness=0.001)
+    plug_region = PorousMaterial(x_min=0.015875, y_min=0.1+width, thickness=0.001)
     plug = force_eval(actx, plug_region(x_vec=fluid_nodes))
 
     # }}}
@@ -1411,8 +1442,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                  grad_t=grad_t_plus)
             return f_ext@normal
 
-    linear_bnd = LinearizedOutflow2DBoundary(
-        dim=dim,
+    linear_bnd = LinearizedOutflowBoundary(
         free_stream_density=rho_atmosphere, free_stream_pressure=101325.0,
         free_stream_velocity=np.zeros(shape=(dim,)),
         free_stream_species_mass_fractions=y_atmosphere)
@@ -1987,8 +2017,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
                                   fluid_grad_temperature)
             + darcy_source_terms(fluid_state.cv, fluid_state.tv, fluid_state.wv)
-            + radiation_sink_terms(fluid_all_boundaries_no_grad,
-                                   fluid_state.temperature, fluid_state.wv.tau)
+            #+ radiation_sink_terms(fluid_all_boundaries_no_grad,
+            #                       fluid_state.temperature, fluid_state.wv.tau)
         )
 
         #~~~~~~~~~~~~~
@@ -2062,9 +2092,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                             "future GC collections")
                 gc.freeze()
 
-        # min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
-        min_dt = np.min(actx.to_numpy(dt[2])) if local_dt else dt
-        min_dt = min_dt*wall_time_scale
+        min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
+#        min_dt = np.min(actx.to_numpy(dt[2])) if local_dt else dt
+#        min_dt = min_dt*wall_time_scale
         if logmgr:
             set_dt(logmgr, min_dt)
             logmgr.tick_after()
