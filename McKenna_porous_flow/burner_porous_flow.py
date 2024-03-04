@@ -468,7 +468,7 @@ class FiberEOS(OriginalFiberEOS):
 
     def permeability(self, tau: DOFArray) -> DOFArray:
         r"""Permeability $K$ of the carbon fiber."""
-        virgin = 1.0e-5
+        virgin = 2.0e-11
         char = 1e+9
         return virgin*tau + char*(1.0 - tau)
 
