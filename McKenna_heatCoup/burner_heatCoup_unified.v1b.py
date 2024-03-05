@@ -655,7 +655,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # width = 0.020
     # width = 0.025
 
-    flame_grid_spacing = 40
+    flame_grid_spacing = 100
 
     ignore_wall = True
 
@@ -676,7 +676,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.4
 
     # discretization and model control
-    order = 2
+    order = 4
 
     chem_rate = 1.0
     speedup_factor = 7.5
@@ -2206,9 +2206,42 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
                 wall_time = np.max(actx.to_numpy(t[2]))
                 if wall_time > last_stored_time:
+
+                    # heat flux
+                    coupling_data = coupling(fluid_state, solid_state)
+                    fluid_grad_t = coupling_data[4]
+
+                    dd_interface = filter_part_boundaries(
+                        dcoll, volume_dd=dd_vol_fluid, neighbor_volume_dd=dd_vol_solid)
+
+                    interface_nodes_aux = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+                                                     fluid_nodes)
+                    grad_t_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+                                                  fluid_grad_t)
+                    kappa_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+                                                 fluid_state.tv.thermal_conductivity)
+
+                    normal = actx.thaw(dcoll.normal(dd_interface[0]))
+                    heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
+                    xx = actx.to_numpy(interface_nodes_aux[0])[0]
+                    yy = actx.to_numpy(interface_nodes_aux[0])[0]
+                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0]
+                    grad_n = actx.to_numpy(grad_t_interface@normal)[0]
+                    flux = actx.to_numpy(heat_flux/speedup_factor)[0]
+
+                    indx = np.argmin( xx )
+                    xxi = (xx.flatten())[indx]
+                    yyi = (yy.flatten())[indx]
+                    kappai = (kappa.flatten())[indx]
+                    grad_ni = (grad_n.flatten())[indx]
+                    fluxi = (flux.flatten())[indx]
+
+                    if rank == 0:
+                        logger.info(f"x, y, kappa, grad_T, flux = {xxi}, {yyi} {kappai}, {grad_ni}, {fluxi}")
+
                     # temperature
                     my_file = open("temperature_file.dat", "a")
-                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
+                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
                     my_file.close()
 
                     if rank == 0:
@@ -2229,31 +2262,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                         my_file = open("massloss_file.dat", "a")
                         my_file.write(f"{wall_time:.8f}, {mass_loss} \n")
                         my_file.close()
-
-                    # heat flux
-                    coupling_data = coupling(fluid_state, solid_state)
-                    fluid_grad_t = coupling_data[4]
-
-                    dd_interface = filter_part_boundaries(
-                        dcoll, volume_dd=dd_vol_fluid, neighbor_volume_dd=dd_vol_solid)
-
-                    interface_nodes_aux = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                     fluid_nodes)
-                    grad_t_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                  fluid_grad_t)
-                    kappa_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                 fluid_state.tv.thermal_conductivity)
-
-                    normal = actx.thaw(dcoll.normal(dd_interface[0]))
-                    heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
-                    xx = actx.to_numpy(interface_nodes_aux[0])[0][0,-1]
-                    yy = actx.to_numpy(interface_nodes_aux[0])[0][0,-1]
-                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0][0,-1]
-                    grad_n = actx.to_numpy(grad_t_interface@normal)[0][0,-1]
-                    flux = actx.to_numpy(heat_flux/speedup_factor)[0][0,-1]
-
-                    if rank == 0:
-                        logger.info(f"x, y, kappa, grad_T, flux = {xx}, {yy} {kappa}, {grad_n}, {flux}")
 
             if do_health:
                 health_errors = global_reduce(
