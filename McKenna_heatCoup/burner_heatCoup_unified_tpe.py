@@ -645,17 +645,21 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
+    if use_tpe is False:
+        print("Not today.")
+        sys.exit()
+
     my_material = "copper"
     # my_material = "fiber"
     # my_material = "composite"
 
     # width = 0.005
     # width = 0.010
-    width = 0.015
+    # width = 0.015
     # width = 0.020
-    # width = 0.025
+    width = 0.025
 
-    flame_grid_spacing = 40
+    flame_grid_spacing = 20
 
     ignore_wall = True
 
@@ -693,11 +697,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_dt = 1.0e-7
         wall_time_scale = 100.0  # wall speed-up
         mechanism_file = "uiuc_7sp"
-        solid_domains = ["solid"]
+        solid_domains = ["wall_sample"]
 
-        mesh_filename = f"mesh_v1_{width_mm}_{flame_grid_um}_heatProbe"
-        if use_tpe:
-            mesh_filename = mesh_filename + "_quads"
+        mesh_filename = "mesh_13m_25mm_020um_heatProbe_quads"
 
     else:
         current_dt = 1.0e-6
@@ -823,9 +825,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             mesh2_path = local_path + mesh_filename + "-v2.msh"
             mesh1_path = local_path + mesh_filename + "-v1.msh"
 
-            os.system(f"rm -rf {mesh1_path} {mesh2_path}")
-            os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
-            os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
+            if use_tpe:
+                mesh2_path = local_path + mesh_filename + "-v2.msh"
+            else:
+                os.system(f"rm -rf {mesh1_path} {mesh2_path}")
+                os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
+                os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
 
             os.system(f"rm -rf {mesh1_path}")
             print(f"Reading mesh from {mesh2_path}")
