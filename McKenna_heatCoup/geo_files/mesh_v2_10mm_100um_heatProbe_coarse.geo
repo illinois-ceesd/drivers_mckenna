@@ -172,10 +172,10 @@ Transfinite Line { 13} = 14 Using Progression 1.0;
 Transfinite Line { 10} = 14 Using Progression 1.0;
 
 /*burner*/
-Transfinite Line {-15} = 11 Using Progression 1.055;
-Transfinite Line {-12} = 11 Using Progression 1.055;
-Transfinite Line { 14} = 6 Using Progression 1.00;
-Transfinite Line { 11} = 6 Using Progression 1.00;
+Transfinite Line {-15} = 15 Using Progression 1.04;
+Transfinite Line {-12} = 15 Using Progression 1.04;
+Transfinite Line { 14} = 11 Using Progression 1.00;
+Transfinite Line { 11} = 11 Using Progression 1.00;
 
 /*material*/
 Transfinite Line {-50} = 10 Using Progression 1.100;
