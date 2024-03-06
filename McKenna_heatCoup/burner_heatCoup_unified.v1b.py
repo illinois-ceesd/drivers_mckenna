@@ -266,42 +266,6 @@ class Burner2D_Reactive:  # noqa
                               momentum=mass*velocity, species_mass=specmass)
 
 
-def reaction_damping(dcoll, nodes, **kwargs):
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.25
-    y_thickness = 0.10
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
-            1.0
-    )
-
-
-def smoothness_region(dcoll, nodes):
-    xpos = nodes[0]
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.55
-    y_thickness = 0.20
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          1.0, 3.0*dy**2 - 2.0*dy**3),
-            0.0
-    )
-
-
 def sponge_func(cv, cv_ref, sigma):
     return sigma*(cv_ref - cv)
 
@@ -651,7 +615,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # width = 0.005
     # width = 0.010
-    width = 0.015
+    # width = 0.015
     # width = 0.020
     # width = 0.025
 
@@ -695,7 +659,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         mechanism_file = "uiuc_7sp"
         solid_domains = ["solid"]
 
-        mesh_filename = f"mesh_v1_{width_mm}_{flame_grid_um}_heatProbe"
+        mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe"
         if use_tpe:
             mesh_filename = mesh_filename + "_quads"
 
@@ -703,7 +667,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_dt = 1.0e-6
         wall_time_scale = 10.0*speedup_factor  # wall speed-up
         mechanism_file = "uiuc_8sp_phenol"
-        solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
+        solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"]
+        # XXX adiabatic
 
         if use_tpe:
             mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads"
@@ -770,8 +735,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_shutdown = 720*60
 
     x0_sponge = 0.150
-    sponge_amp = 400.0
-    theta_factor = 0.0
+    sponge_amp = 300.0
+    theta_factor = 0.20
 
     transport = "Mixture"
 
@@ -1249,18 +1214,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     def smoothness_region(dcoll, nodes):
-        ypos = nodes[1]
+        return nodes[0]*0.0
 
-        y_max = 0.55
-        y_thickness = 0.20
+#        ypos = nodes[1]
 
-        y0 = (y_max - y_thickness)
-        dy = +((ypos - y0)/y_thickness)
-        return actx.np.where(
-            actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          1.0, 3.0*dy**2 - 2.0*dy**3),
-            0.0)
+#        y_max = 0.55
+#        y_thickness = 0.20
+
+#        y0 = (y_max - y_thickness)
+#        dy = +((ypos - y0)/y_thickness)
+#        return actx.np.where(
+#            actx.np.greater(ypos, y0),
+#            actx.np.where(actx.np.greater(ypos, y_max),
+#                          1.0, 3.0*dy**2 - 2.0*dy**3),
+#            0.0)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1413,7 +1380,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         get_solid_state = actx.compile(_get_copper_solid_state)
     else:
         get_solid_state = actx.compile(_get_porous_solid_state)
-        
 
 ##############################################################################
 
@@ -1474,7 +1440,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             # sometimes the file only has 1 line...
             if data.shape == 2:
                 last_stored_time = data[-1, 0]
-
 
         if rank == 0:
             logger.info("Restarting soln.")
@@ -2575,9 +2540,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                             "future GC collections")
                 gc.freeze()
 
-        # min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
-        min_dt = np.min(actx.to_numpy(dt[2])) if local_dt else dt
-        min_dt = min_dt*wall_time_scale
+        min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
+        # min_dt = np.min(actx.to_numpy(dt[2])) if local_dt else dt
+        # min_dt = min_dt*wall_time_scale
         if logmgr:
             set_dt(logmgr, min_dt)
             logmgr.tick_after()
