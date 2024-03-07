@@ -1659,9 +1659,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             AdiabaticNoslipWallBoundary(),
         dd_vol_fluid.trace("linear").domain_tag:
             linear_bnd,
-        dd_vol_fluid.trace("outlet").domain_tag:
-            linear_bnd,
-            #PressureOutflowBoundary(boundary_pressure=101325.0),
+        #dd_vol_fluid.trace("outlet").domain_tag:
+        #    linear_bnd,
+        #    #PressureOutflowBoundary(boundary_pressure=101325.0),
     }
 
     wall_symmetry = NeumannDiffusionBoundary(0.0)
