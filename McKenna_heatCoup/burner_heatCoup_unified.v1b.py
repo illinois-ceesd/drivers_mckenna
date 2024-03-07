@@ -615,7 +615,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # width = 0.005
     # width = 0.010
-    # width = 0.015
+    width = 0.015
     # width = 0.020
     # width = 0.025
 
@@ -648,7 +648,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     equiv_ratio = 1.0
     total_flow_rate = 25.0
     # air_flow_rate = 18.8
-    # shroud_rate = 11.85
     prescribe_species = True
 
     width_mm = str('%02i' % (width*1000)) + "mm"
@@ -659,7 +658,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         mechanism_file = "uiuc_7sp"
         solid_domains = ["solid"]
 
-        mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe"
+        mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_coarse"
         if use_tpe:
             mesh_filename = mesh_filename + "_quads"
 
@@ -736,7 +735,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     x0_sponge = 0.150
     sponge_amp = 300.0
-    theta_factor = 0.20
+    theta_factor = 0.02
 
     transport = "Mixture"
 
@@ -835,11 +834,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         tensor_product_elements=use_tpe)
 
     quadrature_tag = DISCR_TAG_BASE
-#    from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
-#    if use_overintegration:
-#        quadrature_tag = DISCR_TAG_QUAD
-#    else:
-#        quadrature_tag = DISCR_TAG_BASE
 
     if rank == 0:
         logger.info("Done making discretization")
@@ -961,6 +955,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     u_int = flow_rate*lmin_to_m3s/A_int
     rhoU_int = rho_int*u_int  # noqa
 
+    # shroud_rate = 11.85
     #mass_shroud = shroud_rate*1.0
     u_ext = u_int #mass_shroud*lmin_to_m3s/A_ext
     rho_ext = 101325.0/((cantera.gas_constant/cantera_soln.molecular_weights[-1])*300.)
@@ -1197,7 +1192,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #############################################################################
 
     def reaction_damping(dcoll, nodes, **kwargs):
-
         ypos = nodes[1]
 
         y_max = 0.25
@@ -1214,20 +1208,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     def smoothness_region(dcoll, nodes):
-        return nodes[0]*0.0
+        ypos = nodes[1]
 
-#        ypos = nodes[1]
+        y_max = 0.55
+        y_thickness = 0.20
 
-#        y_max = 0.55
-#        y_thickness = 0.20
-
-#        y0 = (y_max - y_thickness)
-#        dy = +((ypos - y0)/y_thickness)
-#        return actx.np.where(
-#            actx.np.greater(ypos, y0),
-#            actx.np.where(actx.np.greater(ypos, y_max),
-#                          1.0, 3.0*dy**2 - 2.0*dy**3),
-#            0.0)
+        y0 = (y_max - y_thickness)
+        dy = +((ypos - y0)/y_thickness)
+        return actx.np.where(
+            actx.np.greater(ypos, y0),
+            actx.np.where(actx.np.greater(ypos, y_max),
+                          1.0, 3.0*dy**2 - 2.0*dy**3),
+            0.0)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
