@@ -2183,7 +2183,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     normal = actx.thaw(dcoll.normal(dd_interface[0]))
                     heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
                     xx = actx.to_numpy(interface_nodes_aux[0])[0]
-                    yy = actx.to_numpy(interface_nodes_aux[0])[0]
+                    yy = actx.to_numpy(interface_nodes_aux[1])[0]
                     kappa = actx.to_numpy(kappa_interface/speedup_factor)[0]
                     grad_n = actx.to_numpy(grad_t_interface@normal)[0]
                     flux = actx.to_numpy(heat_flux/speedup_factor)[0]
