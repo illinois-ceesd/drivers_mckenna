@@ -619,7 +619,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # width = 0.020
     # width = 0.025
 
-    flame_grid_spacing = 40
+    flame_grid_spacing = 100
 
     ignore_wall = True
 
@@ -656,7 +656,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if my_material == "copper":
         current_dt = 1.0e-7
         wall_time_scale = 100.0  # wall speed-up
-        mechanism_file = "uiuc_20sp"
+        mechanism_file = "uiuc_7sp"
         solid_domains = ["solid"]
 
         mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_coarse"
