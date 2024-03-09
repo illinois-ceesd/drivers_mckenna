@@ -266,42 +266,6 @@ class Burner2D_Reactive:  # noqa
                               momentum=mass*velocity, species_mass=specmass)
 
 
-def reaction_damping(dcoll, nodes, **kwargs):
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.25
-    y_thickness = 0.10
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
-            1.0
-    )
-
-
-def smoothness_region(dcoll, nodes):
-    xpos = nodes[0]
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.55
-    y_thickness = 0.20
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          1.0, 3.0*dy**2 - 2.0*dy**3),
-            0.0
-    )
-
-
 def sponge_func(cv, cv_ref, sigma):
     return sigma*(cv_ref - cv)
 
@@ -621,7 +585,7 @@ class MyRuntimeError(RuntimeError):
 
 @mpi_entry_point
 def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
-         use_tpe=False, use_profiling=False, casename=None, lazy=False,
+         use_tpe=True, use_profiling=False, casename=None, lazy=False,
          restart_file=None, user_input_file=False):
 
     from mpi4py import MPI
@@ -634,7 +598,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     global_reduce = partial(_global_reduce, comm=comm)
 
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
+                               mode="wu", mpi_comm=comm)
 
     from mirgecom.array_context import initialize_actx, actx_class_is_profiling
     actx = initialize_actx(actx_class, comm,
@@ -680,7 +644,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.4
 
     # discretization and model control
-    order = 2
+    order = 4
 
     chem_rate = 1.0
     speedup_factor = 7.5
@@ -699,7 +663,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         mechanism_file = "uiuc_7sp"
         solid_domains = ["wall_sample"]
 
-        mesh_filename = "mesh_13m_25mm_020um_heatProbe_quads"
+        mesh_filename = "mesh_v3_15mm_100um_heatProbe_coarse_quads"
 
     else:
         current_dt = 1.0e-6
@@ -771,7 +735,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_start = time.time()
     t_shutdown = 720*60
 
-    x0_sponge = 0.150
+    x0_sponge = 0.200
     sponge_amp = 400.0
     theta_factor = 0.0
 
@@ -821,18 +785,19 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if rank == 0:
             local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
-            geo_path = local_path + mesh_filename + ".geo"
-            mesh2_path = local_path + mesh_filename + "-v2.msh"
-            mesh1_path = local_path + mesh_filename + "-v1.msh"
 
             if use_tpe:
                 mesh2_path = local_path + mesh_filename + "-v2.msh"
             else:
+                geo_path = local_path + mesh_filename + ".geo"
+                mesh2_path = local_path + mesh_filename + "-v2.msh"
+                mesh1_path = local_path + mesh_filename + "-v1.msh"
+
                 os.system(f"rm -rf {mesh1_path} {mesh2_path}")
                 os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
                 os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
 
-            os.system(f"rm -rf {mesh1_path}")
+                os.system(f"rm -rf {mesh1_path}")
             print(f"Reading mesh from {mesh2_path}")
 
         comm.Barrier()
@@ -1256,8 +1221,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def smoothness_region(dcoll, nodes):
         ypos = nodes[1]
 
-        y_max = 0.55
-        y_thickness = 0.20
+        y_max = 0.60
+        y_thickness = 0.25
 
         y0 = (y_max - y_thickness)
         dy = +((ypos - y0)/y_thickness)
@@ -1541,8 +1506,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     original_casename = casename
     casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
-    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
 
     vis_timer = None
     if logmgr:
@@ -1707,9 +1670,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             AdiabaticNoslipWallBoundary(),
         dd_vol_fluid.trace("linear").domain_tag:
             linear_bnd,
-        dd_vol_fluid.trace("outlet").domain_tag:
-            linear_bnd,
-            #PressureOutflowBoundary(boundary_pressure=101325.0),
     }
 
     wall_symmetry = NeumannDiffusionBoundary(0.0)
@@ -2251,14 +2211,28 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
                     normal = actx.thaw(dcoll.normal(dd_interface[0]))
                     heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
-                    xx = actx.to_numpy(interface_nodes_aux[0])[0][0,-1]
-                    yy = actx.to_numpy(interface_nodes_aux[0])[0][0,-1]
-                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0][0,-1]
-                    grad_n = actx.to_numpy(grad_t_interface@normal)[0][0,-1]
-                    flux = actx.to_numpy(heat_flux/speedup_factor)[0][0,-1]
+                    xx = actx.to_numpy(interface_nodes_aux[0])[0]
+                    yy = actx.to_numpy(interface_nodes_aux[1])[0]
+                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0]
+                    grad_n = actx.to_numpy(grad_t_interface@normal)[0]
+                    flux = actx.to_numpy(heat_flux/speedup_factor)[0]
+
+                    indx = np.argmin( xx )
+                    xxi = (xx.flatten())[indx]
+                    yyi = (yy.flatten())[indx]
+                    kappai = (kappa.flatten())[indx]
+                    grad_ni = (grad_n.flatten())[indx]
+                    fluxi = (flux.flatten())[indx]
 
                     if rank == 0:
-                        logger.info(f"x, y, kappa, grad_T, flux = {xx}, {yy} {kappa}, {grad_n}, {flux}")
+                        logger.info(f"x, y, kappa, grad_T, flux = {xxi}, {yyi} {kappai}, {grad_ni}, {fluxi}")
+
+                    # temperature
+                    my_file = open("temperature_file.dat", "a")
+                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
+                    my_file.close()
+
+                gc.freeze()
 
             if do_health:
                 health_errors = global_reduce(
@@ -2282,9 +2256,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     solid_state=solid_state, smoothness=smoothness,
                     grad_t_fluid=fluid_grad_t)
+                gc.freeze()
 
             if do_restart:
                 my_write_restart(step, t, state)
+                gc.freeze()
 
         except MyRuntimeError:
             if rank == 0:
@@ -2669,7 +2645,7 @@ if __name__ == "__main__":
         help="enable lazy evaluation [OFF]")
     parser.add_argument("--numpy", action="store_true",
         help="use numpy-based eager actx.")
-    parser.add_argument("--tpe", action="store_true",
+    parser.add_argument("--tpe", action="store_true", default=True,
         help="use quadrilateral elements.")
 
     args = parser.parse_args()

@@ -3,3 +3,6 @@
 *-v2.msh
 *temperature_file.dat
 *massloss_file.dat
+*sqlite
+restart_data*
+viz_data*
