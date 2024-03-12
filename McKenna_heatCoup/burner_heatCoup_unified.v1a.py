@@ -264,42 +264,6 @@ class Burner2D_Reactive:  # noqa
                               momentum=mass*velocity, species_mass=specmass)
 
 
-def reaction_damping(dcoll, nodes, **kwargs):
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.25
-    y_thickness = 0.10
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
-            1.0
-    )
-
-
-def smoothness_region(dcoll, nodes):
-    xpos = nodes[0]
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.55
-    y_thickness = 0.20
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          1.0, 3.0*dy**2 - 2.0*dy**3),
-            0.0
-    )
-
-
 def sponge_func(cv, cv_ref, sigma):
     return sigma*(cv_ref - cv)
 
@@ -1738,8 +1702,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             AdiabaticNoslipWallBoundary(),
         dd_vol_fluid.trace("linear").domain_tag:
             linear_bnd,
-        dd_vol_fluid.trace("outlet").domain_tag:
-            PressureOutflowBoundary(boundary_pressure=101325.0),
     }
 
     wall_symmetry = NeumannDiffusionBoundary(0.0)
