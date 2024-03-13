@@ -657,11 +657,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_dt = 1.0e-7
         wall_time_scale = 100.0  # wall speed-up
         mechanism_file = "uiuc_7sp"
-        solid_domains = ["solid"]
+        solid_domains = ["wall_sample"]
 
-        mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_coarse"
+        mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_heatProbe_coarse"
         if use_tpe:
-            mesh_filename = mesh_filename + "_quads"
+            mesh_filename = "mesh_v3_15mm_100um_heatProbe_coarse_quads-v2.msh"
 
     else:
         current_dt = 1.0e-6
@@ -782,20 +782,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         first_step = current_step + 0
         current_t = 0.0
 
-        if rank == 0:
-            local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
-            geo_path = local_path + mesh_filename + ".geo"
-            mesh2_path = local_path + mesh_filename + "-v2.msh"
-            mesh1_path = local_path + mesh_filename + "-v1.msh"
+        if use_tpe:
+            mesh2_path = mesh_filename
+        else:
+            if rank == 0:
+                local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
+                geo_path = local_path + mesh_filename + ".geo"
+                mesh2_path = local_path + mesh_filename + "-v2.msh"
+                mesh1_path = local_path + mesh_filename + "-v1.msh"
 
-            os.system(f"rm -rf {mesh1_path} {mesh2_path}")
-            os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
-            os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
+                os.system(f"rm -rf {mesh1_path} {mesh2_path}")
+                os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
+                os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
 
-            os.system(f"rm -rf {mesh1_path}")
-            print(f"Reading mesh from {mesh2_path}")
+                os.system(f"rm -rf {mesh1_path}")
+                print(f"Reading mesh from {mesh2_path}")
 
-        comm.Barrier()
+            comm.Barrier()
 
         def get_mesh_data():
             from meshmode.mesh.io import read_gmsh
@@ -1396,21 +1399,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             solid_cv = solid_init(solid_nodes, solid_wall_model)
         else:
     # XXX adiabatic
+#            tau = solid_wall_model.decomposition_progress(wall_densities)
+#            wall_mass = solid_wall_model.solid_density(wall_densities)
+
+#            wall_sample_h = material.enthalpy(wv_tseed, tau)
+#            wall_alumina_h = wall_alumina_cp * wv_tseed
+#            wall_graphite_h = wall_graphite_cp * wv_tseed
+#            wall_enthalpy = (
+#                wall_sample_h * wall_sample_mask
+#                + wall_alumina_h * wall_alumina_mask
+#                + wall_graphite_h * wall_graphite_mask)
+
+#            wall_energy = wall_mass * wall_enthalpy
+
+#            solid_cv = SolidWallConservedVars(mass=wall_densities,
+#                                              energy=wall_energy)
+
             tau = solid_wall_model.decomposition_progress(wall_densities)
-            wall_mass = solid_wall_model.solid_density(wall_densities)
-
-            wall_sample_h = material.enthalpy(wv_tseed, tau)
-            wall_alumina_h = wall_alumina_cp * wv_tseed
-            wall_graphite_h = wall_graphite_cp * wv_tseed
-            wall_enthalpy = (
-                wall_sample_h * wall_sample_mask
-                + wall_alumina_h * wall_alumina_mask
-                + wall_graphite_h * wall_graphite_mask)
-
-            wall_energy = wall_mass * wall_enthalpy
-
-            solid_cv = SolidWallConservedVars(mass=wall_densities,
-                                              energy=wall_energy)
+            solid_init = SolidWallInitializer(temperature=300.0,
+                                              material_densities=wall_densities)
+            solid_cv = solid_init(solid_nodes, solid_wall_model)
 
         last_stored_time = -1.0
         my_file = open("temperature_file.dat", "w")
