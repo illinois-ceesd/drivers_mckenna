@@ -66,7 +66,6 @@ from mirgecom.mpi import mpi_entry_point
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     IsothermalWallBoundary,
-    # PressureOutflowBoundary,
     AdiabaticSlipBoundary,
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
@@ -206,7 +205,7 @@ class Burner2D_Reactive:  # noqa
 
         cool_temp = 300.0
 
-        upper_bnd = 0.110
+        upper_bnd = 0.11
 
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
         _sigma = self._sigma*(
@@ -420,41 +419,20 @@ class PorousMaterial:
                 0.0, actx.np.where(actx.np.greater(xpos, x0),
                                    0.5, (xpos-(x0-self._thickness*0.5))/self._thickness)
             )
-        sponge_x = actx.np.absolute(2.0*(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4))
+        sponge_x = 1.0 - actx.np.absolute(2.0*(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4))
 
-        return (1.0-sponge_x)*sponge_y
+        return sponge_x*sponge_y
 
-#    def __call__(self, x_vec):
-#        xpos = x_vec[0]
-#        ypos = x_vec[1]
-#        actx = xpos.array_context
-#        zeros = 0*xpos
+#        radius = actx.np.sqrt((xpos-(x0-self._thickness*0.5))**2 + (ypos-(y0 + self._thickness*0.5))**2)
+#        sponge = actx.np.where(actx.np.less(radius, self._thickness*0.5), 0.5*radius/(self._thickness*0.5), 0.5)
+#        circle = 1.0 - 2.0*(-20.0*sponge**7 + 70*sponge**6 - 84*sponge**5 + 35*sponge**4)
 
-#        sponge_x = xpos*0.0
-#        sponge_y = xpos*0.0
+#        weight = \
+#            actx.np.where(actx.np.less(xpos, x0 - self._thickness*0.5),
+#                sponge_x*sponge_y,
+#                actx.np.where(actx.np.greater(ypos, y0 + self._thickness*0.5), sponge_x*sponge_y, circle))
 
-#        y0 = self._y_min
-#        dy = (ypos-(y0-self._thickness*0.5))/(self._thickness)
-#        sponge_y = actx.np.where(
-#            actx.np.less(ypos, y0-self._thickness*0.5),
-#                0.0,
-#                actx.np.where(actx.np.greater(ypos, y0+self._thickness*0.5),
-#                              #1.0, 3.0*dy**2 - 2.0*dy**3
-#                              1.0, -20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
-#            )
-
-#        sponge_y = actx.np.where(actx.np.greater(ypos, 0.14405+0.00001), 0.0, sponge_y)
-
-#        x0 = self._x_min-self._thickness*0.5
-#        dx = (xpos-(x0-self._thickness*0.5))/(self._thickness)
-#        sponge_x = actx.np.where(
-#            actx.np.less(xpos, x0-self._thickness*0.5),
-#                0.0,
-#                actx.np.where(actx.np.greater(xpos, x0+self._thickness*0.5),
-#                              1.0, -20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
-#            )
-
-#        return (1.0-sponge_x)*sponge_y
+#        return weight
 
 
 class No_Oxidation_Model():  # noqa N801
@@ -514,7 +492,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from mirgecom.array_context import initialize_actx, actx_class_is_profiling
     actx = initialize_actx(actx_class, comm,
-                           use_axis_tag_inference_fallback=False,
+                           use_axis_tag_inference_fallback=use_tpe,
                            use_einsum_inference_fallback=True)
     queue = getattr(actx, "queue", None)
     use_profiling = actx_class_is_profiling(actx_class)
@@ -524,7 +502,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     my_material = "fiber"
 
     width = 0.015
-    flame_grid_spacing = 40
+
+    flame_grid_spacing = 100
 
     ignore_wall = False
 
@@ -542,31 +521,32 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     niter = 4000001
     local_dt = True
     constant_cfl = True
-    current_cfl = 0.4
+    current_cfl = 0.2
 
     # discretization and model control
     order = 2
 
     chem_rate = 1.0
-    speedup_factor = 7.5
+    speedup_factor = 5.0
 
     equiv_ratio = 1.0
-    total_flow_rate = 25.0
+    total_flow_rate = 17.0
     # air_flow_rate = 18.8
     shroud_rate = 11.85
     prescribe_species = True
+
+    width_mm = str('%02i' % (width*1000)) + "mm"
+    flame_grid_um = str('%03i' % flame_grid_spacing) + "um"
 
     current_dt = 5.0e-7
     wall_time_scale = speedup_factor  # wall speed-up
     mechanism_file = "uiuc_7sp"
     solid_domains = ["wall_alumina", "wall_graphite"]
 
-    width_mm = str('%02i' % (width*1000)) + "mm"
-    flame_grid_um = str('%03i' % flame_grid_spacing) + "um"
-
-    mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_porous"
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if use_tpe:
+        mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_porous_coarse_quads-v2.msh"
+    else:
+        sys.exit()
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -641,24 +621,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_t = 0.0
 
         if rank == 0:
-            local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
-            geo_path = local_path + mesh_filename + ".geo"
-            mesh2_path = local_path + mesh_filename + "-v2.msh"
-            mesh1_path = local_path + mesh_filename + "-v1.msh"
-
-            os.system(f"rm -rf {mesh1_path} {mesh2_path}")
-            os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
-            os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
-
-            os.system(f"rm -rf {mesh1_path}")
-            print(f"Reading mesh from {mesh2_path}")
-
-        comm.Barrier()
+            print(f"Reading mesh from {mesh_filename}")
 
         def get_mesh_data():
             from meshmode.mesh.io import read_gmsh
             mesh, tag_to_elements = read_gmsh(
-                mesh2_path, force_ambient_dim=dim,
+                mesh_filename, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             volume_to_tags = {"fluid": ["fluid", "sample"],
                               "solid": solid_domains}
@@ -764,17 +732,29 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         idx_fuel = cantera_soln.species_index("C2H4")
         flow_rate = air_flow_rate/(sum(x_reference) - x_reference[idx_fuel])
 
-    mass_shroud = shroud_rate*1.0
     A_int = np.pi*r_int**2  # noqa
-    A_ext = np.pi*(r_ext**2 - r_int**2)  # noqa
     lmin_to_m3s = 1.66667e-5
     u_int = flow_rate*lmin_to_m3s/A_int
-    u_ext = mass_shroud*lmin_to_m3s/A_ext
     rhoU_int = rho_int*u_int  # noqa
 
-    rho_ext = 101325.0/((8314.46/cantera_soln.molecular_weights[-1])*300.)
+    #mass_shroud = shroud_rate*1.0
+    A_ext = np.pi*(r_ext**2 - r_int**2)  # noqa
+    u_ext = u_int #mass_shroud*lmin_to_m3s/A_ext
+    rho_ext = 101325.0/((cantera.gas_constant/cantera_soln.molecular_weights[-1])*300.)
     # mdot_ext = rho_ext*u_ext*A_ext
     rhoU_ext = rho_ext*u_ext  # noqa
+
+    print("width=", width_mm, "(mm)")
+    print("V_dot=", flow_rate, "(L/min)")
+    print(f"{A_int= }", "(m^2)")
+    print(f"{A_ext= }", "(m^2)")
+    print(f"{u_int= }", "(m/s)")
+    print(f"{u_ext= }", "(m/s)")
+    print(f"{rho_int= }", "(kg/m^3)")
+    print(f"{rho_ext= }", "(kg/m^3)")
+    print(f"{rhoU_int= }")
+    print(f"{rhoU_ext= }")
+    print("ratio=", u_ext/u_int,"\n")
 
     # Set Cantera internal gas temperature, pressure, and mole fractios
     cantera_soln.TPX = temp_unburned, pres_unburned, x_reference
@@ -839,8 +819,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     eos = PyrometheusMixture(pyrometheus_mechanism,
                              temperature_guess=temperature_seed)
 
-    species_names = pyrometheus_mechanism.species_names
-
     base_transport = MixtureAveragedTransport(pyrometheus_mechanism,
                                                factor=speedup_factor)
 
@@ -850,14 +828,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     if my_material == "fiber":
 
-        material_densities = 168.0 + fluid_zeros
+        material_densities = 168.0/10.0 + fluid_zeros
 
         import mirgecom.materials.carbon_fiber as material_sample
-        material = FiberEOS(dim=1, char_mass=0.0, virgin_mass=168.0, 
-                            anisotropic_direction=0)
+        material = FiberEOS(dim=1, char_mass=0.0, virgin_mass=168.0/10.0, 
+                            anisotropic_direction=0, timescale=speedup_factor)
         decomposition = No_Oxidation_Model()
 
-    plug_region = PorousMaterial(x_min=0.015875, y_min=0.1+width, thickness=0.001)
+    plug_region = PorousMaterial(x_min=0.015875, y_min=0.115, thickness=0.005)
+
     plug = force_eval(actx, plug_region(x_vec=fluid_nodes))
 
     # }}}
@@ -867,6 +846,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # {{{
 
+    species_names = pyrometheus_mechanism.species_names
     print(f"Pyrometheus mechanism species names {species_names}\n")
     print("Unburned:")
     print(f"T = {temp_unburned}")
@@ -884,18 +864,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     print(f"T = {temp_shroud}")
     print(f"D = {rho_shroud}")
     print(f"Y = {y_shroud}\n")
-
-    print("width=", width_mm, "(mm)")
-    print("V_dot=", flow_rate, "(L/min)")
-    print(f"{A_int = }", "(m^2)")
-    print(f"{A_ext = }", "(m^2)")
-    print(f"{u_int = }", "(m/s)")
-    print(f"{u_ext = }", "(m/s)")
-    print(f"{rho_int = }", "(kg/m^3)")
-    print(f"{rho_ext = }", "(kg/m^3)")
-    print(f"{rhoU_int = }")
-    print(f"{rhoU_ext = }")
-    print("ratio=", u_ext/u_int,"\n")
 
     # }}}
 
@@ -947,7 +915,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def reaction_damping(dcoll, nodes, **kwargs):
         """Region where chemistry is frozen."""
-
         ypos = nodes[1]
 
         y_max = 0.25
@@ -955,14 +922,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         y0 = (y_max - y_thickness)
         dy = +((ypos - y0)/y_thickness)
-        damping = actx.np.where(
+        return actx.np.where(
             actx.np.greater(ypos, y0),
             actx.np.where(actx.np.greater(ypos, y_max),
                           0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
-            1.0
-        )
-
-        return damping
+            1.0)
 
 #############################################################################
 
@@ -975,14 +939,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         y0 = (y_max - y_thickness)
         dy = +((ypos - y0)/y_thickness)
-        region = actx.np.where(
+        return actx.np.where(
             actx.np.greater(ypos, y0),
             actx.np.where(actx.np.greater(ypos, y_max),
                           1.0, 3.0*dy**2 - 2.0*dy**3),
-            0.0
-        )
-
-        return region
+            0.0)
 
 ##############################################################################
 
@@ -1410,10 +1371,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                         state_minus.mass_density*grad_y_bc[i]
                         + state_minus.species_mass_fractions[i]*grad_cv_minus.mass)
 
-                # FIXME use "2 dudn^P - dudn^-" ???
-
                 return grad_cv_minus.replace(
-                    energy=grad_cv_minus*0.0,  # unused
                     species_mass=grad_species_mass_bc)
 
         def viscous_wall_flux(
@@ -1447,22 +1405,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         free_stream_velocity=np.zeros(shape=(dim,)),
         free_stream_species_mass_fractions=y_atmosphere)
 
+    my_presc_bnd = MyPrescribedBoundary(bnd_state_func=inlet_bnd_state_func,
+                                        temperature_func=bnd_temperature_func)
+
     fluid_boundaries = {
-        dd_vol_fluid.trace("inlet").domain_tag:
-            MyPrescribedBoundary(bnd_state_func=inlet_bnd_state_func,
-                                 temperature_func=bnd_temperature_func),
-        dd_vol_fluid.trace("symmetry").domain_tag:
-            AdiabaticSlipBoundary(),
-        dd_vol_fluid.trace("burner").domain_tag:
-            AdiabaticNoslipWallBoundary(),
-        dd_vol_fluid.trace("linear").domain_tag:
-            linear_bnd,
-    }
+        dd_vol_fluid.trace("inlet").domain_tag: my_presc_bnd,
+        dd_vol_fluid.trace("symmetry").domain_tag: AdiabaticSlipBoundary(),
+        dd_vol_fluid.trace("burner").domain_tag: AdiabaticNoslipWallBoundary(),
+        dd_vol_fluid.trace("linear").domain_tag: linear_bnd}
 
     wall_symmetry = NeumannDiffusionBoundary(0.0)
     solid_boundaries = {
-        dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry
-    }
+        dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry}
 
 ##############################################################################
 
@@ -1484,24 +1438,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             step, t, dt, fluid_state, solid_state, smoothness=None,
             grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None):
 
-        wall_cv = solid_state.cv
-        wdv = solid_state.dv
-
-#        fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
-#            add_interface_boundaries_no_grad(
-#                dcoll, gas_model,
-#                dd_vol_fluid, dd_vol_solid,
-#                fluid_state, wdv.thermal_conductivity, wdv.temperature,
-#                fluid_boundaries, solid_boundaries,
-#                interface_noslip=True, interface_radiation=use_radiation)
-
-#        radiation = radiation_sink_terms(fluid_all_boundaries_no_grad,
-#            fluid_state.temperature, fluid_state.wv.tau)
-
-#        radiation_boundaries = normalize_boundaries(fluid_all_boundaries_no_grad)
-#        grad_phi = my_derivative_function(actx, dcoll, tau, radiation_boundaries,
-#                                          dd_vol_fluid, "replicate", _RadiationTag)
-
         rho = fluid_state.cv.mass
         cp = eos.heat_capacity_cp(fluid_state.cv, fluid_state.temperature)
         fluid_viz_fields = [
@@ -1512,10 +1448,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("DV_T", fluid_state.temperature),
             ("DV_U", fluid_state.velocity[0]),
             ("DV_V", fluid_state.velocity[1]),
+            ("plug", plug),
             ("WV", fluid_state.wv),
-            # ("radiation", radiation),
-            # ("grad_phi", grad_phi),
-            # ("plug", plug),
+            ("sponge", sponge_sigma),
             # ("smoothness", 1.0 - theta_factor*smoothness),
         ]
 
@@ -1524,6 +1459,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             "Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
             for i in range(nspecies))
 
+        wall_cv = solid_state.cv
+        wdv = solid_state.dv
         solid_viz_fields = [
             ("wv_energy", wall_cv.energy),
             ("cfl", solid_zeros),  # FIXME
@@ -1796,13 +1733,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~
     def darcy_source_terms(cv, tv, wv):
         """Source term to mimic Darcy's law."""
-        cyl_coords_factor = make_obj_array([fluid_nodes[0], fluid_zeros+1.0])
+        #cyl_coords_factor = make_obj_array([fluid_nodes[0], fluid_zeros+1.0])
         return make_conserved(dim=2,
             mass=fluid_zeros,
             energy=fluid_zeros,
             momentum=(
                 -1.0 * tv.viscosity * wv.void_fraction/wv.permeability *
-                cv.velocity * cyl_coords_factor),
+                cv.velocity),
             species_mass=cv.species_mass*0.0)
 
     # ~~~~~~~
@@ -1870,8 +1807,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wdv = solid_state.dv
 
         t = force_eval(actx, t)
-        dt_fluid = force_eval(actx, actx.np.minimum(
-            current_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
+        dt_fluid = force_eval(actx, my_get_timestep_fluid(fluid_state, t[0], dt[0]))
+#        dt_fluid = force_eval(actx, actx.np.minimum(
+#            current_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
 #        dt_solid = force_eval(actx, actx.np.minimum(
 #            1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
         dt_solid = force_eval(actx, current_dt + solid_zeros)
@@ -1952,6 +1890,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         fluid_state, solid_state = state
 
+        cv = fluid_state.cv
+
+        wall_cv = solid_state.cv
         wdv = solid_state.dv
 
         #~~~~~~~~~~~~~
@@ -2093,8 +2034,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 gc.freeze()
 
         min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
-#        min_dt = np.min(actx.to_numpy(dt[2])) if local_dt else dt
-#        min_dt = min_dt*wall_time_scale
+        # min_dt = np.min(actx.to_numpy(dt[2])) if local_dt else dt
+        # min_dt = min_dt*wall_time_scale
         if logmgr:
             set_dt(logmgr, min_dt)
             logmgr.tick_after()
@@ -2104,11 +2045,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 ##############################################################################
 
     dt_fluid = force_eval(
-        actx, actx.np.minimum(
-            current_dt, my_get_timestep_fluid(
+        actx, my_get_timestep_fluid(
                 fluid_state,
                 force_eval(actx, current_t + fluid_zeros),
-                force_eval(actx, current_dt + fluid_zeros))))
+                force_eval(actx, current_dt + fluid_zeros)))
     dt_solid = force_eval(actx, current_dt + solid_zeros)
 
     t_fluid = force_eval(actx, current_t + fluid_zeros)
