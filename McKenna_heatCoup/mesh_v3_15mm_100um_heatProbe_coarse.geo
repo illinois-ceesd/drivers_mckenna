@@ -21,29 +21,29 @@ mat_thick = 0.75*25.4/1000;
 insulator = 1.00*25.4/1000 + mat_thick;
 insulator_wide = 0.5*1.00*25.4/1000;
 mat_holder = 1.75*25.4/1000 + mat_thick;
-mat_BL_layer_x = 0.0030;
-mat_BL_layer_y = 0.0030;
+mat_BL_x = 0.0030;
+mat_BL_y = 0.0030;
 
 
-Point(2) = {ext_radius, burner_height, 0.0, 0.000200};
-Point(3) = {int_radius, burner_height, 0.0, 1.0};
-Point(4) = {mat_wide + mat_BL_layer_x, burner_height, 0.0, 1.0};
-Point(5) = {               0., burner_height, 0.0, 1.0};
+Point(2) = {         ext_radius, burner_height, 0.0, 0.000200};
+Point(3) = {         int_radius, burner_height, 0.0, 1.0};
+Point(4) = {mat_wide + mat_BL_x, burner_height, 0.0, 1.0};
+Point(5) = {                 0., burner_height, 0.0, 1.0};
 
-delta = (mat_location - mat_BL_layer_y - burner_height - flame_dist);
+delta = (mat_location - mat_BL_y - burner_height - flame_dist);
 flame_pos = burner_height + flame_dist;
 
 /*Point( 8) = {     0.0,        flame_pos + 0.33*delta, 0.,     clS};*/
 /*Point( 9) = {     0.0,        flame_pos + 0.66*delta, 0.,     clS};*/
-Point(10) = {     0.0, mat_location - mat_BL_layer_y, 0.,     clS};
-Point(11) = {     0.0, mat_location                 , 0., 0.7*clS};
-Point(12) = {mat_wide, mat_location                 , 0.,     1.0};
-Point(13) = {mat_wide,      mat_location + mat_thick, 0.,     1.0};
-Point(14) = {mat_wide,      mat_location + insulator, 0.,     1.0};
+Point(10) = {     0.0,  mat_location - mat_BL_y, 0.,     clS};
+Point(11) = {     0.0, mat_location            , 0., 0.7*clS};
+Point(12) = {mat_wide, mat_location            , 0.,     1.0};
+Point(13) = {mat_wide, mat_location + mat_thick, 0.,     1.0};
+Point(14) = {mat_wide, mat_location + insulator, 0.,     1.0};
 
-Point(15) = {mat_wide,                  mat_location + 1.*mat_holder, 0., 1.};
-Point(16) = {     0.0,                  mat_location + 1.*mat_holder, 0., clM};
-Point(17) = {     0.0, mat_BL_layer_y + mat_location + 1.*mat_holder, 0., 2.0*clS};
+Point(15) = {mat_wide,            mat_location + 1.*mat_holder, 0., 1.};
+Point(16) = {     0.0,            mat_location + 1.*mat_holder, 0., clM};
+Point(17) = {     0.0, mat_BL_y + mat_location + 1.*mat_holder, 0., 2.0*clS};
 /*Point(18) = {     0.0,                          burner_height + 0.55, 0., 6.*clF};*/
 
 Point(20) = {              0.00, radius, 0., 0.20*cl2};
@@ -61,14 +61,14 @@ Point(28) = {       burner_base_radius, burner_height + flame_dist, 0., 1.0};
 Point(29) = {                      aux, burner_height + flame_dist, 0., 1.0};
 Point(30) = {      ext_radius + offset, burner_height + flame_dist, 0., 1.0};
 Point(31) = {               int_radius, burner_height + flame_dist, 0., 1.0};
-Point(32) = {mat_wide + mat_BL_layer_x, burner_height + flame_dist, 0., 1.0};
+Point(32) = {      mat_wide + mat_BL_x, burner_height + flame_dist, 0., 1.0};
 Point(33) = {                       0., burner_height + flame_dist, 0., clS};
 
 
-Point(41) = {mat_wide + mat_BL_layer_x,            - mat_BL_layer_y + mat_location, 0., 1.};
-Point(43) = {mat_wide + mat_BL_layer_x,                   mat_thick + mat_location, 0., 1.};
-Point(44) = {mat_wide + mat_BL_layer_x,                   insulator + mat_location, 0., 1.};
-Point(45) = {mat_wide + mat_BL_layer_x, mat_holder + mat_BL_layer_y + mat_location, 0., 1.};
+Point(41) = {mat_wide + mat_BL_x,            - mat_BL_y + mat_location, 0., 1.};
+Point(43) = {mat_wide + mat_BL_x,             mat_thick + mat_location, 0., 1.};
+Point(44) = {mat_wide + mat_BL_x,             insulator + mat_location, 0., 1.};
+Point(45) = {mat_wide + mat_BL_x, mat_holder + mat_BL_y + mat_location, 0., 1.};
 
 
 x1 = 0.0;
@@ -95,7 +95,7 @@ x5 = 0.35*25.4/2000;
 Point(56) = {  x5, mat_location + mat_holder, 0., clM};
 
 x6 = 0.35*25.4/2000;
-Point(57) = {  x6, mat_location + mat_holder + mat_BL_layer_y, 0., 1.0};
+Point(57) = {  x6, mat_location + mat_holder + mat_BL_y, 0., 1.0};
 
 
 Line( 1) = {2, 3};
