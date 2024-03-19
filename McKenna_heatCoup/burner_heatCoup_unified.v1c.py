@@ -71,7 +71,6 @@ from mirgecom.boundary import (
     MengaldoBoundaryCondition,
     AdiabaticNoslipWallBoundary,
     LinearizedOutflowBoundary,
-    DummyBoundary
 )
 from mirgecom.fluid import (
     velocity_gradient, species_mass_fraction_gradient, make_conserved
@@ -2234,7 +2233,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                         my_file.write(f"{wall_time:.8f}, {step}, {mass_loss} \n")
                         my_file.close()
 
-                # gc is getting crazy after this
+                # garbage is getting out of control without this
                 gc.freeze()
 
             if do_health:
@@ -2260,13 +2259,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     solid_state=solid_state, smoothness=smoothness,
                     grad_t_fluid=fluid_grad_t)
 
-                # gc is getting crazy after this
+                # garbage is getting out of control without this
                 gc.freeze()
 
             if do_restart:
                 my_write_restart(step, t, state)
 
-                # gc is getting crazy after this
+                # garbage is getting out of control without this
                 gc.freeze()
 
         except MyRuntimeError:
