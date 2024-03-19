@@ -918,9 +918,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         volume = np.pi*radius**2*height
         area = np.pi*radius**2 + 2.0*np.pi*radius*height
 
-        print("surface = ", area, integral_surf - area)
-        print("volume = ", volume, integral_volume - volume)
-
 ##########################################################################
 
     # {{{ Set up initial state using Cantera
@@ -1479,8 +1476,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         tau = solid_wall_model.decomposition_progress(wall_sample_density)
         wall_mass = solid_wall_model.solid_density(wall_sample_density)
 
-        initial_mass = integral(dcoll, dd_vol_solid,
-                                wall_mass*wall_sample_mask*dV)
+        initial_mass = actx.to_numpy(integral(dcoll, dd_vol_solid,
+                                     wall_mass*wall_sample_mask*dV))
+
+        print("volume = ", volume, integral_volume - volume)
+        print("surface = ", area, integral_surface - area)
+        print("initial_mass = ", initial_mass)
 
 #########################################################################
 

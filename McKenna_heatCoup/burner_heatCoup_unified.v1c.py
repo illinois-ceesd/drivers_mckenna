@@ -609,9 +609,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    my_material = "copper"
+    # my_material = "copper"
     # my_material = "fiber"
-    # my_material = "composite"
+    my_material = "composite"
 
     # width = 0.005
     # width = 0.010
@@ -621,7 +621,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     flame_grid_spacing = 100
 
-    ignore_wall = True
+    ignore_wall = False
+    adiabatic = True
 
     # ~~~~~~~~~~~~~~~~~~
 
@@ -640,13 +641,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.4
 
     # discretization and model control
-    order = 4
+    order = 3
 
     chem_rate = 1.0
     speedup_factor = 7.5
 
     equiv_ratio = 1.0
-    total_flow_rate = 17.0
+    total_flow_rate = 25.0
     # air_flow_rate = 18.8
     # shroud_rate = 11.85
     prescribe_species = True
@@ -673,7 +674,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if use_tpe:
             mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads"
         else:
-            mesh_filename = f"mesh_12m_{width_mm}_015um_2domains"
+            mesh_filename = f"mesh_v1_{width_mm}_{flame_grid_um}_2dom-phenol_coarse"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -884,8 +885,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # XXX adiabatic
 
     # ~~~~~~~~~~
+    from grudge.discretization import filter_part_boundaries
     if my_material == "copper":
-        from grudge.discretization import filter_part_boundaries
         solid_dd_list = filter_part_boundaries(dcoll, volume_dd=dd_vol_solid,
                                                neighbor_volume_dd=dd_vol_fluid)
 
@@ -896,7 +897,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     else:
         from mirgecom.multiphysics.phenolics_coupled_fluid_wall import (
             get_porous_domain_interface)
-        interface_sample, interface_nodes, solid_dd_list = \
+        interface_sample, interface_nodes, fluid_dd_list, solid_dd_list = \
             get_porous_domain_interface(actx, dcoll, dd_vol_fluid,
                                         dd_vol_solid, wall_sample_mask)
 
@@ -915,9 +916,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         volume = np.pi*radius**2*height
         area = np.pi*radius**2 + 2.0*np.pi*radius*height
-
-        print("volume = ", volume, integral_volume - volume)
-        print("surface = ", area, integral_surface - area)
 
 ##########################################################################
 
@@ -959,12 +957,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         flow_rate = air_flow_rate/(sum(x_reference) - x_reference[idx_fuel])
 
     A_int = np.pi*r_int**2  # noqa
-    A_ext = np.pi*(r_ext**2 - r_int**2)  # noqa
     lmin_to_m3s = 1.66667e-5
     u_int = flow_rate*lmin_to_m3s/A_int
     rhoU_int = rho_int*u_int  # noqa
 
     #mass_shroud = shroud_rate*1.0
+    A_ext = np.pi*(r_ext**2 - r_int**2)  # noqa
     u_ext = u_int #mass_shroud*lmin_to_m3s/A_ext
     rho_ext = 101325.0/((cantera.gas_constant/cantera_soln.molecular_weights[-1])*300.)
     # mdot_ext = rho_ext*u_ext*A_ext
@@ -1394,8 +1392,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "copper":
             from mirgecom.materials.initializer import SolidWallInitializer
-            solid_init = SolidWallInitializer(temperature=300.0,
-                                              material_densities=wall_copper_rho)
+            solid_init = SolidWallInitializer(
+                temperature=300.0, material_densities=wall_copper_rho)
             solid_cv = solid_init(solid_nodes, solid_wall_model)
         else:
     # XXX adiabatic
@@ -1415,6 +1413,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #            solid_cv = SolidWallConservedVars(mass=wall_densities,
 #                                              energy=wall_energy)
 
+            from mirgecom.materials.initializer import SolidWallInitializer
             tau = solid_wall_model.decomposition_progress(wall_densities)
             solid_init = SolidWallInitializer(temperature=300.0,
                                               material_densities=wall_densities)
@@ -1486,8 +1485,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         tau = solid_wall_model.decomposition_progress(wall_sample_density)
         wall_mass = solid_wall_model.solid_density(wall_sample_density)
 
-        initial_mass = integral(dcoll, dd_vol_solid,
-                                wall_mass*wall_sample_mask*dV)
+        initial_mass = actx.to_numpy(integral(dcoll, dd_vol_solid,
+                                     wall_mass*wall_sample_mask*dV))
+
+        print("volume = ", volume, integral_volume - volume)
+        print("surface = ", area, integral_surface - area)
+        print("initial_mass = ", initial_mass)
 
 #########################################################################
 
@@ -2113,7 +2116,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "composite":
             solid_mass_rhs = decomposition.get_source_terms(
-                temperature=solid_state.dv.temperature, chi=solid_state.cv.mass)
+                temperature=solid_state.dv.temperature,
+                chi=solid_state.cv.mass)
 
             boundary_momentum = \
                 speedup_factor * blowing_momentum(-1.0*sum(solid_mass_rhs))
@@ -2175,7 +2179,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 if wall_time > last_stored_time:
 
                     # heat flux
-                    coupling_data = coupling(fluid_state, solid_state)
+                    coupling_data = coupling(fluid_state, solid_state, boundary_momentum)
                     fluid_grad_t = coupling_data[4]
 
                     dd_interface = filter_part_boundaries(
@@ -2208,7 +2212,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
                     # temperature
                     my_file = open("temperature_file.dat", "a")
-                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
+                    my_file.write(f"{wall_time:.8f}, {step}, {min_temp_center:.8f}, {max_temp_center:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
                     my_file.close()
 
                     if rank == 0:
@@ -2227,7 +2231,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                             logger.info(f"Mass loss = {mass_loss}")
 
                         my_file = open("massloss_file.dat", "a")
-                        my_file.write(f"{wall_time:.8f}, {mass_loss} \n")
+                        my_file.write(f"{wall_time:.8f}, {step}, {mass_loss} \n")
                         my_file.close()
 
                 # gc is getting crazy after this
@@ -2274,7 +2278,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return state, dt
 
-    def coupling(fluid_state, solid_state):
+    def coupling(fluid_state, solid_state, boundary_momentum):
 
         cv = fluid_state.cv
         wv = solid_state.cv
@@ -2306,8 +2310,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     dd_vol_fluid, dd_vol_solid,
                     fluid_state, wdv.thermal_conductivity, wdv.temperature,
                     boundary_momentum, interface_sample,
-                    fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=use_radiation)
+                    fluid_boundaries, solid_boundaries)
 
         fluid_operator_states_quad = make_operator_fluid_states(
             dcoll, fluid_state, gas_model, fluid_all_boundaries_no_grad,
@@ -2377,7 +2380,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     boundary_momentum, interface_sample,
                     fluid_grad_temperature, solid_grad_temperature,
                     fluid_boundaries, solid_boundaries,
-                    interface_noslip=True, interface_radiation=use_radiation,
                     wall_emissivity=wall_emissivity, sigma=5.67e-8,
                     ambient_temperature=300.0,
                     wall_penalty_amount=wall_penalty_amount)
@@ -2391,6 +2393,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "copper":
             fluid_state, solid_state = state
+            boundary_momentum = None
         else:
             fluid_state, solid_state, boundary_momentum = state
 
@@ -2398,7 +2401,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wv = solid_state.cv
         wdv = solid_state.dv
 
-        coupling_data = coupling(fluid_state, solid_state)
+        coupling_data = coupling(fluid_state, solid_state, boundary_momentum)
 
         fluid_all_boundaries = coupling_data[0]
         solid_all_boundaries = coupling_data[1]
@@ -2479,10 +2482,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 solid_rhs = wall_time_scale * SolidWallConservedVars(
                     mass=solid_mass_rhs*wall_sample_mask,
                     energy=solid_energy_rhs)
-
-                return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
-                                       solid_rhs + solid_sources, solid_zeros,
-                                       interface_zeros])
+                if adiabatic:
+                    return make_obj_array([fluid_rhs + fluid_sources,
+                                           fluid_zeros,
+                                           wall_sample_mask*(solid_rhs + solid_sources),
+                                           solid_zeros,
+                                           interface_zeros])
+                else:
+                    return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                                           solid_rhs + solid_sources, solid_zeros,
+                                           interface_zeros])
 
         #~~~~~~~~~~~~~
 
