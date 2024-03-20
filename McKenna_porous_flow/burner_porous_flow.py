@@ -57,8 +57,9 @@ from mirgecom.utils import (
     normalize_boundaries
 )
 from mirgecom.simutil import (
-    check_step, get_sim_timestep, distribute_mesh, write_visfile,
-    check_naninf_local, check_range_local, global_reduce
+    check_step, distribute_mesh, write_visfile,
+    check_naninf_local, check_range_local, global_reduce,
+    get_sim_timestep
 )
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
@@ -285,42 +286,6 @@ class Burner2D_Reactive:  # noqa
                               momentum=mass*velocity, species_mass=specmass)
 
 
-def reaction_damping(dcoll, nodes, **kwargs):
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.25
-    y_thickness = 0.10
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
-            1.0
-    )
-
-
-def smoothness_region(dcoll, nodes):
-    xpos = nodes[0]
-    ypos = nodes[1]
-    actx = ypos.array_context
-
-    y_max = 0.55
-    y_thickness = 0.20
-
-    y0 = (y_max - y_thickness)
-    dy = +((ypos - y0)/y_thickness)
-
-    return actx.np.where(
-        actx.np.greater(ypos, y0),
-            actx.np.where(actx.np.greater(ypos, y_max),
-                          1.0, 3.0*dy**2 - 2.0*dy**3),
-            0.0
-    )
-
-
 def sponge_func(cv, cv_ref, sigma):
     return sigma*(cv_ref - cv)
 
@@ -488,7 +453,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     global_reduce = partial(_global_reduce, comm=comm)
 
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
+                               mode="wu", mpi_comm=comm)
 
     from mirgecom.array_context import initialize_actx, actx_class_is_profiling
     actx = initialize_actx(actx_class, comm,
@@ -510,8 +475,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~~~~~~~~~~~~
 
     # default i/o frequencies
-    nviz = 10000
-    nrestart = 25000
+    nviz = 25000
+    nrestart = 50000
     nhealth = 1
     nstatus = 100
 
@@ -521,7 +486,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     niter = 4000001
     local_dt = True
     constant_cfl = True
-    current_cfl = 0.2
+    current_cfl = 0.4
 
     # discretization and model control
     order = 2
@@ -546,7 +511,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if use_tpe:
         mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_porous_coarse_quads-v2.msh"
     else:
-        sys.exit()
+        mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_porous_coarse"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -585,7 +550,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     rst_path = "restart_data/"
     viz_path = "viz_data/"
     vizname = viz_path+casename
-    rst_pattern = rst_path+"{cname}-{step:06d}-{rank:04d}.pkl"
+    rst_pattern = rst_path+"{cname}-{step:09d}-{rank:04d}.pkl"
 
     def _compiled_stepper_wrapper(state, t, dt, rhs):
         return compiled_lsrk45_step(actx, state, t, dt, rhs)
@@ -620,13 +585,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         first_step = current_step + 0
         current_t = 0.0
 
-        if rank == 0:
-            print(f"Reading mesh from {mesh_filename}")
+        if use_tpe:
+            mesh2_path = mesh_filename
+        else:
+            if rank == 0:
+                local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
+                geo_path = local_path + mesh_filename + ".geo"
+                mesh2_path = local_path + mesh_filename + "-v2.msh"
+                mesh1_path = local_path + mesh_filename + "-v1.msh"
+
+                os.system(f"rm -rf {mesh1_path} {mesh2_path}")
+                os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
+                os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
+
+                os.system(f"rm -rf {mesh1_path}")
+
+        print(f"Reading mesh from {mesh2_path}")
 
         def get_mesh_data():
             from meshmode.mesh.io import read_gmsh
             mesh, tag_to_elements = read_gmsh(
-                mesh_filename, force_ambient_dim=dim,
+                mesh2_path, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             volume_to_tags = {"fluid": ["fluid", "sample"],
                               "solid": solid_domains}
@@ -831,7 +810,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         material_densities = 168.0/10.0 + fluid_zeros
 
         import mirgecom.materials.carbon_fiber as material_sample
-        material = FiberEOS(dim=1, char_mass=0.0, virgin_mass=168.0/10.0, 
+        material = FiberEOS(dim=2, char_mass=0.0, virgin_mass=168.0/10.0,
                             anisotropic_direction=0, timescale=speedup_factor)
         decomposition = No_Oxidation_Model()
 
@@ -954,6 +933,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from meshmode.transform_metadata import FirstAxisIsElementsTag
 
     def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
+        return cv
 
         # limit species
         spec_lim = make_obj_array([
@@ -1028,6 +1008,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return theta*(field - cell_avgs) + cell_avgs
 
     def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
+        return cv
 
         smoothness = 1.0 - theta_factor*flipped_smoothness
 
@@ -1074,10 +1055,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     reaction_rates_damping = force_eval(
             actx, reaction_damping(dcoll, fluid_nodes))
 
-    def _get_fluid_state(cv, wv, temp_seed):
+    def _get_fluid_state(cv, sample_densities, temp_seed):
         return make_fluid_state(
             cv=cv, gas_model=gas_model, temperature_seed=temp_seed,
-            material_densities=wv.material_densities,
+            material_densities=sample_densities,
             limiter_func=_limit_fluid_cv, limiter_dd=dd_vol_fluid,
         )
 
@@ -1096,29 +1077,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             logging.info("Initializing soln.")
 
         # ~~~ FLUID
-
         fluid_cv = fluid_init(
             x_vec=fluid_nodes, gas_model=gas_model, flow_rate=flow_rate,
             prescribe_species=prescribe_species)
         tseed = force_eval(actx, 300.0 + fluid_zeros)
 
         # ~~~ SAMPLE
-
-        # FIXME
-        eps_rho_solid = plug*material_densities
-        tau = gas_model.decomposition_progress(eps_rho_solid)
-        sample_wv = PorousWallVars(
-            material_densities=eps_rho_solid,
-            tau=tau,
-            density=gas_model.solid_density(eps_rho_solid),
-            void_fraction=gas_model.wall_eos.void_fraction(tau=tau),
-            permeability=gas_model.wall_eos.permeability(tau=tau),
-            tortuosity=gas_model.wall_eos.tortuosity(tau=tau)
-        )
+        sample_densities = plug*material_densities
+        del material densities
+        # del plug
 
         # ~~~ HOLDER
-
-        # tau = solid_wall_model.decomposition_progress(wall_densities)
         wall_mass = solid_wall_model.solid_density(wall_densities)
 
         wall_alumina_h = wall_alumina_cp*300.0 + solid_zeros
@@ -1131,7 +1100,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         solid_cv = SolidWallConservedVars(mass=wall_densities,
                                           energy=wall_energy)
 
-        last_stored_time = -1.0
+        last_stored_step = -1.0
         my_file = open("temperature_file.dat", "w")
         my_file.close()
 
@@ -1148,11 +1117,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             current_t = 0.0
             current_step = 0
 
-        data = np.genfromtxt("temperature_file.dat", delimiter=",")
-        if data.shape == 2:
-            last_stored_time = data[-1, 0]
-        else:
-            last_stored_time = -1.0  # sometimes the file only has 1 line...
+        last_stored_step = -1.0  # sometimes the file only has 1 line...
+        if os.path.isfile("temperature_file.dat"):
+            data = np.genfromtxt("temperature_file.dat", delimiter=",")
+            if data.shape == 2:
+                last_stored_step = data[-1, 1]
 
         if rank == 0:
             logger.info("Restarting soln.")
@@ -1173,23 +1142,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 restart_dcoll.discr_from_dd(dd_vol_solid))
             fluid_cv = fluid_connection(restart_data["cv"])
             tseed = fluid_connection(restart_data["temperature_seed"])
-            solid_cv = wall_connection(restart_data["wall_cv"])
+            solid_cv = solid_connection(restart_data["wall_cv"])
+            sample_densities = solid_connection(restart_data["sample_densities"])
         else:
             fluid_cv = restart_data["cv"]
             tseed = restart_data["temperature_seed"]
             solid_cv = restart_data["wall_cv"]
-
-            # FIXME
-            eps_rho_solid = plug*material_densities
-            tau = gas_model.decomposition_progress(eps_rho_solid)
-            sample_wv = PorousWallVars(
-                material_densities=eps_rho_solid,
-                tau=tau,
-                density=gas_model.solid_density(eps_rho_solid),
-                void_fraction=gas_model.wall_eos.void_fraction(tau=tau),
-                permeability=gas_model.wall_eos.permeability(tau=tau),
-                tortuosity=gas_model.wall_eos.tortuosity(tau=tau)
-            )
+            sample_densities = restart_data["sample_densities"]
 
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
@@ -1198,8 +1157,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     tseed = force_eval(actx, tseed)
     fluid_cv = force_eval(actx, fluid_cv)
-    sample_wv = force_eval(actx, sample_wv)
-    fluid_state = get_fluid_state(fluid_cv, sample_wv, tseed)
+    # sample_wv = force_eval(actx, sample_wv)
+    # fluid_state = get_fluid_state(fluid_cv, sample_wv, tseed)
+    fluid_state = get_fluid_state(fluid_cv, sample_densities, tseed)
 
     solid_cv = force_eval(actx, solid_cv)
     solid_state = get_solid_state(solid_cv)
@@ -1208,8 +1168,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     original_casename = casename
     casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
-    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
 
     vis_timer = None
     if logmgr:
@@ -1448,10 +1406,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("DV_T", fluid_state.temperature),
             ("DV_U", fluid_state.velocity[0]),
             ("DV_V", fluid_state.velocity[1]),
-            ("plug", plug),
             ("WV", fluid_state.wv),
+            ("dt", dt[0] if local_dt else None),
+            ("plug", plug),
             ("sponge", sponge_sigma),
-            # ("smoothness", 1.0 - theta_factor*smoothness),
+            ("reactions", reaction_rates_damping),
+            ("smoothness", 1.0 - theta_factor*smoothness),
         ]
 
         # species mass fractions
@@ -1468,6 +1428,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("wall_progress", wdv.tau),
             ("wall_temperature", wdv.temperature),
             ("wall_grad_t", grad_t_solid),
+            ("dt", dt[3] if local_dt else None),
         ]
 
         solid_viz_fields.append(("wv_mass", wall_cv.mass))
@@ -1485,7 +1446,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             print("Writing restart file...")
 
-        cv, tseed, wall_cv = state
+        cv, tseed, sample_densities, wall_cv = state
         restart_fname = rst_pattern.format(cname=casename, step=step,
                                            rank=rank)
         if restart_fname != restart_file:
@@ -1493,7 +1454,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 "volume_to_local_mesh_data": volume_to_local_mesh_data,
                 "cv": cv,
                 "temperature_seed": tseed,
-                "sample_densities": sample_wv.material_densities,
+                "sample_densities": sample_densities,
                 "nspecies": nspecies,
                 "wall_cv": wall_cv,
                 "t": t,
@@ -1765,14 +1726,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     #from grudge.dof_desc import DD_VOLUME_ALL
     def my_get_wall_timestep(solid_state):
-        return current_dt + solid_zeros
-#        wall_diffusivity = solid_wall_model.thermal_diffusivity(solid_state)
-#        return char_length_solid**2/(wall_diffusivity)
+#        return current_dt + solid_zeros
+        wall_diffusivity = solid_wall_model.thermal_diffusivity(solid_state)
+        return char_length_solid**2/(wall_diffusivity)
 
     def _my_get_timestep_wall(solid_state, t, dt):
         return current_cfl*my_get_wall_timestep(solid_state)
 
+    from mirgecom.wall_model import get_porous_flow_timestep
     def _my_get_timestep_fluid(fluid_state, t, dt):
+#        return get_porous_flow_timestep(dcoll, gas_model, fluid_state, current_cfl, dd_vol_fluid)
         return get_sim_timestep(
             dcoll, fluid_state, t, dt, current_cfl,
             constant_cfl=constant_cfl, local_dt=local_dt, fluid_dd=dd_vol_fluid)
@@ -1785,7 +1748,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if logmgr:
             logmgr.tick_before()
 
-        cv, tseed, wall_cv = state
+        cv, tseed, sample_densities, wall_cv = state
 
         cv = force_eval(actx, cv)
         tseed = force_eval(actx, tseed)
@@ -1797,7 +1760,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         cv = drop_order_cv(cv, smoothness, theta_factor)
 
         # construct species-limited fluid state
-        fluid_state = get_fluid_state(cv, sample_wv, tseed)
+        # fluid_state = get_fluid_state(cv, sample_wv, tseed)
+        fluid_state = get_fluid_state(cv, sample_densities, tseed)
         cv = fluid_state.cv
 
         # wall variables
@@ -1807,18 +1771,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wdv = solid_state.dv
 
         t = force_eval(actx, t)
-        dt_fluid = force_eval(actx, my_get_timestep_fluid(fluid_state, t[0], dt[0]))
+        dt_fluid = force_eval(actx,
+                              my_get_timestep_fluid(fluid_state, t[0], dt[0]))
 #        dt_fluid = force_eval(actx, actx.np.minimum(
 #            current_dt, my_get_timestep_fluid(fluid_state, t[0], dt[0])))
+
+        dt_solid = force_eval(actx,
+                              my_get_timestep_wall(solid_state, t[2], dt[2]))
 #        dt_solid = force_eval(actx, actx.np.minimum(
 #            1.0e-8, my_get_timestep_wall(solid_state, t[2], dt[2])))
-        dt_solid = force_eval(actx, current_dt + solid_zeros)
-        dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
+#        dt_solid = force_eval(actx, current_dt + solid_zeros)
+
+        dt = make_obj_array([dt_fluid, fluid_zeros, fluid_zeros, dt_solid])
 
         try:
             state = make_obj_array([
                 fluid_state.cv, fluid_state.dv.temperature,
-                solid_state.cv])
+                fluid_state.wv.material_densities, solid_state.cv])
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
@@ -1846,9 +1815,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
 
                 wall_time = np.max(actx.to_numpy(t[2]))
-                if wall_time > last_stored_time:
+                if step > last_stored_step:
                     my_file = open("temperature_file.dat", "a")
-                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
+                    my_file.write(f"{wall_time:.8f}, {step}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
                     my_file.close()
 
             if do_health:
@@ -1987,13 +1956,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         #~~~~~~~~~~~~~
 
-        return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+        return make_obj_array([fluid_rhs + fluid_sources,
+                               fluid_zeros,
+                               fluid_zeros,  # XXX material degradation
                                solid_rhs + solid_sources])
 
     get_rhs_compiled = actx.compile(_get_rhs)
 
     def my_rhs(t, state):
-        cv, tseed, wall_cv = state
+        cv, tseed, sample_densities, wall_cv = state
 
         cv = force_eval(actx, cv)
         tseed = force_eval(actx, tseed)
@@ -2005,7 +1976,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         cv = drop_order_cv(cv, smoothness, theta_factor)
 
         # construct species-limited fluid state
-        fluid_state = get_fluid_state(cv, sample_wv, tseed)
+        fluid_state = get_fluid_state(cv, sample_densities, tseed)
         fluid_state = force_eval(actx, fluid_state)
         cv = fluid_state.cv
 
@@ -2034,7 +2005,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 gc.freeze()
 
         min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
-        # min_dt = np.min(actx.to_numpy(dt[2])) if local_dt else dt
+        # min_dt = np.min(actx.to_numpy(dt[3])) if local_dt else dt
         # min_dt = min_dt*wall_time_scale
         if logmgr:
             set_dt(logmgr, min_dt)
@@ -2055,10 +2026,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_solid = force_eval(actx, current_t + solid_zeros)
 
     stepper_state = make_obj_array([fluid_state.cv, fluid_state.dv.temperature,
+                                    sample_densities,
                                     solid_state.cv])
 
-    dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
-    t = make_obj_array([t_fluid, t_fluid, t_solid])
+    dt = make_obj_array([dt_fluid, fluid_zeros, fluid_zeros, dt_solid])
+    t = make_obj_array([t_fluid, t_fluid, t_fluid, t_solid])
 
     if rank == 0:
         logging.info("Stepping.")
@@ -2077,7 +2049,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     elif use_profiling:
         print(actx.tabulate_profiling_data())
 
-    exit()
+    sys.exit()
 
 
 if __name__ == "__main__":
