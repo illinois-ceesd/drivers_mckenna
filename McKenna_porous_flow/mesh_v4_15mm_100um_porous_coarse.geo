@@ -13,10 +13,12 @@ ext_radius = 2.89*25.4/2000;
 burner_base_radius = 4.725*25.4/2000;
 
 burner_height = 0.10;
-flame_dist = 0.0025;
+flame_dist = 0.0040;
 
 /*material radius*/
-material_radius = 0.001;
+material_radius1 = 0.0012;
+material_radius2 = 0.0015;
+material_radius3 = 0.0020;
 
 mat_location = burner_height + 0.015;  //arbitrary value
 mat_wide = 0.5*1.25*25.4/1000;
@@ -39,15 +41,15 @@ flame_pos = burner_height + flame_dist;
 Point( 8) = {     0.0,  mat_location - mat_BL_y, 0.,     clS};
 Point( 9) = {     0.0, mat_location            , 0., 0.7*clS};
 /*Point(12) = {mat_wide, mat_location            , 0.,     1.0};*/
-Point(10) = {mat_wide - material_radius, material_radius+mat_location, 0., 1.0};
-Point(11) = {mat_wide - material_radius,                 mat_location, 0., 1.0};
-Point(12) = {mat_wide                  , material_radius+mat_location, 0., 1.0};
+Point(10) = {mat_wide - material_radius2, material_radius2+mat_location, 0., 1.0};
+Point(11) = {mat_wide - material_radius2,                 mat_location, 0., 1.0};
+Point(12) = {mat_wide                   , material_radius2+mat_location, 0., 1.0};
 Point(13) = {mat_wide, mat_location + mat_thick, 0.,     1.0};
 Point(14) = {mat_wide, mat_location + insulator, 0.,     1.0};
 
 Point(15) = {mat_wide,            mat_location + 1.*mat_holder, 0., 1.0};
 Point(16) = {     0.0,            mat_location + 1.*mat_holder, 0., clM};
-Point(17) = {     0.0, mat_BL_y + mat_location + 1.*mat_holder, 0., 2.0*clS};
+Point(17) = {     0.0, mat_BL_y + mat_location + 1.*mat_holder, 0., 1.0*clS};
 /*Point(18) = {     0.0,                          burner_height + 0.550, 0., 6.00*clF};*/
 
 Point(20) = {              0.00, radius, 0., 0.20*cl2};
@@ -69,9 +71,9 @@ Point(32) = {      mat_wide + mat_BL_x, burner_height + flame_dist, 0., 1.0};
 Point(33) = {                       0., burner_height + flame_dist, 0., clS};
 
 
-Point(40) = {mat_wide + mat_BL_x - material_radius, material_radius + mat_location - mat_BL_y, 0., 1.0};
-Point(41) = {mat_wide + mat_BL_x - material_radius,                   mat_location - mat_BL_y, 0., 1.0};
-Point(42) = {mat_wide + mat_BL_x                  , material_radius + mat_location - mat_BL_y, 0., 1.0};
+Point(40) = {mat_wide + mat_BL_x - material_radius3, material_radius3 + mat_location - mat_BL_y, 0., 1.0};
+Point(41) = {mat_wide + mat_BL_x - material_radius3,                   mat_location - mat_BL_y, 0., 1.0};
+Point(42) = {mat_wide + mat_BL_x                   , material_radius3 + mat_location - mat_BL_y, 0., 1.0};
 Point(43) = {mat_wide + mat_BL_x, mat_location + mat_thick, 0., 1.0};
 Point(44) = {mat_wide + mat_BL_x, mat_location + insulator, 0., 1.0};
 Point(45) = {mat_wide + mat_BL_x, mat_location + 1.0*mat_holder + mat_BL_y, 0., 1.0};
@@ -127,9 +129,9 @@ Point(52) = {           0.0, mat_location + insulator, 0., 1.0*clM};
 Point(53) = {           0.0, mat_location + mat_thick, 0., 0.6*clM};
 Point(54) = {insulator_wide, mat_location + mat_thick, 0., 0.3*clM};
 Point(55) = {           0.0, mat_location + delta_mat, 0., 0.3*clM};
-Point(56) = {insulator_wide - material_radius, material_radius+mat_location + delta_mat, 0., 0.3*clM};
-Point(57) = {insulator_wide - material_radius,                 mat_location + delta_mat, 0., 0.3*clM};
-Point(58) = {insulator_wide                  , material_radius+mat_location + delta_mat, 0., 0.3*clM};
+Point(56) = {insulator_wide - material_radius1, material_radius1+mat_location + delta_mat, 0., 0.3*clM};
+Point(57) = {insulator_wide - material_radius1,                 mat_location + delta_mat, 0., 0.3*clM};
+Point(58) = {insulator_wide                   , material_radius1+mat_location + delta_mat, 0., 0.3*clM};
 
 Line(61) = { 9, 55};
 Line(63) = {55, 53};
@@ -156,12 +158,12 @@ Transfinite Line {-51} = 26 Using Progression 1.008;
 Transfinite Line { 72} = 26 Using Progression 1.015;
 
 /*vertical*/
-Transfinite Line {  3} = 14 Using Progression 1.1;
-Transfinite Line { 16} = 14 Using Progression 1.1;
-Transfinite Line {  4} = 14 Using Progression 1.1;
-Transfinite Line {  6} = 14 Using Progression 1.1;
-Transfinite Line { 13} = 14 Using Progression 1.0;
-Transfinite Line { 10} = 14 Using Progression 1.0;
+Transfinite Line {  3} = 18 Using Progression 1.1;
+Transfinite Line { 16} = 18 Using Progression 1.1;
+Transfinite Line {  4} = 18 Using Progression 1.1;
+Transfinite Line {  6} = 18 Using Progression 1.1;
+Transfinite Line { 13} = 18 Using Progression 1.0;
+Transfinite Line { 10} = 18 Using Progression 1.0;
 
 /*burner*/
 Transfinite Line {-15} = 15 Using Progression 1.04;
@@ -178,8 +180,8 @@ Transfinite Line { 59} = 10 Using Progression 1.100;
 Transfinite Line {-60} = 10 Using Progression 1.100;
 
 Transfinite Line { 26} = 41 Using Progression 1.000;
-Transfinite Line { 54} = 41 Using Progression 1.002;
-Transfinite Line { 70} = 41 Using Progression 1.005;
+Transfinite Line { 54} = 41 Using Progression 1.000;
+Transfinite Line { 70} = 41 Using Progression 1.000;
 
 Transfinite Line { 27} = 26 Using Progression 1.04;
 Transfinite Line { 55} = 26 Using Progression 1.04;
@@ -193,9 +195,9 @@ Transfinite Line {-29} = 19 Using Progression 1.02;
 Transfinite Line {-64} = 10 Using Progression 1.1;
 Transfinite Line { 61} = 10 Using Progression 1.1;
 
-Transfinite Line { 25} = 5 Using Progression 1.0;
-Transfinite Line { 52} = 5 Using Progression 1.0;
-Transfinite Line { 71} = 5 Using Progression 1.0;
+Transfinite Line { 25} = 7 Using Bump 0.99;
+Transfinite Line { 52} = 7 Using Bump 1.20;
+Transfinite Line { 71} = 7 Using Bump 1.40;
 
 /*#############################################*/
 
@@ -224,30 +226,31 @@ Plane Surface(6) = {6};
 Transfinite Surface {6} Alternate;
 
 /*Material BL*/
-Line Loop(11) = {50,51,52,54,53,-26,-25,-23};
+Line Loop(7) = {50,51,52,54,53,-26,-25,-23};
 /*Line Loop(11) = {51,52,-23,50};*/
-Plane Surface(11) = {11};
-Transfinite Surface {11} = {13,43,8,9};
+Plane Surface(7) = {7};
+Transfinite Surface {7} = {13,43,8,9};
 
-/*Line Loop(12) = {-53, -54, 52, 26};*/
-/*Plane Surface(12) = {-12};*/
-/*Transfinite Surface {12};*/
+Line Loop(8) = {-60,-27, -53, 55};
+Plane Surface(8) = {8};
+Transfinite Surface {8};
 
-Line Loop(13) = {-60,-27, -53, 55};
-Plane Surface(13) = {13};
-Transfinite Surface {13};
+Line Loop(9) = {60, 56, -58, -28};
+Plane Surface(9) = {9};
+Transfinite Surface {9} Right;
 
-Line Loop(14) = {60, 56, -58, -28};
-Plane Surface(14) = {14};
-Transfinite Surface {14} Right;
-
-Line Loop(15) = {59,-29, 58, 57};
-Plane Surface(15) = {15};
-Transfinite Surface {15};
+Line Loop(10) = {59,-29, 58, 57};
+Plane Surface(10) = {10};
+Transfinite Surface {10};
 
 /*Sample*/
-Line Loop(16) = {70,71,72,63,68};
-Plane Surface(16) = {16};
+Line Loop(11) = {70,71,72,63,68};
+Plane Surface(11) = {11};
+
+Line Loop(12) = {61, -72, -71, -70, 64, -54, -52, -51};
+/*Line Loop(12) = {-53, -54, 52, 26};*/
+Plane Surface(12) = {12};
+Transfinite Surface {12} = {54,13,9,55};
 
 /*Line Loop(17) = {70,72,54,-64};*/
 /*Plane Surface(17) = {-17};*/
@@ -327,14 +330,14 @@ Point(107) = {        0.           ,  -0.000200 + mat_location , 0., 1.0};
 
 
 Physical Line("inlet") = {1,2,5};
-Physical Line("symmetry") = {6,20:22,50,30,59,61,63};
+Physical Line("symmetry") = {6,22,50,30,59,61,63};
 Physical Line("burner") = {44,14,15};
 /*Physical Line("outlet") = {40};*/
-Physical Line("linear") = {40,41,42,43};
+Physical Line("linear") = {41,42,43};
 Physical Line("wall_sym") = {65,67};
 /*Physical Line("interface") = {64,68};*/
-Physical Surface("fluid") = {1:6,11:15};
-Physical Surface("sample") = {16:18};
+Physical Surface("fluid") = {1:10};
+Physical Surface("sample") = {11,12};
 Physical Surface("wall_alumina") = {20};
 Physical Surface("wall_graphite") = {21};
 
