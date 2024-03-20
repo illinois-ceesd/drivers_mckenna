@@ -386,18 +386,18 @@ class PorousMaterial:
             )
         sponge_x = 1.0 - actx.np.absolute(2.0*(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4))
 
-        return sponge_x*sponge_y
+#        return sponge_x*sponge_y
 
-#        radius = actx.np.sqrt((xpos-(x0-self._thickness*0.5))**2 + (ypos-(y0 + self._thickness*0.5))**2)
-#        sponge = actx.np.where(actx.np.less(radius, self._thickness*0.5), 0.5*radius/(self._thickness*0.5), 0.5)
-#        circle = 1.0 - 2.0*(-20.0*sponge**7 + 70*sponge**6 - 84*sponge**5 + 35*sponge**4)
+        radius = actx.np.sqrt((xpos-(x0-self._thickness*0.5))**2 + (ypos-(y0 + self._thickness*0.5))**2)
+        sponge = actx.np.where(actx.np.less(radius, self._thickness*0.5), 0.5*radius/(self._thickness*0.5), 0.5)
+        circle = 1.0 - 2.0*(-20.0*sponge**7 + 70*sponge**6 - 84*sponge**5 + 35*sponge**4)
 
-#        weight = \
-#            actx.np.where(actx.np.less(xpos, x0 - self._thickness*0.5),
-#                sponge_x*sponge_y,
-#                actx.np.where(actx.np.greater(ypos, y0 + self._thickness*0.5), sponge_x*sponge_y, circle))
+        weight = \
+            actx.np.where(actx.np.less(xpos, x0 - self._thickness*0.5),
+                sponge_x*sponge_y,
+                actx.np.where(actx.np.greater(ypos, y0 + self._thickness*0.5), sponge_x*sponge_y, circle))
 
-#        return weight
+        return weight
 
 
 class No_Oxidation_Model():  # noqa N801
@@ -511,7 +511,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if use_tpe:
         mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_porous_coarse_quads-v2.msh"
     else:
-        mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_porous_coarse"
+        mesh_filename = f"mesh_v4_{width_mm}_{flame_grid_um}_porous_coarse"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -1084,7 +1084,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         # ~~~ SAMPLE
         sample_densities = plug*material_densities
-        del material densities
+        del material_densities
         # del plug
 
         # ~~~ HOLDER
@@ -1441,6 +1441,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         write_visfile(
             dcoll, solid_viz_fields, solid_visualizer,
             vizname=vizname+"-wall", step=step, t=t, overwrite=True, comm=comm)
+
+        sys.exit()
 
     def my_write_restart(step, t, state):
         if rank == 0:

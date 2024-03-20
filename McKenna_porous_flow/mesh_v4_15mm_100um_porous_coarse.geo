@@ -126,7 +126,7 @@ Line(60) = {44, 14};
 delta_mat = mat_wide - insulator_wide;
 Point(51) = {insulator_wide, mat_location + insulator, 0., 0.9*clM};
 Point(52) = {           0.0, mat_location + insulator, 0., 1.0*clM};
-Point(53) = {           0.0, mat_location + mat_thick, 0., 0.6*clM};
+Point(53) = {           0.0, mat_location + mat_thick, 0., 0.5*clM};
 Point(54) = {insulator_wide, mat_location + mat_thick, 0., 0.3*clM};
 Point(55) = {           0.0, mat_location + delta_mat, 0., 0.3*clM};
 Point(56) = {insulator_wide - material_radius1, material_radius1+mat_location + delta_mat, 0., 0.3*clM};
@@ -229,19 +229,19 @@ Transfinite Surface {6} Alternate;
 Line Loop(7) = {50,51,52,54,53,-26,-25,-23};
 /*Line Loop(11) = {51,52,-23,50};*/
 Plane Surface(7) = {7};
-Transfinite Surface {7} = {13,43,8,9};
+Transfinite Surface {7} = {13,43,8,9} Alternate;
 
 Line Loop(8) = {-60,-27, -53, 55};
 Plane Surface(8) = {8};
-Transfinite Surface {8};
+Transfinite Surface {8} Alternate;
 
 Line Loop(9) = {60, 56, -58, -28};
 Plane Surface(9) = {9};
-Transfinite Surface {9} Right;
+Transfinite Surface {9} Alternate;
 
 Line Loop(10) = {59,-29, 58, 57};
 Plane Surface(10) = {10};
-Transfinite Surface {10};
+Transfinite Surface {10} Alternate;
 
 /*Sample*/
 Line Loop(11) = {70,71,72,63,68};
@@ -250,7 +250,7 @@ Plane Surface(11) = {11};
 Line Loop(12) = {61, -72, -71, -70, 64, -54, -52, -51};
 /*Line Loop(12) = {-53, -54, 52, 26};*/
 Plane Surface(12) = {12};
-Transfinite Surface {12} = {54,13,9,55};
+Transfinite Surface {12} = {54,13,9,55} Alternate;
 
 /*Line Loop(17) = {70,72,54,-64};*/
 /*Plane Surface(17) = {-17};*/
