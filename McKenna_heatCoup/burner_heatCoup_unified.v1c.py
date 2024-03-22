@@ -1418,7 +1418,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                               material_densities=wall_densities)
             solid_cv = solid_init(solid_nodes, solid_wall_model)
 
-        last_stored_time = -1.0
+        last_stored_step = -1.0
         my_file = open("temperature_file.dat", "w")
         my_file.close()
 
@@ -1438,12 +1438,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             current_t = 0.0
             current_step = 0
 
-        last_stored_time = -1.0
+        last_stored_step = -1.0
         if os.path.isfile("temperature_file.dat"):
             data = np.genfromtxt("temperature_file.dat", delimiter=",")
             # sometimes the file only has 1 line...
             if data.shape == 2:
-                last_stored_time = data[-1, 0]
+                last_stored_step = data[-1, 0]
 
         if rank == 0:
             logger.info("Restarting soln.")
@@ -2175,7 +2175,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
 
                 wall_time = np.max(actx.to_numpy(t[2]))
-                if wall_time > last_stored_time:
+                if step > last_stored_step:
 
                     # heat flux
                     coupling_data = coupling(fluid_state, solid_state, boundary_momentum)
@@ -2211,7 +2211,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
                     # temperature
                     my_file = open("temperature_file.dat", "a")
-                    my_file.write(f"{wall_time:.8f}, {step}, {min_temp_center:.8f}, {max_temp_center:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
+                    my_file.write(f"{wall_time:.8f}, {step}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
                     my_file.close()
 
                     if rank == 0:
