@@ -24,6 +24,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 import os
+import gc
 import sys
 import logging
 import numpy as np
@@ -31,6 +32,7 @@ import pyopencl as cl
 import cantera
 from functools import partial
 from dataclasses import dataclass, fields
+from warnings import warn
 
 from arraycontext import (
     dataclass_array_container, with_container_arithmetic,
@@ -386,18 +388,18 @@ class PorousMaterial:
             )
         sponge_x = 1.0 - actx.np.absolute(2.0*(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4))
 
-#        return sponge_x*sponge_y
+        return sponge_x*sponge_y
 
-        radius = actx.np.sqrt((xpos-(x0-self._thickness*0.5))**2 + (ypos-(y0 + self._thickness*0.5))**2)
-        sponge = actx.np.where(actx.np.less(radius, self._thickness*0.5), 0.5*radius/(self._thickness*0.5), 0.5)
-        circle = 1.0 - 2.0*(-20.0*sponge**7 + 70*sponge**6 - 84*sponge**5 + 35*sponge**4)
+#        radius = actx.np.sqrt((xpos-(x0-self._thickness*0.5))**2 + (ypos-(y0 + self._thickness*0.5))**2)
+#        sponge = actx.np.where(actx.np.less(radius, self._thickness*0.5), 0.5*radius/(self._thickness*0.5), 0.5)
+#        circle = 1.0 - 2.0*(-20.0*sponge**7 + 70*sponge**6 - 84*sponge**5 + 35*sponge**4)
 
-        weight = \
-            actx.np.where(actx.np.less(xpos, x0 - self._thickness*0.5),
-                sponge_x*sponge_y,
-                actx.np.where(actx.np.greater(ypos, y0 + self._thickness*0.5), sponge_x*sponge_y, circle))
+#        weight = \
+#            actx.np.where(actx.np.less(xpos, x0 - self._thickness*0.5),
+#                sponge_x*sponge_y,
+#                actx.np.where(actx.np.greater(ypos, y0 + self._thickness*0.5), sponge_x*sponge_y, circle))
 
-        return weight
+#        return weight
 
 
 class No_Oxidation_Model():  # noqa N801
@@ -489,7 +491,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.4
 
     # discretization and model control
-    order = 2
+    order = 4
 
     chem_rate = 1.0
     speedup_factor = 5.0
@@ -503,7 +505,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     width_mm = str('%02i' % (width*1000)) + "mm"
     flame_grid_um = str('%03i' % flame_grid_spacing) + "um"
 
-    current_dt = 5.0e-7
+    current_dt = 1.0e-8
     wall_time_scale = speedup_factor  # wall speed-up
     mechanism_file = "uiuc_7sp"
     solid_domains = ["wall_alumina", "wall_graphite"]
@@ -1396,6 +1398,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             step, t, dt, fluid_state, solid_state, smoothness=None,
             grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None):
 
+#        wdv = solid_state.dv
+#        fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
+#            add_interface_boundaries_no_grad(
+#                dcoll, gas_model,
+#                dd_vol_fluid, dd_vol_solid,
+#                fluid_state, wdv.thermal_conductivity, wdv.temperature,
+#                fluid_boundaries, solid_boundaries,
+#                interface_noslip=True, interface_radiation=use_radiation)
+
+#        """Radiation sink term"""
+#        radiation_boundaries = normalize_boundaries(fluid_all_boundaries_no_grad)
+#        grad_epsilon = my_derivative_function(
+#            actx, dcoll, fluid_state.wv.void_fraction, radiation_boundaries,
+#            dd_vol_fluid, "replicate", _RadiationTag)
+#        epsilon_0 = 1.0
+#        f_phi = actx.np.sqrt( grad_epsilon[0]**2 + grad_epsilon[1]**2 )
+
         rho = fluid_state.cv.mass
         cp = eos.heat_capacity_cp(fluid_state.cv, fluid_state.temperature)
         fluid_viz_fields = [
@@ -1412,6 +1431,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("sponge", sponge_sigma),
             ("reactions", reaction_rates_damping),
             ("smoothness", 1.0 - theta_factor*smoothness),
+#            ("grad_epsilon", grad_epsilon),
+#            ("f_phi", f_phi),
         ]
 
         # species mass fractions
@@ -1442,7 +1463,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, solid_viz_fields, solid_visualizer,
             vizname=vizname+"-wall", step=step, t=t, overwrite=True, comm=comm)
 
-        sys.exit()
+        # sys.exit()
 
     def my_write_restart(step, t, state):
         if rank == 0:
@@ -1706,15 +1727,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             species_mass=cv.species_mass*0.0)
 
     # ~~~~~~~
-    def radiation_sink_terms(boundaries, temperature, tau):
+    def radiation_sink_terms(boundaries, temperature, epsilon):
         """Radiation sink term"""
         radiation_boundaries = normalize_boundaries(boundaries)
-        grad_phi = my_derivative_function(actx, dcoll, tau, radiation_boundaries,
-                                          dd_vol_fluid, "replicate", _RadiationTag)
-        phi_0 = 1.0
-        f_phi = 1.0/phi_0*actx.np.sqrt( grad_phi[0]**2 + grad_phi[1]**2 )
+        grad_epsilon = my_derivative_function(
+            actx, dcoll, epsilon, radiation_boundaries, dd_vol_fluid,
+            "replicate", _RadiationTag)
+        epsilon_0 = 1.0
+        f_phi = actx.np.sqrt( grad_epsilon[0]**2 + grad_epsilon[1]**2 )
         
-        return - 1.0*5.67e-8*f_phi*(temperature**4 - 300.0**4)
+        return - 1.0*5.67e-8*(1.0/epsilon_0*f_phi)*(temperature**4 - 300.0**4)
 
 ##############################################################################
 
@@ -1726,14 +1748,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def vol_max(dd_vol, x):
         return actx.to_numpy(nodal_max(dcoll, dd_vol, x, initial=-np.inf))[()]
 
-    #from grudge.dof_desc import DD_VOLUME_ALL
-    def my_get_wall_timestep(solid_state):
-#        return current_dt + solid_zeros
-        wall_diffusivity = solid_wall_model.thermal_diffusivity(solid_state)
-        return char_length_solid**2/(wall_diffusivity)
-
     def _my_get_timestep_wall(solid_state, t, dt):
-        return current_cfl*my_get_wall_timestep(solid_state)
+        return current_dt + solid_zeros
+#        wall_diffusivity = solid_wall_model.thermal_diffusivity(solid_state)
+#        return current_cfl*char_length_solid**2/(wall_diffusivity)
 
     from mirgecom.wall_model import get_porous_flow_timestep
     def _my_get_timestep_fluid(fluid_state, t, dt):
@@ -1803,9 +1821,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ngarbage = 10
             if check_step(step=step, interval=ngarbage):
                 with gc_timer.start_sub_timer():
-                    from warnings import warn
                     warn("Running gc.collect() to work around memory growth issue ")
-                    import gc
                     gc.collect()
 
             if step % 1000 == 0:
@@ -1821,6 +1837,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     my_file = open("temperature_file.dat", "a")
                     my_file.write(f"{wall_time:.8f}, {step}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
                     my_file.close()
+
+                gc.freeze()
 
             if do_health:
                 ## FIXME warning in lazy compilation
@@ -1844,9 +1862,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             if do_viz:
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     solid_state=solid_state, smoothness=smoothness)
+                gc.freeze()
 
             if do_restart:
                 my_write_restart(step, t, state)
+                gc.freeze()
 
         except MyRuntimeError:
             if rank == 0:
@@ -1899,7 +1919,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             dcoll, wdv.thermal_conductivity,
             solid_all_boundaries_no_grad, wdv.temperature,
             quadrature_tag=quadrature_tag, dd=dd_vol_solid,
-            numerical_flux_func=grad_facial_flux_weighted,
+            # numerical_flux_func=grad_facial_flux_weighted,
             comm_tag=_SolidGradTempTag)
 
         fluid_all_boundaries, solid_all_boundaries = \
@@ -1929,11 +1949,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
                                   fluid_grad_temperature)
             + darcy_source_terms(fluid_state.cv, fluid_state.tv, fluid_state.wv)
-            #+ radiation_sink_terms(fluid_all_boundaries_no_grad,
-            #                       fluid_state.temperature, fluid_state.wv.tau)
+            + radiation_sink_terms(fluid_all_boundaries_no_grad,
+                                   fluid_state.temperature,
+                                   fluid_state.wv.void_fraction)
         )
 
-        #~~~~~~~~~~~~~
+        # ~~~~~~~~~~~~~
         if ignore_wall:
             solid_rhs = SolidWallConservedVars(mass=solid_zeros,
                                                energy=solid_zeros)
@@ -1947,7 +1968,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 dd=dd_vol_solid,
                 grad_u=solid_grad_temperature,
                 comm_tag=_SolidOperatorTag,
-                diffusion_numerical_flux_func=diffusion_facial_flux_harmonic,
+                # diffusion_numerical_flux_func=diffusion_facial_flux_harmonic,
             )
 
             solid_sources = wall_time_scale * axisym_source_solid(
@@ -1998,7 +2019,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if step == first_step + 1:
             with gc_timer.start_sub_timer():
-                import gc
                 gc.collect()
                 # Freeze the objects that are still alive so they will not
                 # be considered in future gc collections.
@@ -2007,7 +2027,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 gc.freeze()
 
         min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
-        # min_dt = np.min(actx.to_numpy(dt[3])) if local_dt else dt
+        # min_dt = np.min(actx.to_numpy(dt[-1])) if local_dt else dt
         # min_dt = min_dt*wall_time_scale
         if logmgr:
             set_dt(logmgr, min_dt)
