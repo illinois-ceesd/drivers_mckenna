@@ -254,7 +254,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
      # default i/o frequencies
-    nviz = 1000
+    nviz = 5000
     nrestart = 10000
     nhealth = 1
     nstatus = 100
@@ -265,12 +265,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_final = 100.0
 
     constant_cfl = True
-    current_cfl = 0.40
+    current_cfl = 0.20
     current_dt = 0.0 #dummy if constant_cfl = True
     local_dt = True
     
     # discretization and model control
-    order = 2
+    order = 3
     use_overintegration = False
 
     mechanism_file = "air_3sp"
@@ -358,7 +358,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ####################################################################
 
-    u_x = 1.25e-3*100.0
+    u_x = 1.25e-3*100.0*10.0
     u_y = 0.0
 
     _temperature = 1000.0
@@ -727,6 +727,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~
 
+    import os
+    import time
+    t_start = time.time()
+    t_shutdown = 720*60
+
     def my_pre_step(step, t, dt, state):
 
         if logmgr:
@@ -769,6 +774,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     if rank == 0:
                         logger.info("Fluid solution failed health check.")
                     raise MyRuntimeError("Failed simulation health check.")
+
+            t_elapsed = time.time() - t_start
+            if t_shutdown - t_elapsed < 300.0:
+                my_write_restart(step, t, state)
+                sys.exit()
+
+            file_exists = os.path.exists("write_restart")
+            if file_exists:
+              os.system("rm write_restart")
+              do_restart = True
 
             if do_restart:
                 my_write_restart(step=step, t=t, state=state)
