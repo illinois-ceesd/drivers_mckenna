@@ -1,4 +1,4 @@
-"""mirgecom driver for the porous-cylinder flow demonstration."""
+"""mirgecom driver for the porous-slab flow demonstration."""
 
 __copyright__ = """
 Copyright (C) 2024 University of Illinois Board of Trustees
@@ -26,6 +26,7 @@ THE SOFTWARE.
 import logging
 import sys
 import gc
+import cantera
 import numpy as np
 import pyopencl as cl
 from functools import partial
@@ -42,7 +43,11 @@ from grudge.shortcuts import compiled_lsrk45_step
 from meshmode.dof_array import DOFArray
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
-from mirgecom.navierstokes import ns_operator
+from mirgecom.navierstokes import (
+    grad_t_operator,
+    grad_cv_operator,
+    ns_operator
+)
 from mirgecom.simutil import (
     check_step,
     get_sim_timestep,
@@ -61,11 +66,18 @@ from mirgecom.boundary import (
     LinearizedInflowBoundary,
     LinearizedOutflowBoundary,
     PressureOutflowBoundary,
+    AdiabaticNoslipWallBoundary,
+    PrescribedFluidBoundary
 )
 from mirgecom.fluid import make_conserved
 from mirgecom.transport import SimpleTransport
-from mirgecom.eos import IdealSingleGas
-from mirgecom.gas_model import make_fluid_state
+from mirgecom.eos import PyrometheusMixture
+from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
+from mirgecom.gas_model import (
+    GasModel,
+    make_fluid_state,
+    make_operator_fluid_states
+)
 from mirgecom.logging_quantities import (
     initialize_logmgr, logmgr_add_cl_device_info, logmgr_set_time,
     logmgr_add_device_memory_usage
@@ -73,6 +85,23 @@ from mirgecom.logging_quantities import (
 from mirgecom.wall_model import (
     PorousWallTransport, PorousFlowModel, PorousWallVars
 )
+
+
+class _FluidOpStatesTag:
+    pass
+
+
+class _FluidGradCVTag:
+    pass
+
+
+class _FluidGradTempTag:
+    pass
+
+
+class _FluidOperatorTag:
+    pass
+
 
 class SingleLevelFilter(logging.Filter):
     def __init__(self, passlevel, reject):
@@ -187,12 +216,9 @@ from mirgecom.materials.carbon_fiber import FiberEOS as OriginalFiberEOS
 class FiberEOS(OriginalFiberEOS):
     """Inherits and modified the original carbon fiber."""
 
-    def thermal_conductivity(self, temperature, tau):
-        return 0.0 + temperature*0.0
-
     def permeability(self, tau):
-        virgin = 1.0e-6
-        char = 1e+9
+        virgin = 1.0e-5
+        char = 1e+7
         return virgin*tau + char*(1.0 - tau)
 
 
@@ -227,9 +253,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     vizname = viz_path+casename
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
-    Reynolds_number = 40.0
-    Mach_number = 0.3
-
      # default i/o frequencies
     nviz = 1000
     nrestart = 10000
@@ -242,13 +265,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_final = 100.0
 
     constant_cfl = True
-    current_cfl = 0.10
+    current_cfl = 0.40
     current_dt = 0.0 #dummy if constant_cfl = True
     local_dt = True
     
     # discretization and model control
-    order = 3
+    order = 2
     use_overintegration = False
+
+    mechanism_file = "air_3sp"
 
 ######################################################
 
@@ -333,25 +358,57 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ####################################################################
 
-    eos = IdealSingleGas()
+    u_x = 1.25e-3*100.0
+    u_y = 0.0
 
-    _temperature = 300.0
-    _pressure = 100000.0
-    _mass = _pressure/(eos.gas_const()*_temperature)
-    _c = np.sqrt(eos.gamma()*_pressure/_mass)
+    _temperature = 1000.0
+    _pressure = 101325.0
 
-    mu = _mass*(_c*Mach_number)*1.0/Reynolds_number
-    kappa = 1000.0*mu/0.71
-    base_transport = SimpleTransport(viscosity=mu, thermal_conductivity=kappa)
+    # {{{ Set up initial state using Cantera
+
+    # Use Cantera for initialization
+    from mirgecom.mechanisms import get_mechanism_input
+    mech_input = get_mechanism_input(mechanism_file)
+
+    cantera_soln = cantera.Solution(name="gas", yaml=mech_input)
+    nspecies = cantera_soln.n_species
+
+    x_reference = np.zeros(nspecies,)
+    x_reference[cantera_soln.species_index("O2")] = 0.21
+    x_reference[cantera_soln.species_index("N2")] = 0.79
+
+    # Set Cantera internal gas temperature, pressure, and mole fractios
+    cantera_soln.TPX = _temperature, _pressure, x_reference
+    y_reference = cantera_soln.Y
+
+    # Import Pyrometheus EOS
+    pyrometheus_mechanism = get_pyrometheus_wrapper_class_from_cantera(
+                                cantera_soln, temperature_niter=3)(actx.np)
+
+    species_names = pyrometheus_mechanism.species_names
+    print(f"Pyrometheus mechanism species names {species_names}\n")
+
+    temperature_seed = 1000.0
+    eos = PyrometheusMixture(pyrometheus_mechanism,
+                             temperature_guess=temperature_seed)
+
+    # }}}
+
+    mu = 1.5e-5*100.0
+    kappa = 1.5e-2
+    diff = 1.5e-4*100.0*np.ones(nspecies,)
+    base_transport = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
+                                     species_diffusivity=diff)
     sample_transport = PorousWallTransport(base_transport=base_transport)
 
     # ~~~
     material_densities = 168.0/10.0 + zeros
 
     import mirgecom.materials.carbon_fiber as material_sample
+    from mirgecom.materials.carbon_fiber import Y3_Oxidation_Model
     material = FiberEOS(dim=2, char_mass=0.0, virgin_mass=168.0/10.0,
                         anisotropic_direction=0)
-    # decomposition = No_Oxidation_Model()
+    decomposition = Y3_Oxidation_Model(wall_material=material)
 
     # ~~~
     gas_model = PorousFlowModel(eos=eos, transport=sample_transport,
@@ -359,67 +416,52 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #####################################################################
 
-#    def uniform_flow(x_vec, eos):
-
-#        gamma = eos.gamma()
-#        R = eos.gas_const()
-#        
-#        x = x_vec[0]
-
-#        pressure = 100000.0 + 0.0*x
-#        mass = 1.0 + 0.0*x
-#        c = actx.np.sqrt(gamma*pressure/mass)
-#        
-#        u_x = 0.0*x + c*Mach_number
-#        u_y = 0.0*x
-
-#        velocity = make_obj_array([u_x, u_y])   
-#        ke = .5*np.dot(velocity, velocity)*mass
-
-#        rho_e = pressure/(eos.gamma()-1) + ke
-
-##        # ~~~
-##        # FIXME prescribe temperature or use internal value?
-##        internal_energy = gas_model.eos.get_internal_energy(temperature, species_mass_fractions=y)
-##        kinetic_energy = 0.5 * np.dot(velocity, velocity)
-##        solid_energy = mass*0.0
-##        if boundary is False:
-##            material_dens = self._plug * self._solid_mass + x_vec[0]*0.0
-##            eps_rho_solid = gas_model.solid_density(material_dens)
-##            tau = gas_model.decomposition_progress(material_dens)
-##            solid_energy = eps_rho_solid * gas_model.wall_eos.enthalpy(temperature, tau)
-##        energy = mass * (internal_energy + kinetic_energy) + solid_energy
-
-#        return make_conserved(dim, mass=mass, energy=rho_e,
-#                              momentum=mass*velocity)
-
-#    flow_init = uniform_flow
-
     def plug_region(x_vec, thickness):
 
         xpos = x_vec[0]
         ypos = x_vec[1]
         actx = xpos.array_context
-        zeros = 0*xpos
 
-        cylinder_radius = 0.5
+        y0 = +0.1
+        dy = actx.np.where(
+        actx.np.less(ypos, y0-thickness*0.5),
+            0.0, actx.np.where(actx.np.greater(ypos, y0+thickness*0.5),
+                               1.0, (ypos-(y0-thickness*0.5))/thickness)
+        )
+        sponge_0 = 1.0-(-20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
 
-        radius = actx.np.sqrt(xpos**2 + ypos**2)
-        radius = actx.np.where(actx.np.greater(radius, 0.5), 0.5, radius)
-        sponge = actx.np.where(actx.np.less(radius, cylinder_radius-thickness), 0.0, 0.5*(radius-(cylinder_radius-thickness))/(thickness))
-        circle = 1.0 - 2.0*(-20.0*sponge**7 + 70*sponge**6 - 84*sponge**5 + 35*sponge**4)
+        x0 = -0.3
+        dx = actx.np.where(
+        actx.np.less(xpos, x0-thickness*0.5),
+            0.0, actx.np.where(actx.np.greater(xpos, x0+thickness*0.5),
+                               1.0, (xpos-(x0-thickness*0.5))/thickness)
+        )
+        sponge_1 = (-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
 
-        return circle
+        x0 = +0.3
+        dx = actx.np.where(
+        actx.np.less(xpos, x0-thickness*0.5),
+            0.0, actx.np.where(actx.np.greater(xpos, x0+thickness*0.5),
+                               1.0, (xpos-(x0-thickness*0.5))/thickness)
+        )
+        sponge_2 = 1.0-(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
 
-    plug = force_evaluation(actx, plug_region(x_vec=nodes, thickness=0.03))
+        return sponge_0*sponge_1*sponge_2
+
+    plug = force_evaluation(actx, plug_region(x_vec=nodes, thickness=0.015))
+
+    smoothing = 0.5*(1.0 + actx.np.tanh((nodes[0] + 0.6)/0.1))
+    _species = make_obj_array([
+        y_reference[0]*(1.0 - smoothing),
+        zeros,
+        (1.0 - y_reference[2])*smoothing + y_reference[2]
+    ])
     
-    u_x = _c*Mach_number
-    u_y = 0.0
     from mirgecom.materials.initializer import PorousWallInitializer
     flow_init = PorousWallInitializer(
-        temperature=300.0, material_densities=material_densities,
-        velocity=make_obj_array([u_x, u_y]), pressure=100000.0,
-        porous_region=plug)
+        temperature=_temperature, material_densities=material_densities,
+        velocity=make_obj_array([u_x, u_y]), pressure=_pressure,
+        porous_region=plug, species_mass_fractions=_species)
 
 ######################################################################
 
@@ -427,7 +469,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             logging.info("Initializing soln.")
     
-        temperature_seed = 300.0 + nodes[0]*0.0
+        temperature_seed = 1000.0 + nodes[0]*0.0
         current_cv, sample_densities = flow_init(x_vec=nodes, gas_model=gas_model)
         first_step = 0
     else:
@@ -449,20 +491,62 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 dcoll.discr_from_dd("vol"),
                 restart_discr.discr_from_dd("vol"))
 
-            current_cv = connection(restart_data["state"])
+            current_cv = connection(restart_data["cv"])
             temperature_seed = connection(restart_data["temperature_seed"])
             sample_densities = connection(restart_data["sample_densities"])
         else:
-            current_cv = restart_data["state"]
+            current_cv = restart_data["cv"]
             temperature_seed = restart_data["temperature_seed"]
             sample_densities = restart_data["sample_densities"]
 
     ##################################################
 
+    from mirgecom.limiter import bound_preserving_limiter
+
+    from grudge.discretization import DiscretizationCollection
+    from grudge.dof_desc import DISCR_TAG_MODAL
+    from meshmode.transform_metadata import FirstAxisIsElementsTag
+
+    def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
+        return cv
+
+        # limit species
+        spec_lim = make_obj_array([
+            bound_preserving_limiter(dcoll, cv.species_mass_fractions[i],
+                                     mmin=0.0, mmax=1.0, modify_average=True,
+                                     dd=dd)
+            for i in range(nspecies)
+        ])
+
+        # normalize to ensure sum_Yi = 1.0
+        aux = cv.mass*0.0
+        for i in range(0, nspecies):
+            aux = aux + spec_lim[i]
+        spec_lim = spec_lim/aux
+
+        # recompute density
+        mass_lim = wv.void_fraction*eos.get_density(pressure=pressure,
+                                                    temperature=temperature,
+                                                    species_mass_fractions=spec_lim)
+
+        # recompute energy
+        energy_lim = mass_lim*(gas_model.eos.get_internal_energy(
+            temperature, species_mass_fractions=spec_lim)
+            + 0.5*np.dot(cv.velocity, cv.velocity)
+        ) + wv.density*gas_model.wall_eos.enthalpy(temperature, wv.tau)
+        
+
+        # make a new CV with the limited variables
+        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                            momentum=mass_lim*cv.velocity,
+                            species_mass=mass_lim*spec_lim)
+
+    # ~~~
+
     def _get_fluid_state(cv, sample_densities, temp_seed):
-        return make_fluid_state(cv=cv, gas_model=gas_model,
-                                temperature_seed=temp_seed,
-                                material_densities=sample_densities)
+        return make_fluid_state(
+            cv=cv, gas_model=gas_model, temperature_seed=temp_seed,
+            limiter_func=_limit_fluid_cv, material_densities=sample_densities)
 
     get_fluid_state = actx.compile(_get_fluid_state)
 
@@ -471,64 +555,32 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sample_densities = force_evaluation(actx, sample_densities)
     current_state = get_fluid_state(cv=current_cv, temp_seed=temperature_seed,
                                     sample_densities=sample_densities)
-
-    ##################################################
-
-#    sponge_init = PorousWallInitializer(
-#        temperature=300.0, material_densities=material_densities,
-#        velocity=make_obj_array([u_x, u_y]), pressure=100000.0,
-#        porous_region=0.0)
-
-#    initial_cv, _ = sponge_init(x_vec=nodes, gas_model=gas_model)
-#    ref_state = make_fluid_state(cv=initial_cv, gas_model=gas_model,
-#                                 temperature_seed=temperature_seed,
-#                                 material_densities=sample_densities)
-
-#    # initialize the sponge field
-#    sponge_x_thickness = 10.0
-#    sponge_y_thickness = 10.0
-
-#    xMaxLoc = +50.0
-#    xMinLoc = -25.0
-#    yMaxLoc = +25.0
-#    yMinLoc = -25.0
-
-#    sponge_amp = 100.0 #may need to be modified. Let's see...
-
-#    sponge_init = InitSponge(amplitude=sponge_amp,
-#        x_min=xMinLoc, x_max=xMaxLoc,
-#        y_min=yMinLoc, y_max=yMaxLoc,
-#        x_thickness=sponge_x_thickness,
-#        y_thickness=sponge_y_thickness
-#    )
-
-#    sponge_sigma = force_evaluation(actx, sponge_init(x_vec=nodes))
     
     ############################################################################
 
-#    inflow_init = PorousWallInitializer(
-#        temperature=300.0, material_densities=0.0,
-#        velocity=make_obj_array([u_x, u_y]), pressure=100000.0,
-#        porous_region=0.0)
+    inflow_init = PorousWallInitializer(
+        temperature=_temperature, material_densities=0.0,
+        velocity=make_obj_array([u_x, u_y]), pressure=_pressure,
+        porous_region=0.0, species_mass_fractions=y_reference)
 
-#    inflow_nodes = actx.thaw(dcoll.nodes(dd.trace('inflow')))
-#    _inflow_cv, _ = inflow_init(x_vec=inflow_nodes, gas_model=gas_model)
-#    inflow_cv = force_evaluation(actx, _inflow_cv)
-#    inflow_samp_dens = force_evaluation(actx, inflow_nodes[0]*0.0)
-#    inflow_state = get_fluid_state(cv=inflow_cv, temp_seed=300.0,
-#                                   sample_densities=inflow_samp_dens)
+    inflow_nodes = actx.thaw(dcoll.nodes(dd.trace('inflow')))
+    _inflow_cv, _ = inflow_init(x_vec=inflow_nodes, gas_model=gas_model)
+    inflow_cv = force_evaluation(actx, _inflow_cv)
+    inflow_samp_dens = force_evaluation(actx, inflow_nodes[0]*0.0)
+    inflow_state = get_fluid_state(cv=inflow_cv, temp_seed=_temperature,
+                                   sample_densities=inflow_samp_dens)
 
-#    def _inflow_boundary_state_func(**kwargs):
-#        return inflow_state
+    def _inflow_boundary_state_func(**kwargs):
+        return inflow_state
    
-    #inflow_boundary  = PrescribedFluidBoundary(boundary_state_func=_inflow_boundary_state_func)
+    inflow_boundary  = PrescribedFluidBoundary(boundary_state_func=_inflow_boundary_state_func)
 
-    side_boundary = LinearizedOutflowBoundary(
-        free_stream_density=_mass, free_stream_velocity=make_obj_array([u_x, u_y]),
-        free_stream_pressure=_pressure)
+    side_boundary = AdiabaticNoslipWallBoundary()
+
+    _mass = eos.get_density(_pressure, _temperature, y_reference)
     inflow_boundary = LinearizedInflowBoundary(
         free_stream_density=_mass, free_stream_velocity=make_obj_array([u_x, u_y]),
-        free_stream_pressure=_pressure)
+        free_stream_pressure=_pressure, free_stream_species_mass_fractions=y_reference)
     outflow_boundary = PressureOutflowBoundary(boundary_pressure=_pressure)
 
     boundaries = {dd.trace("side").domain_tag: side_boundary,
@@ -568,7 +620,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     visualizer = make_visualizer(dcoll)
 
-    initname = "cylinder"
+    initname = "slab"
     eosname = gas_model.eos.__class__.__name__
     init_message = make_init_message(dim=dim, order=order,
                                      nelements=local_nelements,
@@ -606,27 +658,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                       ("DV_T", fluid_state.dv.temperature),
                       ("WV", fluid_state.wv),
                       ("dt", dt[0] if local_dt else None),
-                      ("plug", plug)
+                      # ("plug", plug)
                       ]
 
-        """
-        zVort = None
-
-        if (grad_cv is not None):
-            grad_v = velocity_gradient(state.cv,grad_cv)
-            dudx = grad_v[0][0]
-            dudy = grad_v[0][1]
-            dvdx = grad_v[1][0]
-            dvdy = grad_v[1][1]
-            
-            zVort = dvdx - dudy
-
-            viz_fields.extend((
-                ("Z_vort", zVort),
-                ("ref_cv", ref_cv),
-                ("sponge_sigma", sponge_sigma),
-            ))
-        """
+        # species mass fractions
+        viz_fields.extend((
+            "Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
+            for i in range(nspecies))
                    
         from mirgecom.simutil import write_visfile
         write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
@@ -651,8 +689,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_health_check(cv, dv):
         health_error = False
-#        pressure = force_evaluation(actx, dv.pressure)
-#        temperature = force_evaluation(actx, dv.temperature)
         
         if check_naninf_local(dcoll, "vol", dv.pressure):
             health_error = True
@@ -710,7 +746,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             _dt = get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl,
                                    t_final, constant_cfl, local_dt=local_dt)
             if local_dt:
-                dt = make_obj_array([_dt, zeros, zeros])
+                dt = make_obj_array([_dt, zeros, _dt])
             else:
                 dt = _dt
 
@@ -751,25 +787,67 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return state, dt
 
-
     def my_rhs(t, state):
         cv, tseed, sample_densities = state
 
-        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-                                       temperature_seed=tseed,
-                                       material_densities=sample_densities)
+        fluid_state = make_fluid_state(
+            cv=cv, gas_model=gas_model, temperature_seed=tseed,
+            limiter_func=_limit_fluid_cv, material_densities=sample_densities)
         
-        cv_rhs = ns_operator(dcoll, state=fluid_state, time=t,
-                             boundaries=boundaries, gas_model=gas_model,
-                             quadrature_tag=quadrature_tag)
+        # ~~~
+        fluid_operator_states_quad = make_operator_fluid_states(
+            dcoll, fluid_state, gas_model, boundaries,
+            dd=dd, comm_tag=_FluidOpStatesTag,
+            #limiter_func=_limit_fluid_cv
+            )
 
-#        sponge = sponge_func(cv=fluid_state.cv, cv_ref=ref_state.cv,
-#                             sigma=sponge_sigma)
+        # fluid grad CV
+        fluid_grad_cv = grad_cv_operator(
+            dcoll, gas_model, boundaries, fluid_state,
+            time=t, dd=dd,
+            operator_states_quad=fluid_operator_states_quad,
+            comm_tag=_FluidGradCVTag)
+
+        # fluid grad T
+        fluid_grad_temperature = grad_t_operator(
+            dcoll, gas_model, boundaries, fluid_state,
+            time=t, dd=dd,
+            operator_states_quad=fluid_operator_states_quad,
+            comm_tag=_FluidGradTempTag)
+
+        fluid_rhs = ns_operator(
+            dcoll, gas_model, fluid_state, boundaries,
+            time=t, quadrature_tag=quadrature_tag, dd=dd,
+            operator_states_quad=fluid_operator_states_quad,
+            grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
+            comm_tag=_FluidOperatorTag)
 
         darcy_flow = darcy_source_terms(fluid_state.cv, fluid_state.tv, fluid_state.wv)
 
-        return make_obj_array([cv_rhs + darcy_flow, zeros, zeros])
+        # ~~~
+        idx_O2 = cantera_soln.species_index("O2")
+        idx_CO2 = cantera_soln.species_index("CO2")
+        sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
+            decomposition.get_source_terms(
+                fluid_state.temperature, fluid_state.wv.tau,
+                fluid_state.cv.species_mass_fractions[idx_O2])
 
+        source_species = fluid_state.cv.species_mass*0.0
+        source_species[idx_O2] = sample_source_O2
+        source_species[idx_CO2] = sample_source_CO2
+
+        sample_heterogeneous_source = make_conserved(dim=2,
+            mass=sample_source_O2 + sample_source_CO2,
+            energy=zeros,
+            momentum=make_obj_array([zeros, zeros]),
+            species_mass=source_species
+        )
+#        sample_heterogeneous_source = fluid_state.cv*0.0
+#        sample_mass_rhs = zeros*0.0
+
+        return make_obj_array([
+            fluid_rhs + darcy_flow + sample_heterogeneous_source,
+            zeros, sample_mass_rhs])
 
     def my_post_step(step, t, dt, state):
 
@@ -856,7 +934,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # for writing output
-    casename = "cylinder"
+    casename = "slab"
     if(args.casename):
         print(f"Custom casename {args.casename}")
         casename = (args.casename).replace("'", "")

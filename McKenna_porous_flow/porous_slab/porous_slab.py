@@ -1,4 +1,4 @@
-"""mirgecom driver for the porous-cylinder flow demonstration."""
+"""mirgecom driver for the porous-slab flow demonstration."""
 
 __copyright__ = """
 Copyright (C) 2024 University of Illinois Board of Trustees
@@ -61,6 +61,8 @@ from mirgecom.boundary import (
     LinearizedInflowBoundary,
     LinearizedOutflowBoundary,
     PressureOutflowBoundary,
+    AdiabaticNoslipWallBoundary,
+    PrescribedFluidBoundary
 )
 from mirgecom.fluid import make_conserved
 from mirgecom.transport import SimpleTransport
@@ -187,12 +189,16 @@ from mirgecom.materials.carbon_fiber import FiberEOS as OriginalFiberEOS
 class FiberEOS(OriginalFiberEOS):
     """Inherits and modified the original carbon fiber."""
 
+    def volume_fraction(self, tau: DOFArray) -> DOFArray:
+        r"""Fraction $\phi$ occupied by the solid."""
+        return 0.30*tau
+
     def thermal_conductivity(self, temperature, tau):
         return 0.0 + temperature*0.0
 
     def permeability(self, tau):
-        virgin = 1.0e-6
-        char = 1e+9
+        virgin = 1.0e-5
+        char = 1e+7
         return virgin*tau + char*(1.0 - tau)
 
 
@@ -227,9 +233,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     vizname = viz_path+casename
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
-    Reynolds_number = 40.0
-    Mach_number = 0.3
-
      # default i/o frequencies
     nviz = 1000
     nrestart = 10000
@@ -242,7 +245,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_final = 100.0
 
     constant_cfl = True
-    current_cfl = 0.10
+    current_cfl = 0.40
     current_dt = 0.0 #dummy if constant_cfl = True
     local_dt = True
     
@@ -335,23 +338,25 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     eos = IdealSingleGas()
 
-    _temperature = 300.0
-    _pressure = 100000.0
+    u_x = 1.25e-3*100.0
+    u_y = 0.0
+
+    _temperature = 293.15
+    _pressure = 10132.5
     _mass = _pressure/(eos.gas_const()*_temperature)
     _c = np.sqrt(eos.gamma()*_pressure/_mass)
 
-    mu = _mass*(_c*Mach_number)*1.0/Reynolds_number
-    kappa = 1000.0*mu/0.71
+    mu = 1.5e-5*100.0
+    kappa = 1.5e-2
     base_transport = SimpleTransport(viscosity=mu, thermal_conductivity=kappa)
     sample_transport = PorousWallTransport(base_transport=base_transport)
 
     # ~~~
-    material_densities = 168.0/10.0 + zeros
+    material_densities = 1.0 + zeros
 
     import mirgecom.materials.carbon_fiber as material_sample
-    material = FiberEOS(dim=2, char_mass=0.0, virgin_mass=168.0/10.0,
+    material = FiberEOS(dim=2, char_mass=0.0, virgin_mass=1.0,
                         anisotropic_direction=0)
-    # decomposition = No_Oxidation_Model()
 
     # ~~~
     gas_model = PorousFlowModel(eos=eos, transport=sample_transport,
@@ -359,66 +364,43 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #####################################################################
 
-#    def uniform_flow(x_vec, eos):
-
-#        gamma = eos.gamma()
-#        R = eos.gas_const()
-#        
-#        x = x_vec[0]
-
-#        pressure = 100000.0 + 0.0*x
-#        mass = 1.0 + 0.0*x
-#        c = actx.np.sqrt(gamma*pressure/mass)
-#        
-#        u_x = 0.0*x + c*Mach_number
-#        u_y = 0.0*x
-
-#        velocity = make_obj_array([u_x, u_y])   
-#        ke = .5*np.dot(velocity, velocity)*mass
-
-#        rho_e = pressure/(eos.gamma()-1) + ke
-
-##        # ~~~
-##        # FIXME prescribe temperature or use internal value?
-##        internal_energy = gas_model.eos.get_internal_energy(temperature, species_mass_fractions=y)
-##        kinetic_energy = 0.5 * np.dot(velocity, velocity)
-##        solid_energy = mass*0.0
-##        if boundary is False:
-##            material_dens = self._plug * self._solid_mass + x_vec[0]*0.0
-##            eps_rho_solid = gas_model.solid_density(material_dens)
-##            tau = gas_model.decomposition_progress(material_dens)
-##            solid_energy = eps_rho_solid * gas_model.wall_eos.enthalpy(temperature, tau)
-##        energy = mass * (internal_energy + kinetic_energy) + solid_energy
-
-#        return make_conserved(dim, mass=mass, energy=rho_e,
-#                              momentum=mass*velocity)
-
-#    flow_init = uniform_flow
-
     def plug_region(x_vec, thickness):
+            xpos = x_vec[0]
+            ypos = x_vec[1]
+            actx = xpos.array_context
 
-        xpos = x_vec[0]
-        ypos = x_vec[1]
-        actx = xpos.array_context
-        zeros = 0*xpos
+            y0 = +0.1
+            dy = actx.np.where(
+            actx.np.less(ypos, y0-thickness*0.5),
+                0.0, actx.np.where(actx.np.greater(ypos, y0+thickness*0.5),
+                                   1.0, (ypos-(y0-thickness*0.5))/thickness)
+            )
+            sponge_0 = 1.0-(-20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
 
-        cylinder_radius = 0.5
+            x0 = -0.3
+            dx = actx.np.where(
+            actx.np.less(xpos, x0-thickness*0.5),
+                0.0, actx.np.where(actx.np.greater(xpos, x0+thickness*0.5),
+                                   1.0, (xpos-(x0-thickness*0.5))/thickness)
+            )
+            sponge_1 = (-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
 
-        radius = actx.np.sqrt(xpos**2 + ypos**2)
-        radius = actx.np.where(actx.np.greater(radius, 0.5), 0.5, radius)
-        sponge = actx.np.where(actx.np.less(radius, cylinder_radius-thickness), 0.0, 0.5*(radius-(cylinder_radius-thickness))/(thickness))
-        circle = 1.0 - 2.0*(-20.0*sponge**7 + 70*sponge**6 - 84*sponge**5 + 35*sponge**4)
+            x0 = +0.3
+            dx = actx.np.where(
+            actx.np.less(xpos, x0-thickness*0.5),
+                0.0, actx.np.where(actx.np.greater(xpos, x0+thickness*0.5),
+                                   1.0, (xpos-(x0-thickness*0.5))/thickness)
+            )
+            sponge_2 = 1.0-(-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
 
-        return circle
+            return sponge_0*sponge_1*sponge_2
 
-    plug = force_evaluation(actx, plug_region(x_vec=nodes, thickness=0.03))
+    plug = force_evaluation(actx, plug_region(x_vec=nodes, thickness=0.015))
     
-    u_x = _c*Mach_number
-    u_y = 0.0
     from mirgecom.materials.initializer import PorousWallInitializer
     flow_init = PorousWallInitializer(
-        temperature=300.0, material_densities=material_densities,
-        velocity=make_obj_array([u_x, u_y]), pressure=100000.0,
+        temperature=_temperature, material_densities=material_densities,
+        velocity=make_obj_array([u_x, u_y]), pressure=_pressure,
         porous_region=plug)
 
 ######################################################################
@@ -453,7 +435,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             temperature_seed = connection(restart_data["temperature_seed"])
             sample_densities = connection(restart_data["sample_densities"])
         else:
-            current_cv = restart_data["state"]
+            current_cv = restart_data["cv"]
             temperature_seed = restart_data["temperature_seed"]
             sample_densities = restart_data["sample_densities"]
 
@@ -506,30 +488,31 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     
     ############################################################################
 
-#    inflow_init = PorousWallInitializer(
-#        temperature=300.0, material_densities=0.0,
-#        velocity=make_obj_array([u_x, u_y]), pressure=100000.0,
-#        porous_region=0.0)
+    inflow_init = PorousWallInitializer(
+        temperature=_temperature, material_densities=0.0,
+        velocity=make_obj_array([u_x, u_y]), pressure=_pressure,
+        porous_region=0.0)
 
-#    inflow_nodes = actx.thaw(dcoll.nodes(dd.trace('inflow')))
-#    _inflow_cv, _ = inflow_init(x_vec=inflow_nodes, gas_model=gas_model)
-#    inflow_cv = force_evaluation(actx, _inflow_cv)
-#    inflow_samp_dens = force_evaluation(actx, inflow_nodes[0]*0.0)
-#    inflow_state = get_fluid_state(cv=inflow_cv, temp_seed=300.0,
-#                                   sample_densities=inflow_samp_dens)
+    inflow_nodes = actx.thaw(dcoll.nodes(dd.trace('inflow')))
+    _inflow_cv, _ = inflow_init(x_vec=inflow_nodes, gas_model=gas_model)
+    inflow_cv = force_evaluation(actx, _inflow_cv)
+    inflow_samp_dens = force_evaluation(actx, inflow_nodes[0]*0.0)
+    inflow_state = get_fluid_state(cv=inflow_cv, temp_seed=_temperature,
+                                   sample_densities=inflow_samp_dens)
 
-#    def _inflow_boundary_state_func(**kwargs):
-#        return inflow_state
+    def _inflow_boundary_state_func(**kwargs):
+        return inflow_state
    
-    #inflow_boundary  = PrescribedFluidBoundary(boundary_state_func=_inflow_boundary_state_func)
+    inflow_boundary  = PrescribedFluidBoundary(boundary_state_func=_inflow_boundary_state_func)
 
-    side_boundary = LinearizedOutflowBoundary(
-        free_stream_density=_mass, free_stream_velocity=make_obj_array([u_x, u_y]),
-        free_stream_pressure=_pressure)
+    side_boundary = AdiabaticNoslipWallBoundary()
     inflow_boundary = LinearizedInflowBoundary(
         free_stream_density=_mass, free_stream_velocity=make_obj_array([u_x, u_y]),
         free_stream_pressure=_pressure)
     outflow_boundary = PressureOutflowBoundary(boundary_pressure=_pressure)
+#    outflow_boundary = LinearizedOutflowBoundary(
+#        free_stream_density=_mass, free_stream_velocity=make_obj_array([u_x, u_y]),
+#        free_stream_pressure=_pressure)
 
     boundaries = {dd.trace("side").domain_tag: side_boundary,
                   dd.trace("inflow").domain_tag: inflow_boundary,
@@ -568,7 +551,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     visualizer = make_visualizer(dcoll)
 
-    initname = "cylinder"
+    initname = "slab"
     eosname = gas_model.eos.__class__.__name__
     init_message = make_init_message(dim=dim, order=order,
                                      nelements=local_nelements,
@@ -856,7 +839,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # for writing output
-    casename = "cylinder"
+    casename = "slab"
     if(args.casename):
         print(f"Custom casename {args.casename}")
         casename = (args.casename).replace("'", "")
