@@ -70,7 +70,7 @@ from mirgecom.boundary import (
     PrescribedFluidBoundary
 )
 from mirgecom.fluid import make_conserved
-from mirgecom.transport import SimpleTransport
+from mirgecom.transport import PowerLawTransport #SimpleTransport
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.thermochemistry import get_pyrometheus_wrapper_class_from_cantera
 from mirgecom.gas_model import (
@@ -254,7 +254,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
      # default i/o frequencies
-    nviz = 5000
+    nviz = 2500
     nrestart = 10000
     nhealth = 1
     nstatus = 100
@@ -265,12 +265,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_final = 100.0
 
     constant_cfl = True
-    current_cfl = 0.20
+    current_cfl = 0.40
     current_dt = 0.0 #dummy if constant_cfl = True
     local_dt = True
     
     # discretization and model control
-    order = 3
+    order = 2
     use_overintegration = False
 
     mechanism_file = "air_3sp"
@@ -394,11 +394,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # }}}
 
-    mu = 1.5e-5*100.0
-    kappa = 1.5e-2
-    diff = 1.5e-4*100.0*np.ones(nspecies,)
-    base_transport = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
-                                     species_diffusivity=diff)
+#    mu = 1.5e-5*100.0
+#    kappa = 1.5e-2
+#    diff = 1.5e-4*100.0*np.ones(nspecies,)
+#    base_transport = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
+#                                     species_diffusivity=diff)
+    base_transport=PowerLawTransport(beta=4.093e-7*100.0, lewis=np.ones(nspecies,))
     sample_transport = PorousWallTransport(base_transport=base_transport)
 
     # ~~~
@@ -450,17 +451,22 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     plug = force_evaluation(actx, plug_region(x_vec=nodes, thickness=0.015))
 
-    smoothing = 0.5*(1.0 + actx.np.tanh((nodes[0] + 0.6)/0.1))
+    smoothing = 0.5*(1.0 + actx.np.tanh((nodes[0] + 0.45)/0.01))
     _species = make_obj_array([
         y_reference[0]*(1.0 - smoothing),
         zeros,
         (1.0 - y_reference[2])*smoothing + y_reference[2]
     ])
+
+    init_temperature = 0.5*(1.0 - actx.np.tanh((nodes[0] + 0.45)/0.01))*700.0 + 300.0
+
+    init_velocity = make_obj_array([u_x*0.5*(1.0 - actx.np.tanh((nodes[0] + 0.45)/0.01)),
+                                    u_y])
     
     from mirgecom.materials.initializer import PorousWallInitializer
     flow_init = PorousWallInitializer(
-        temperature=_temperature, material_densities=material_densities,
-        velocity=make_obj_array([u_x, u_y]), pressure=_pressure,
+        temperature=init_temperature, material_densities=material_densities,
+        velocity=init_velocity, pressure=_pressure,
         porous_region=plug, species_mass_fractions=_species)
 
 ######################################################################
@@ -469,7 +475,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             logging.info("Initializing soln.")
     
-        temperature_seed = 1000.0 + nodes[0]*0.0
+        temperature_seed = init_temperature
         current_cv, sample_densities = flow_init(x_vec=nodes, gas_model=gas_model)
         first_step = 0
     else:
@@ -494,21 +500,82 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             current_cv = connection(restart_data["cv"])
             temperature_seed = connection(restart_data["temperature_seed"])
             sample_densities = connection(restart_data["sample_densities"])
+
+#            # ------ filtering
+#            filter_cutoff = restart_order
+#            filter_order = 0
+#            filter_alpha = -1.0*np.log(np.finfo(float).eps)
+
+#            print("filter_cutoff = ", filter_cutoff)
+
+#            if filter_cutoff < 0:
+#                filter_cutoff = int(filter_frac * order)
+
+#            if filter_cutoff >= order:
+#                raise ValueError("Invalid setting for filter (cutoff >= order).")
+
+#            from mirgecom.filter import (
+#                exponential_mode_response_function as xmrfunc,
+#                filter_modally
+#            )
+#            frfunc = partial(xmrfunc, alpha=filter_alpha,
+#                             filter_order=filter_order)
+
+#            def filter_field(field):
+#                return filter_modally(dcoll, filter_cutoff, frfunc, field, dd=dd)
+
+#            def filter_field(field):
+#                # Compute cell averages of the state
+#                def cancel_polynomials(grp):
+#                    for mode_id in grp.mode_ids():
+#                        print(mode_id)
+#                    print(actx.from_numpy(np.asarray([0 if sum(mode_id) > restart_order
+#                                                       else 1 for mode_id in grp.mode_ids()])))
+#                    return actx.from_numpy(np.asarray([0 if sum(mode_id) > restart_order
+#                                                       else 1 for mode_id in grp.mode_ids()]))
+
+#                from grudge.dof_desc import DISCR_TAG_MODAL
+#                from meshmode.transform_metadata import FirstAxisIsElementsTag
+
+#                # map from nodal to modal
+#                dd_nodal = dd
+#                dd_modal = dd_nodal.with_discr_tag(DISCR_TAG_MODAL)
+
+#                modal_map = dcoll.connection_from_dds(dd_nodal, dd_modal)
+#                nodal_map = dcoll.connection_from_dds(dd_modal, dd_nodal)
+
+#                modal_discr = dcoll.discr_from_dd(dd_modal)
+#                modal_field = modal_map(field)
+
+#                # cancel the ``high-order'' polynomials p > 0, and only the average remains
+#                filtered_modal_field = DOFArray(
+#                    actx,
+#                    tuple(actx.einsum("ej,j->ej",
+#                                      vec_i,
+#                                      cancel_polynomials(grp),
+#                                      arg_names=("vec", "filter"),
+#                                      tagged=(FirstAxisIsElementsTag(),))
+#                          for grp, vec_i in zip(modal_discr.groups, modal_field))
+#                )
+
+#                # convert back to nodal to have the average at all points
+#                return nodal_map(filtered_modal_field)
+
+#            current_cv = filter_field(current_cv)
+#            temperature_seed = filter_field(temperature_seed)
+#            sample_densities = filter_field(sample_densities)
+
         else:
             current_cv = restart_data["cv"]
             temperature_seed = restart_data["temperature_seed"]
             sample_densities = restart_data["sample_densities"]
 
+
     ##################################################
 
     from mirgecom.limiter import bound_preserving_limiter
 
-    from grudge.discretization import DiscretizationCollection
-    from grudge.dof_desc import DISCR_TAG_MODAL
-    from meshmode.transform_metadata import FirstAxisIsElementsTag
-
     def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
-        return cv
 
         # limit species
         spec_lim = make_obj_array([
@@ -525,9 +592,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         spec_lim = spec_lim/aux
 
         # recompute density
-        mass_lim = wv.void_fraction*eos.get_density(pressure=pressure,
-                                                    temperature=temperature,
-                                                    species_mass_fractions=spec_lim)
+        mass_lim = wv.void_fraction*eos.get_density(
+            pressure=pressure, temperature=temperature,
+            species_mass_fractions=spec_lim)
 
         # recompute energy
         energy_lim = mass_lim*(gas_model.eos.get_internal_energy(
@@ -538,8 +605,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         # make a new CV with the limited variables
         return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
-                            momentum=mass_lim*cv.velocity,
-                            species_mass=mass_lim*spec_lim)
+                              momentum=mass_lim*cv.velocity,
+                              species_mass=mass_lim*spec_lim)
 
     # ~~~
 
@@ -567,8 +634,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     _inflow_cv, _ = inflow_init(x_vec=inflow_nodes, gas_model=gas_model)
     inflow_cv = force_evaluation(actx, _inflow_cv)
     inflow_samp_dens = force_evaluation(actx, inflow_nodes[0]*0.0)
-    inflow_state = get_fluid_state(cv=inflow_cv, temp_seed=_temperature,
-                                   sample_densities=inflow_samp_dens)
+    inflow_state = force_evaluation(
+        actx, make_fluid_state(cv=inflow_cv, temperature_seed=_temperature,
+                               gas_model=gas_model,
+                               material_densities=inflow_samp_dens,
+                               limiter_func=_limit_fluid_cv,
+                               limiter_dd=dd.trace('inflow')))
 
     def _inflow_boundary_state_func(**kwargs):
         return inflow_state
@@ -618,7 +689,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #########################################################################
 
-    visualizer = make_visualizer(dcoll)
+    visualizer = make_visualizer(dcoll, vis_order=order)
 
     initname = "slab"
     eosname = gas_model.eos.__class__.__name__
@@ -649,7 +720,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             
     from mirgecom.fluid import velocity_gradient
     def my_write_viz(step, t, dt, fluid_state,
-                     grad_cv=None, ref_cv=None, sponge_sigma=None):       
+                     grad_cv=None, ref_cv=None, sponge_sigma=None):
+
+        if rank == 0:
+            logging.info("Writing solution file.")
 
         viz_fields = [("CV", fluid_state.cv),
                       ("DV_U", fluid_state.cv.velocity[0]),
@@ -671,6 +745,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                       step=step, t=t, overwrite=True, comm=comm)
 
     def my_write_restart(step, t, state):
+
+        if rank == 0:
+            logging.info("Writing restart file.")
+
         cv, tseed, sample_dens = state
         rst_fname = snapshot_pattern.format(cname=casename, step=step, rank=rank)
         if rst_fname != restart_file:
@@ -811,22 +889,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         
         # ~~~
         fluid_operator_states_quad = make_operator_fluid_states(
-            dcoll, fluid_state, gas_model, boundaries,
-            dd=dd, comm_tag=_FluidOpStatesTag,
-            #limiter_func=_limit_fluid_cv
-            )
+            dcoll, fluid_state, gas_model, boundaries, dd=dd,
+            comm_tag=_FluidOpStatesTag, limiter_func=_limit_fluid_cv)
 
         # fluid grad CV
         fluid_grad_cv = grad_cv_operator(
-            dcoll, gas_model, boundaries, fluid_state,
-            time=t, dd=dd,
+            dcoll, gas_model, boundaries, fluid_state, time=t, dd=dd,
             operator_states_quad=fluid_operator_states_quad,
             comm_tag=_FluidGradCVTag)
 
         # fluid grad T
         fluid_grad_temperature = grad_t_operator(
-            dcoll, gas_model, boundaries, fluid_state,
-            time=t, dd=dd,
+            dcoll, gas_model, boundaries, fluid_state, time=t, dd=dd,
             operator_states_quad=fluid_operator_states_quad,
             comm_tag=_FluidGradTempTag)
 
@@ -837,7 +911,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
             comm_tag=_FluidOperatorTag)
 
-        darcy_flow = darcy_source_terms(fluid_state.cv, fluid_state.tv, fluid_state.wv)
+        darcy_flow = darcy_source_terms(fluid_state.cv, fluid_state.tv,
+                                        fluid_state.wv)
 
         # ~~~
         idx_O2 = cantera_soln.species_index("O2")
@@ -847,22 +922,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 fluid_state.temperature, fluid_state.wv.tau,
                 fluid_state.cv.species_mass_fractions[idx_O2])
 
-        source_species = fluid_state.cv.species_mass*0.0
+        source_species = actx.np.zeros_like(fluid_state.cv.species_mass)
         source_species[idx_O2] = sample_source_O2
         source_species[idx_CO2] = sample_source_CO2
 
+        reaction_rates = 0.10
         sample_heterogeneous_source = make_conserved(dim=2,
-            mass=sample_source_O2 + sample_source_CO2,
+            mass=reaction_rates*sum(source_species),
             energy=zeros,
             momentum=make_obj_array([zeros, zeros]),
-            species_mass=source_species
+            species_mass=reaction_rates*source_species
         )
 #        sample_heterogeneous_source = fluid_state.cv*0.0
 #        sample_mass_rhs = zeros*0.0
 
         return make_obj_array([
             fluid_rhs + darcy_flow + sample_heterogeneous_source,
-            zeros, sample_mass_rhs])
+            zeros, reaction_rates*sample_mass_rhs])
 
     def my_post_step(step, t, dt, state):
 
@@ -885,8 +961,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     ##########################################################################
 
     if local_dt:
-        t = make_obj_array([current_t + zeros, zeros, zeros])
-        dt = make_obj_array([current_dt, zeros, zeros])
+        t = make_obj_array([current_t + zeros, zeros, current_t + zeros])
+        dt = make_obj_array([current_dt, zeros, current_dt])
     else:
         t = current_t
         dt = current_dt
@@ -898,17 +974,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                     sample_densities])
 
     (current_step, current_t, current_cv) = \
-        advance_state(rhs=my_rhs, timestepper=timestepper,
-                      pre_step_callback=my_pre_step,
-                      post_step_callback=my_post_step,
-                      state=stepper_state,
-                      dt=dt, t_final=t_final, t=t,
-                      istep=current_step, local_dt=local_dt, max_steps=500000,
-                      force_eval=force_eval)
+        advance_state(
+            rhs=my_rhs, timestepper=timestepper, state=stepper_state,
+            pre_step_callback=my_pre_step, post_step_callback=my_post_step,
+            dt=dt, t_final=t_final, t=t, istep=current_step,
+            local_dt=local_dt, max_steps=500000, force_eval=force_eval)
 
-    # Dump the final data
-    if rank == 0:
-        logger.info("Checkpointing final state ...")
+#    # Dump the final data
+#    if rank == 0:
+#        logger.info("Checkpointing final state ...")
 
 #    current_state = make_fluid_state(cv=current_cv, gas_model=gas_model)
 #    ts_field, cfl, dt = my_get_timestep(current_t, current_dt, current_state)

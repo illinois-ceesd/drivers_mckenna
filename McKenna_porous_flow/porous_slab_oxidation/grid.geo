@@ -1,19 +1,19 @@
 //
 
-lcar0 = 0.0050;
-lcar1 = 0.0125;
+lcar0 = 0.0100;
+lcar1 = 0.0250;
 
 H = 0.10;
 d = 0.02;
 
-Point(1)  = {-15*H,   0.0, 0.0, lcar1};
+Point(1)  = {-12*H,   0.0, 0.0, lcar1};
 Point(2)  = { -3*H,   0.0, 0.0, lcar0};
 Point(3)  = { -3*H,   1*H, 0.0, lcar0};
 Point(4)  = {  3*H,   1*H, 0.0, lcar0};
 Point(5)  = {  3*H,   0.0, 0.0, lcar0};
-Point(6)  = { 15*H,   0.0, 0.0, lcar1};
-Point(7)  = { 15*H,   2*H, 0.0, lcar1};
-Point(8)  = {-15*H,   2*H, 0.0, lcar1};
+Point(6)  = { 12*H,   0.0, 0.0, lcar1};
+Point(7)  = { 12*H,   2*H, 0.0, lcar1};
+Point(8)  = {-12*H,   2*H, 0.0, lcar1};
 
 
 //Define bounding box edges
