@@ -136,80 +136,10 @@ class MyRuntimeError(RuntimeError):
 def get_mesh(dim, read_mesh=True):
     """Get the mesh."""
     from meshmode.mesh.io import read_gmsh
-    mesh_filename = "grid-v2.msh"
+    mesh_filename = "grid_small-v2.msh"
     mesh = partial(read_gmsh, filename=mesh_filename, force_ambient_dim=dim)
 
     return mesh
-
-
-def sponge_func(cv, cv_ref, sigma):
-    return sigma*(cv_ref - cv)
-
-
-class InitSponge:
-
-    def __init__(self, *, x_min=None, x_max=None, y_min=None, y_max=None,
-                 x_thickness=None, y_thickness=None, amplitude):
-        """ """
-        self._x_min = x_min
-        self._x_max = x_max
-        self._y_min = y_min
-        self._y_max = y_max
-        self._x_thickness = x_thickness
-        self._y_thickness = y_thickness
-        self._amplitude = amplitude
-
-    def __call__(self, x_vec):
-        """ """
-        xpos = x_vec[0]
-        ypos = x_vec[1]
-        actx = xpos.array_context
-        zeros = 0*xpos
-
-        sponge_x = xpos*0.0
-        sponge_y = xpos*0.0
-
-        if (self._y_max is not None):
-          y0 = (self._y_max - self._y_thickness)
-          dy = +((ypos - y0)/self._y_thickness)
-          sponge_y = sponge_y + self._amplitude * actx.np.where(
-              actx.np.greater(ypos, y0),
-                  actx.np.where(actx.np.greater(ypos, self._y_max),
-                                1.0, 3.0*dy**2 - 2.0*dy**3),
-                  0.0
-          )
-
-        if (self._y_min is not None):
-          y0 = (self._y_min + self._y_thickness)
-          dy = -((ypos - y0)/self._y_thickness)
-          sponge_y = sponge_y + self._amplitude * actx.np.where(
-              actx.np.less(ypos, y0),
-                  actx.np.where(actx.np.less(ypos, self._y_min),
-                                1.0, 3.0*dy**2 - 2.0*dy**3),
-              0.0
-          )
-
-        if (self._x_max is not None):
-          x0 = (self._x_max - self._x_thickness)
-          dx = +((xpos - x0)/self._x_thickness)
-          sponge_x = sponge_x + self._amplitude * actx.np.where(
-              actx.np.greater(xpos, x0),
-                  actx.np.where(actx.np.greater(xpos, self._x_max),
-                                1.0, 3.0*dx**2 - 2.0*dx**3),
-                  0.0
-          )
-
-        if (self._x_min is not None):
-          x0 = (self._x_min + self._x_thickness)
-          dx = -((xpos - x0)/self._x_thickness)
-          sponge_x = sponge_x + self._amplitude * actx.np.where(
-              actx.np.less(xpos, x0),
-                  actx.np.where(actx.np.less(xpos, self._x_min),
-                                1.0, 3.0*dx**2 - 2.0*dx**3),
-              0.0
-          )
-
-        return actx.np.maximum(sponge_x,sponge_y)
 
 
 from mirgecom.materials.carbon_fiber import FiberEOS as OriginalFiberEOS
@@ -265,12 +195,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_final = 100.0
 
     constant_cfl = True
-    current_cfl = 0.40
+    current_cfl = 0.20
     current_dt = 0.0 #dummy if constant_cfl = True
     local_dt = True
     
     # discretization and model control
-    order = 2
+    order = 4
     use_overintegration = False
 
     mechanism_file = "air_3sp"
@@ -358,7 +288,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ####################################################################
 
-    u_x = 1.25e-3*100.0*10.0
+    u_x = 1.25e-3*10.0*10.0
     u_y = 0.0
 
     _temperature = 1000.0
@@ -399,7 +329,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #    diff = 1.5e-4*100.0*np.ones(nspecies,)
 #    base_transport = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
 #                                     species_diffusivity=diff)
-    base_transport=PowerLawTransport(beta=4.093e-7*100.0, lewis=np.ones(nspecies,))
+    base_transport=PowerLawTransport(beta=4.093e-7*10.0, lewis=np.ones(nspecies,))
     sample_transport = PorousWallTransport(base_transport=base_transport)
 
     # ~~~
@@ -423,7 +353,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         ypos = x_vec[1]
         actx = xpos.array_context
 
-        y0 = +0.1
+        y0 = +0.01
         dy = actx.np.where(
         actx.np.less(ypos, y0-thickness*0.5),
             0.0, actx.np.where(actx.np.greater(ypos, y0+thickness*0.5),
@@ -431,7 +361,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
         sponge_0 = 1.0-(-20.0*dy**7 + 70*dy**6 - 84*dy**5 + 35*dy**4)
 
-        x0 = -0.3
+        x0 = -0.03
         dx = actx.np.where(
         actx.np.less(xpos, x0-thickness*0.5),
             0.0, actx.np.where(actx.np.greater(xpos, x0+thickness*0.5),
@@ -439,7 +369,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         )
         sponge_1 = (-20.0*dx**7 + 70*dx**6 - 84*dx**5 + 35*dx**4)
 
-        x0 = +0.3
+        x0 = +0.03
         dx = actx.np.where(
         actx.np.less(xpos, x0-thickness*0.5),
             0.0, actx.np.where(actx.np.greater(xpos, x0+thickness*0.5),
@@ -449,18 +379,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return sponge_0*sponge_1*sponge_2
 
-    plug = force_evaluation(actx, plug_region(x_vec=nodes, thickness=0.015))
+    plug = force_evaluation(actx, plug_region(x_vec=nodes, thickness=0.002))
 
-    smoothing = 0.5*(1.0 + actx.np.tanh((nodes[0] + 0.45)/0.01))
+    smoothing = 0.5*(1.0 + actx.np.tanh((nodes[0] + 0.045)/0.001))
     _species = make_obj_array([
         y_reference[0]*(1.0 - smoothing),
         zeros,
         (1.0 - y_reference[2])*smoothing + y_reference[2]
     ])
 
-    init_temperature = 0.5*(1.0 - actx.np.tanh((nodes[0] + 0.45)/0.01))*700.0 + 300.0
+    init_temperature = 0.5*(1.0 - actx.np.tanh((nodes[0] + 0.045)/0.001))*700.0 + 300.0
 
-    init_velocity = make_obj_array([u_x*0.5*(1.0 - actx.np.tanh((nodes[0] + 0.45)/0.01)),
+    init_velocity = make_obj_array([u_x*0.5*(1.0 - actx.np.tanh((nodes[0] + 0.045)/0.001)),
                                     u_y])
     
     from mirgecom.materials.initializer import PorousWallInitializer
