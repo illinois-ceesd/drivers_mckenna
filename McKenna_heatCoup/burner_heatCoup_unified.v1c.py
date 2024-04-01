@@ -585,7 +585,8 @@ class MyRuntimeError(RuntimeError):
 @mpi_entry_point
 def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
          use_tpe=False, use_profiling=False, casename=None, lazy=False,
-         restart_file=None, user_input_file=False):
+         restart_file=None, user_input_file=False,
+         force_wall_initialization=False):
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
@@ -1389,29 +1390,51 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         tseed = force_eval(actx, 300.0 + fluid_zeros)
         wv_tseed = force_eval(actx, temp_wall + solid_zeros)
 
+    else:
+        if rank == 0:
+            logger.info("Restarting soln.")
+
+        current_step = restart_step
+        current_t = restart_data["t"]
+        if np.isscalar(current_t) is False:
+            if ignore_wall:
+                current_t = np.min(actx.to_numpy(current_t[0]))
+            else:
+                current_t = np.min(actx.to_numpy(current_t[2]))
+
+        if restart_iterations:
+            current_t = 0.0
+            current_step = 0
+
+        if restart_order != order:
+            restart_dcoll = create_discretization_collection(
+                actx,
+                volume_meshes={
+                    vol: mesh
+                    for vol, (mesh, _) in volume_to_local_mesh_data.items()},
+                order=restart_order)
+            from meshmode.discretization.connection import make_same_mesh_connection
+            fluid_connection = make_same_mesh_connection(
+                actx, dcoll.discr_from_dd(dd_vol_fluid),
+                restart_dcoll.discr_from_dd(dd_vol_fluid))
+            fluid_cv = fluid_connection(restart_data["cv"])
+            tseed = fluid_connection(restart_data["temperature_seed"])
+        else:
+            fluid_cv = restart_data["cv"]
+            tseed = restart_data["temperature_seed"]
+
+    if restart_file is None or force_wall_initialization:
+
+        print("Starting the wall from scratch!!")
+
+        wv_tseed = force_eval(actx, temp_wall + solid_zeros)
+
         if my_material == "copper":
             from mirgecom.materials.initializer import SolidWallInitializer
             solid_init = SolidWallInitializer(
                 temperature=300.0, material_densities=wall_copper_rho)
             solid_cv = solid_init(solid_nodes, solid_wall_model)
         else:
-    # XXX adiabatic
-#            tau = solid_wall_model.decomposition_progress(wall_densities)
-#            wall_mass = solid_wall_model.solid_density(wall_densities)
-
-#            wall_sample_h = material.enthalpy(wv_tseed, tau)
-#            wall_alumina_h = wall_alumina_cp * wv_tseed
-#            wall_graphite_h = wall_graphite_cp * wv_tseed
-#            wall_enthalpy = (
-#                wall_sample_h * wall_sample_mask
-#                + wall_alumina_h * wall_alumina_mask
-#                + wall_graphite_h * wall_graphite_mask)
-
-#            wall_energy = wall_mass * wall_enthalpy
-
-#            solid_cv = SolidWallConservedVars(mass=wall_densities,
-#                                              energy=wall_energy)
-
             from mirgecom.materials.initializer import SolidWallInitializer
             tau = solid_wall_model.decomposition_progress(wall_densities)
             solid_init = SolidWallInitializer(temperature=300.0,
@@ -1426,27 +1449,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         my_file.close()
 
     else:
-        current_step = restart_step
-        current_t = restart_data["t"]
-        if np.isscalar(current_t) is False:
-            if ignore_wall:
-                current_t = np.min(actx.to_numpy(current_t[0]))
-            else:
-                current_t = np.min(actx.to_numpy(current_t[2]))
-
-        if restart_iterations:
-            current_t = 0.0
-            current_step = 0
-
         last_stored_step = -1.0
         if os.path.isfile("temperature_file.dat"):
             data = np.genfromtxt("temperature_file.dat", delimiter=",")
             # sometimes the file only has 1 line...
             if data.shape == 2:
                 last_stored_step = data[-1, 0]
-
-        if rank == 0:
-            logger.info("Restarting soln.")
 
         if restart_order != order:
             restart_dcoll = create_discretization_collection(
@@ -1456,28 +1464,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     for vol, (mesh, _) in volume_to_local_mesh_data.items()},
                 order=restart_order)
             from meshmode.discretization.connection import make_same_mesh_connection
-            fluid_connection = make_same_mesh_connection(
-                actx, dcoll.discr_from_dd(dd_vol_fluid),
-                restart_dcoll.discr_from_dd(dd_vol_fluid))
             solid_connection = make_same_mesh_connection(
                 actx, dcoll.discr_from_dd(dd_vol_solid),
                 restart_dcoll.discr_from_dd(dd_vol_solid))
-            fluid_cv = fluid_connection(restart_data["cv"])
-            tseed = fluid_connection(restart_data["temperature_seed"])
             solid_cv = wall_connection(restart_data["wv"])
             if use_wv_tseed:
                 wv_tseed = wall_connection(restart_data["wall_temperature_seed"])
-    # XXX adiabatic
         else:
-            fluid_cv = restart_data["cv"]
-            tseed = restart_data["temperature_seed"]
             solid_cv = restart_data["wv"]
             if use_wv_tseed:
                 wv_tseed = restart_data["wall_temperature_seed"]
-    # XXX adiabatic
 
-        if logmgr:
-            logmgr_set_time(logmgr, current_step, current_t)
 
     if my_material == "composite":
 
@@ -2658,6 +2655,8 @@ if __name__ == "__main__":
         help="use numpy-based eager actx.")
     parser.add_argument("--tpe", action="store_true",
         help="use quadrilateral elements.")
+    parser.add_argument("--init_wall", action="store_true", default=False,
+        help="Force wall initialization from scratch.")
 
     args = parser.parse_args()
 
@@ -2691,9 +2690,13 @@ if __name__ == "__main__":
         if not args.overintegration:
             warn("ESDG requires overintegration, enabling --overintegration.")
 
+    if args.init_wall:
+        print("Starting the wall from scratch!!")
+
     from mirgecom.array_context import get_reasonable_array_context_class
     actx_class = get_reasonable_array_context_class(
         lazy=args.lazy, distributed=True, profiling=args.profiling, numpy=args.numpy)
 
     main(actx_class, use_logmgr=args.log, casename=casename, use_tpe=args.tpe,
-         restart_file=restart_file, user_input_file=input_file)
+         restart_file=restart_file, user_input_file=input_file,
+         force_wall_initialization=args.init_wall)
