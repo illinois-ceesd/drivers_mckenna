@@ -164,11 +164,11 @@ Transfinite Line { 18} = 18 Using Progression 1.02;
 
 Transfinite Line {- 5} = 26 Using Progression 1.00;
 Transfinite Line {-19} = 26 Using Progression 1.00;
-Transfinite Line { 23} = 26 Using Progression 1.00;
-Transfinite Line {-51} = 26 Using Progression 1.00;
+Transfinite Line {-23} = 36 Using Progression 1.025;
+Transfinite Line {-51} = 36 Using Progression 1.025;
 
-Transfinite Line { 26} = 19 Using Progression 1.052;
-Transfinite Line { 54} = 19 Using Progression 1.075;
+Transfinite Line { 26} = 25 Using Progression 1.075;
+Transfinite Line { 54} = 25 Using Progression 1.100;
 
 /*vertical*/
 Transfinite Line {  3} = 14 Using Progression 1.1;
@@ -185,13 +185,13 @@ Transfinite Line { 14} = 11 Using Progression 1.00;
 Transfinite Line { 11} = 11 Using Progression 1.00;
 
 /*material*/
-Transfinite Line {-50} = 10 Using Progression 1.100;
-Transfinite Line { 52} = 10 Using Progression 1.100;
-Transfinite Line { 53} = 10 Using Progression 1.100;
-Transfinite Line {-58} = 10 Using Progression 1.100;
-Transfinite Line {-60} = 10 Using Progression 1.100;
-Transfinite Line { 66} = 10 Using Progression 1.100;
-Transfinite Line { 59} = 10 Using Progression 1.100;
+Transfinite Line {-50} = 14 Using Progression 1.12;
+Transfinite Line { 52} = 14 Using Progression 1.12;
+Transfinite Line { 53} = 14 Using Progression 1.12;
+Transfinite Line {-58} = 14 Using Progression 1.12;
+Transfinite Line {-60} = 14 Using Progression 1.12;
+Transfinite Line { 66} = 14 Using Progression 1.12;
+Transfinite Line { 59} = 14 Using Progression 1.12;
 
 Transfinite Line { 67} = 4 Using Progression 1.020;
 Transfinite Line { 30} = 4 Using Progression 1.020;
@@ -232,7 +232,7 @@ Point(101) = {             0.000500, flame_dist + burner_height, 0., 1.0};
 Point(102) = {int_radius + 0.000281,              burner_height, 0., 1.0};
 Point(103) = {int_radius - 0.000281,              burner_height, 0., 1.0};
 Point(104) = {int_radius           ,   0.000100 + burner_height, 0., 1.0};
-Point(105) = {        0.           ,  -0.000220 + mat_location , 0., 1.0};
+Point(105) = {        0.           ,  -0.000110 + mat_location , 0., 1.0};
 
 
 Line Loop(40) = {10:12,17:19,22:23,26:31,41:44};
