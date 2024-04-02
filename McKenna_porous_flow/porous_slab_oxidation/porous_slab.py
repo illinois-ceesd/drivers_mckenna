@@ -184,8 +184,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
      # default i/o frequencies
-    nviz = 2500
-    nrestart = 10000
+    nviz = 100
+    nrestart = 1000
     nhealth = 1
     nstatus = 100
     ngarbage = 10
@@ -195,9 +195,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_final = 100.0
 
     constant_cfl = True
-    current_cfl = 0.20
+    current_cfl = 0.2
     current_dt = 0.0 #dummy if constant_cfl = True
-    local_dt = True
+    local_dt = False
     
     # discretization and model control
     order = 4
@@ -236,25 +236,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ####################################################################
 
-    restart_step = None
-    if restart_file is None:
-        local_mesh, global_nelements = generate_and_distribute_mesh(
-            comm, get_mesh(dim=dim))
-        local_nelements = local_mesh.nelements
-
-    else:  # Restart
-        from mirgecom.restart import read_restart_data
-        restart_data = read_restart_data(actx, restart_file)
-        restart_step = restart_data["step"]
-        local_mesh = restart_data["local_mesh"]
-        local_nelements = local_mesh.nelements
-        global_nelements = restart_data["global_nelements"]
-        restart_order = int(restart_data["order"])
-
-        assert comm.Get_size() == restart_data["num_parts"]
-
-####################################################################
-
     if rank == 0:
         print("Making discretization")
         logging.info("Making discretization")
@@ -288,7 +269,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ####################################################################
 
-    u_x = 1.25e-3*10.0*10.0
+    u_x = 1.25e-3*10.0*100.0
     u_y = 0.0
 
     _temperature = 1000.0
@@ -655,11 +636,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             logging.info("Writing solution file.")
 
+        cv = fluid_state.cv
+        T = fluid_state.temperature
+
         viz_fields = [("CV", fluid_state.cv),
                       ("DV_U", fluid_state.cv.velocity[0]),
                       ("DV_V", fluid_state.cv.velocity[1]),
                       ("DV_P", fluid_state.dv.pressure),
                       ("DV_T", fluid_state.dv.temperature),
+                      ("DV_c", eos.sound_speed(cv, T)),
+                      ("DV_cv", eos.heat_capacity_cv(cv, T)),
+                      ("DV_cp", eos.heat_capacity_cp(cv, T)),
+                      ("R", eos.gas_const(cv, T)),
                       ("WV", fluid_state.wv),
                       ("dt", dt[0] if local_dt else None),
                       # ("plug", plug)

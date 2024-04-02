@@ -7,14 +7,16 @@ H = 0.010;
 d = 0.002;
 
 Point(1)  = {-12*H,   0.0, 0.0, lcar1};
-Point(2)  = { -3*H,   0.0, 0.0, 0.80*lcar0};
-Point(3)  = { -3*H,   1*H, 0.0, 0.66*lcar0};
-Point(4)  = {  3*H,   1*H, 0.0, 1.00*lcar0};
-Point(5)  = {  3*H,   0.0, 0.0, 1.50*lcar0};
+Point(2)  = { -3*H,   0.0, 0.0, 0.70*lcar0};
+Point(3)  = { -3*H,   1*H, 0.0, 0.60*lcar0};
+Point(4)  = {  3*H,   1*H, 0.0, 0.98*lcar0};
+Point(5)  = {  3*H,   0.0, 0.0, 1.48*lcar0};
 Point(6)  = { 12*H,   0.0, 0.0, lcar1};
 Point(7)  = { 12*H,   2*H, 0.0, lcar1};
 Point(8)  = {-12*H,   2*H, 0.0, lcar1};
 
+Point(10)  = { -3.5*H, 0.5*H, 0.0, 0.80*lcar0};
+Point(11)  = { -3.5*H, 1.0*H, 0.0, 0.80*lcar0};
 
 //Define bounding box edges
 Line(1) = {1, 2};
@@ -27,7 +29,7 @@ Line(7) = {7, 8};
 Line(8) = {8, 1};
 Line(9) = {5, 2};
 
-/*Transfinite Line { 9} = 71 Using Bump 0.6;*/
+Transfinite Line { 7} = 101 Using Bump 0.75;
 
 Line Loop(101) = {1:8};
 Line Loop(102) = {2:4,9};
@@ -35,6 +37,8 @@ Line Loop(102) = {2:4,9};
 //Define unstructured far field mesh zone
 Plane Surface(201) = {-101};
 Plane Surface(202) = { 102};
+
+Point{10:11} In Surface{201};
 
 Physical Line("inflow") = {8};
 Physical Line("side") = {1,9,5,7};
