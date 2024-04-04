@@ -167,7 +167,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     global_reduce = partial(_global_reduce, comm=comm)
 
     logmgr = initialize_logmgr(True, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
+                               mode="wu", mpi_comm=comm)
 
     from mirgecom.array_context import initialize_actx, actx_class_is_profiling
     actx = initialize_actx(actx_class, comm,
@@ -184,8 +184,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
      # default i/o frequencies
-    nviz = 100
-    nrestart = 1000
+    nviz = 10000
+    nrestart = 20000
     nhealth = 1
     nstatus = 100
     ngarbage = 10
@@ -195,9 +195,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_final = 100.0
 
     constant_cfl = True
-    current_cfl = 0.2
+    current_cfl = 0.20
     current_dt = 0.0 #dummy if constant_cfl = True
-    local_dt = False
+    local_dt = True
     
     # discretization and model control
     order = 4
@@ -636,18 +636,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             logging.info("Writing solution file.")
 
-        cv = fluid_state.cv
-        T = fluid_state.temperature
-
         viz_fields = [("CV", fluid_state.cv),
                       ("DV_U", fluid_state.cv.velocity[0]),
                       ("DV_V", fluid_state.cv.velocity[1]),
                       ("DV_P", fluid_state.dv.pressure),
                       ("DV_T", fluid_state.dv.temperature),
-                      ("DV_c", eos.sound_speed(cv, T)),
-                      ("DV_cv", eos.heat_capacity_cv(cv, T)),
-                      ("DV_cp", eos.heat_capacity_cp(cv, T)),
-                      ("R", eos.gas_const(cv, T)),
                       ("WV", fluid_state.wv),
                       ("dt", dt[0] if local_dt else None),
                       # ("plug", plug)
@@ -844,7 +837,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         source_species[idx_O2] = sample_source_O2
         source_species[idx_CO2] = sample_source_CO2
 
-        reaction_rates = 0.10
+        reaction_rates = 0.50
         sample_heterogeneous_source = make_conserved(dim=2,
             mass=reaction_rates*sum(source_species),
             energy=zeros,
@@ -896,7 +889,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             rhs=my_rhs, timestepper=timestepper, state=stepper_state,
             pre_step_callback=my_pre_step, post_step_callback=my_post_step,
             dt=dt, t_final=t_final, t=t, istep=current_step,
-            local_dt=local_dt, max_steps=500000, force_eval=force_eval)
+            local_dt=local_dt, max_steps=5000000, force_eval=force_eval)
 
 #    # Dump the final data
 #    if rank == 0:
