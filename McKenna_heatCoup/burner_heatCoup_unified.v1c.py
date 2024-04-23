@@ -1277,7 +1277,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return theta*(field - cell_avgs) + cell_avgs
 
-    def _limit_fluid_cv(cv, pressure, temperature, dd=None):
+    def _limit_fluid_cv(cv, temperature_seed, gas_model, dd=None):
+
+        temperature = gas_model.eos.temperature(
+            cv=cv, temperature_seed=temperature_seed)
+        pressure = gas_model.eos.pressure(
+            cv=cv, temperature=temperature)
 
         # limit species
         spec_lim = make_obj_array([
@@ -1304,10 +1309,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + 0.5*np.dot(cv.velocity, cv.velocity)
         )
 
+        lim_cv = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                                momentum=mass_lim*cv.velocity,
+                                species_mass=mass_lim*spec_lim)
+
         # make a new CV with the limited variables
-        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
-                            momentum=mass_lim*cv.velocity,
-                            species_mass=mass_lim*spec_lim)
+        return make_obj_array([lim_cv, pressure, temperature])
 
     def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
 
@@ -2219,15 +2226,34 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     # mass loss
                     if my_material == "composite":
 
+                        initial_mass_0 = virgin_volume_fraction*1200.0*0.25
+                        initial_mass_1 = virgin_volume_fraction*1200.0*0.75
+
+                        wv_mass_0_centerline = op.project(
+                            dcoll, dd_vol_solid, dd_centerline, solid_state.cv.mass[0])
+
+                        wv_mass_1_centerline = op.project(
+                            dcoll, dd_vol_solid, dd_centerline, solid_state.cv.mass[1])
+
+                        min_mass_0_center = vol_min(dd_centerline, wv_mass_0_centerline)
+                        min_mass_1_center = vol_min(dd_centerline, wv_mass_1_centerline)
+                        min_mass_0 = vol_min(dd_vol_solid, solid_state.cv.mass[0])
+                        min_mass_1 = vol_min(dd_vol_solid, solid_state.cv.mass[1])
+
                         sample_density = wall_sample_mask * solid_wall_model.solid_density(solid_state.cv.mass)
                         sample_mass = actx.to_numpy(integral(dcoll, dd_vol_solid, sample_density * dV))
                         mass_loss = initial_mass - sample_mass
+
+                        mass_loss_0_center = initial_mass_0 - min_mass_0_center
+                        mass_loss_1_center = initial_mass_1 - min_mass_1_center
+                        mass_loss_0_max = initial_mass_0 - min_mass_0
+                        mass_loss_1_max = initial_mass_1 - min_mass_1
 
                         if rank == 0:
                             logger.info(f"Mass loss = {mass_loss}")
 
                         my_file = open("massloss_file.dat", "a")
-                        my_file.write(f"{wall_time:.8f}, {step}, {mass_loss} \n")
+                        my_file.write(f"{wall_time:.8f}, {step}, {mass_loss}, {mass_loss_0_center}, {mass_loss_1_center}, {mass_loss_0_max}, {mass_loss_1_max} \n")
                         my_file.close()
 
                 # garbage is getting out of control without this
