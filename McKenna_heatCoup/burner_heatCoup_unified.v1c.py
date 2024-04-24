@@ -897,10 +897,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     else:
         from mirgecom.multiphysics.phenolics_coupled_fluid_wall import (
             get_porous_domain_interface)
-        interface_sample, interface_nodes, fluid_dd_list, solid_dd_list = \
+        interface_fluid, interface_sample, fluid_dd_list, solid_dd_list = \
             get_porous_domain_interface(actx, dcoll, dd_vol_fluid,
                                         dd_vol_solid, wall_sample_mask)
 
+        interface_nodes = op.project(dcoll, dd_vol_solid,
+                                     solid_dd_list[0], solid_nodes*wall_sample_mask)
         interface_zeros = actx.np.zeros_like(interface_nodes[0])
 
         # surface integral of the density
@@ -912,7 +914,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         integral_surface = actx.to_numpy(integral(dcoll, solid_dd_list[0], dS))
 
         radius = 0.015875
-        height = 0.01905
+        height = 0.01190625
 
         volume = np.pi*radius**2*height
         area = np.pi*radius**2 + 2.0*np.pi*radius*height
@@ -1144,8 +1146,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         wall_densities = (
             wall_sample_density * wall_sample_mask
-            + wall_alumina_rho * wall_alumina_mask
-            + wall_graphite_rho * wall_graphite_mask)
+            + wall_alumina_density * wall_alumina_mask
+            + wall_graphite_density * wall_graphite_mask)
     # XXX adiabatic
 
         def _get_solid_enthalpy(temperature, tau):
@@ -1491,8 +1493,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         initial_mass = actx.to_numpy(integral(dcoll, dd_vol_solid,
                                      wall_mass*wall_sample_mask*dV))
 
-        print("volume = ", volume, integral_volume - volume)
-        print("surface = ", area, integral_surface - area)
+        print("volume = ", volume, integral_volume, integral_volume - volume)
+        print("surface = ", area, integral_surface, integral_surface - area)
         print("initial_mass = ", initial_mass)
 
 #########################################################################
@@ -2229,25 +2231,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                         initial_mass_0 = virgin_volume_fraction*1200.0*0.25
                         initial_mass_1 = virgin_volume_fraction*1200.0*0.75
 
-                        wv_mass_0_centerline = op.project(
-                            dcoll, dd_vol_solid, dd_centerline, solid_state.cv.mass[0])
+                        mass_loss_0 = wall_sample_mask*initial_mass_0 - solid_state.cv.mass[0]
+                        mass_loss_1 = wall_sample_mask*initial_mass_1 - solid_state.cv.mass[1]
 
-                        wv_mass_1_centerline = op.project(
-                            dcoll, dd_vol_solid, dd_centerline, solid_state.cv.mass[1])
+                        wv_mass_0_centerline = op.project(dcoll, dd_vol_solid, dd_centerline, mass_loss_0)
+                        wv_mass_1_centerline = op.project(dcoll, dd_vol_solid, dd_centerline, mass_loss_1)
 
-                        min_mass_0_center = vol_min(dd_centerline, wv_mass_0_centerline)
-                        min_mass_1_center = vol_min(dd_centerline, wv_mass_1_centerline)
-                        min_mass_0 = vol_min(dd_vol_solid, solid_state.cv.mass[0])
-                        min_mass_1 = vol_min(dd_vol_solid, solid_state.cv.mass[1])
+                        mass_loss_0_center = vol_max(dd_centerline, wv_mass_0_centerline)
+                        mass_loss_1_center = vol_max(dd_centerline, wv_mass_1_centerline)
+                        mass_loss_0_max = vol_max(dd_vol_solid, mass_loss_0)
+                        mass_loss_1_max = vol_max(dd_vol_solid, mass_loss_1)
 
                         sample_density = wall_sample_mask * solid_wall_model.solid_density(solid_state.cv.mass)
                         sample_mass = actx.to_numpy(integral(dcoll, dd_vol_solid, sample_density * dV))
                         mass_loss = initial_mass - sample_mass
-
-                        mass_loss_0_center = initial_mass_0 - min_mass_0_center
-                        mass_loss_1_center = initial_mass_1 - min_mass_1_center
-                        mass_loss_0_max = initial_mass_0 - min_mass_0
-                        mass_loss_1_max = initial_mass_1 - min_mass_1
 
                         if rank == 0:
                             logger.info(f"Mass loss = {mass_loss}")
