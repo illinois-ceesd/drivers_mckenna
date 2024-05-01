@@ -66,9 +66,7 @@ from mirgecom.mpi import mpi_entry_point
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PressureOutflowBoundary,
-    FarfieldBoundary, 
-    RiemannInflowBoundary,
-    LinearizedInflowBoundary,
+    LinearizedOutflowBoundary,  
     DummyBoundary
 )
 from mirgecom.fluid import (
@@ -267,7 +265,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         first_step = current_step + 0
         current_t = 0.0
 
-        from functools import partial
         nel_1d = 200
 
         from meshmode.mesh.generation import generate_regular_rect_mesh
@@ -407,8 +404,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from grudge.dof_desc import DISCR_TAG_MODAL
     from meshmode.transform_metadata import FirstAxisIsElementsTag
 
-    def _limit_sample_cv(cv, wv, pressure, temperature, dd=None):
-        return cv
+    def _limit_sample_cv(cv, wv, temperature_seed, gas_model, dd=None):
+        temperature = gas_model.get_temperature(cv=cv, wv=wv, tseed=temperature_seed)
+        pressure = gas_model.get_pressure(cv, wv, temperature)
+        return make_obj_array([cv, pressure, temperature])
 
 #        spec_lim = make_obj_array([cv.mass*0.0, cv.mass*0.0, cv.mass*0.0+1.0])
 
@@ -457,7 +456,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         plug = 0.5*(actx.np.tanh(1.0/sigma*(x+H)) - actx.np.tanh(1.0/sigma*(x-H)))
         eps_gas = 1.0 - (1.0-porosity)*plug
 
-        interface_location = -1.5*H
+        interface_location = -3.0*H
         species_smooth = 0.5*(1.0 + actx.np.tanh((x-interface_location)/(sigma*3)))
 
         x_initial = make_obj_array([sample_zeros, sample_zeros, sample_zeros])
@@ -797,163 +796,95 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##############################################################################
 
-    # FIXME
-    ref_cv, _ = initializer(dim=dim, gas_model=gas_model_sample,
-        material_densities=sample_density, epsilon_gas=eps_gas,
-        pressure=pressure, temperature=temperature)
+#    # FIXME
+#    ref_cv, _ = initializer(dim=dim, gas_model=gas_model_sample,
+#        material_densities=sample_density, epsilon_gas=eps_gas,
+#        pressure=pressure, temperature=temperature)
 
-    inflow_cv_cond = op.project(dcoll, dd_vol_sample, dd_vol_sample.trace("left"), ref_cv)
+#    inflow_cv_cond = op.project(dcoll, dd_vol_sample, dd_vol_sample.trace("left"), ref_cv)
 
-    def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-        material_dens = state_minus.wv.material_densities
-        return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-            temperature_seed=900.0, material_densities=material_dens)
+#    def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+#        material_dens = state_minus.wv.material_densities
+#        return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
+#            temperature_seed=900.0, material_densities=material_dens)
 
-    from mirgecom.boundary import PrescribedFluidBoundary
+    from mirgecom.boundary import MengaldoBoundaryCondition
     from mirgecom.inviscid import inviscid_flux
     from mirgecom.flux import num_flux_central
     from mirgecom.viscous import viscous_flux
     from mirgecom.flux import num_flux_lfr
 
     """ """
-    class MyPrescribedBoundary(PrescribedFluidBoundary):
+    class MyPrescribedBoundary(MengaldoBoundaryCondition):
         r"""Prescribed my boundary function."""
 
-        def __init__(self, bnd_state_func):
-            """Initialize the boundary condition object."""
-            self.bnd_state_func = bnd_state_func
-            PrescribedFluidBoundary.__init__(
-                self,
-                boundary_state_func=bnd_state_func,
-                inviscid_flux_func=self.inviscid_wall_flux,
-                viscous_flux_func=self.viscous_wall_flux)
-
-        def prescribed_state_for_advection(
-                self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-            state_plus = self.bnd_state_func(dcoll, dd_bdry, gas_model,
-                                             state_minus, **kwargs)
-
+        def state_plus(self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
             cv_minus = state_minus.cv
 
-            mom_x = 2.0*state_plus.cv.momentum[0] - state_minus.cv.momentum[0]
-            mom_plus = make_obj_array([mom_x])
-
-            y_plus = cv_minus.species_mass_fractions # FIXME
+            mom_plus = (2.0*0.1 - state_minus.cv.velocity)*state_minus.cv.mass
+            #t_plus = 900.0 + state_minus.temperature*0.0
+            t_plus = state_minus.temperature
+            y_plus = y_atmosphere + state_minus.cv.species_mass*0.0
 
             energy_plus = cv_minus.mass*(
                 gas_model.eos.get_internal_energy(
-                    temperature=state_minus.temperature,
+                    temperature=t_plus,
                     species_mass_fractions=y_plus)) \
                 + 0.5*np.dot(mom_plus, mom_plus)/cv_minus.mass
-
-            y_plus = state_plus.cv.species_mass_fractions
 
             cv_plus = make_conserved(dim=dim, mass=cv_minus.mass,
                                      energy=energy_plus, momentum=mom_plus,
                                      species_mass=cv_minus.mass*y_plus)
 
-            material_densities = state_minus.wv.material_densities
-
             return make_fluid_state(cv=cv_plus, gas_model=gas_model,
-                                    temperature_seed=state_minus.temperature,
-                                    material_densities=material_densities)
+                                    temperature_seed=t_plus,
+                                    material_densities=state_minus.wv.material_densities)
 
-        def prescribed_state_for_diffusion(
-                self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-            state_plus = self.bnd_state_func(dcoll, dd_bdry, gas_model,
-                                             state_minus, **kwargs)
-
+        def state_bc(self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
             cv_minus = state_minus.cv
 
-            mom_x = state_plus.cv.momentum[0]
-            mom_plus = make_obj_array([mom_x])
+            mom_bc = 0.1*state_minus.cv.mass + state_minus.cv.momentum*0.0
+            # t_bc = 900.0 + state_minus.temperature*0.0
+            t_bc = state_minus.temperature
+            y_bc = y_atmosphere + state_minus.cv.species_mass*0.0
 
-            y_plus = cv_minus.species_mass_fractions # FIXME
-
-            energy_plus = cv_minus.mass*(
+            energy_bc = cv_minus.mass*(
                 gas_model.eos.get_internal_energy(
-                    temperature=state_minus.temperature,
-                    species_mass_fractions=y_plus)) \
-                + 0.5*np.dot(mom_plus, mom_plus)/cv_minus.mass
-
-            y_plus = state_plus.cv.species_mass_fractions
+                    temperature=t_bc,
+                    species_mass_fractions=y_bc)) \
+                + 0.5*np.dot(mom_bc, mom_bc)/cv_minus.mass
 
             cv_bc = make_conserved(dim=dim, mass=cv_minus.mass,
-                                energy=energy_plus, momentum=mom_plus,
-                                species_mass=cv_minus.mass*y_plus)
-
-            material_densities = state_minus.wv.material_densities
+                                   energy=energy_bc, momentum=mom_bc,
+                                   species_mass=cv_minus.mass*y_bc)
 
             return make_fluid_state(cv=cv_bc, gas_model=gas_model,
-                                    temperature_seed=state_minus.temperature,
-                                    material_densities=material_densities)
+                                    temperature_seed=t_bc,
+                                    material_densities=state_minus.wv.material_densities)
 
-        def inviscid_wall_flux(
-                self, dcoll, dd_bdry, gas_model, state_minus,
-                numerical_flux_func, **kwargs):
+        def temperature_bc(self, dcoll, dd_bdry, state_minus, **kwargs):
+            """Return farfield temperature for use in grad(temperature)."""
+            #return 900.0 + state_minus.temperature*0.0
+            return state_minus.temperature
 
-            state_plus = self.prescribed_state_for_advection(
-                dcoll=dcoll, dd_bdry=dd_bdry, gas_model=gas_model,
-                state_minus=state_minus, **kwargs)
+        def grad_cv_bc(self, dcoll, dd_bdry, gas_model, state_minus, grad_cv_minus,
+                       normal, **kwargs):
+            """Return grad(CV) to be used in the boundary calculation of viscous flux."""
+            return grad_cv_minus
 
-            state_pair = TracePair(dd_bdry, interior=state_minus,
-                                   exterior=state_plus)
+        def grad_temperature_bc(self, dcoll, dd_bdry, grad_t_minus, normal, **kwargs):
+            """Return grad(temperature) to be used in viscous flux at wall."""
+            return grad_t_minus - np.dot(grad_t_minus, normal)*normal
 
-            actx = state_minus.array_context
-            normal = actx.thaw(dcoll.normal(dd_bdry))
-
-            # FIXME use centered scheme?
-            actx = state_pair.int.array_context
-            lam = actx.np.maximum(state_pair.int.wavespeed,
-                                  state_pair.ext.wavespeed)
-            return num_flux_lfr(
-                f_minus_normal=inviscid_flux(state_pair.int, gas_model)@normal,
-                f_plus_normal=inviscid_flux(state_pair.ext, gas_model)@normal,
-                q_minus=state_pair.int.cv,
-                q_plus=state_pair.ext.cv, lam=lam)
-
-        def viscous_wall_flux(
-                self, dcoll, dd_bdry, gas_model, state_minus,
-                grad_cv_minus, grad_t_minus, numerical_flux_func, **kwargs):
-            """Return the boundary flux for viscous flux."""
-            actx = state_minus.array_context
-            normal = actx.thaw(dcoll.normal(dd_bdry))
-
-            state_plus = self.prescribed_state_for_diffusion(
-                dcoll=dcoll, dd_bdry=dd_bdry, gas_model=gas_model,
-                state_minus=state_minus, **kwargs)
-
-#            grad_species_mass_bc = 1.*grad_cv_minus.species_mass
-#            if nspecies > 0:
-#                from mirgecom.fluid import species_mass_fraction_gradient
-#                grad_y_minus = species_mass_fraction_gradient(state_minus.cv,
-#                                                              grad_cv_minus)
-#                grad_y_bc = grad_y_minus - np.outer(grad_y_minus@normal, normal)
-#                grad_species_mass_bc = 0.*grad_y_bc
-
-#                for i in range(nspecies):
-#                    grad_species_mass_bc[i] = \
-#                        (state_minus.mass_density*grad_y_bc[i]
-#                         + state_minus.species_mass_fractions[i]*grad_cv_minus.mass)
-
-#            grad_cv_plus = grad_cv_minus.replace(species_mass=grad_species_mass_bc)
-
-#            grad_t_plus = grad_t_minus - np.dot(grad_t_minus, normal)*normal
-
-            grad_cv_plus = grad_cv_minus*1.0
-            grad_t_plus = grad_t_minus*1.0
-
-            # Note that [Mengaldo_2014]_ uses F_v(Q_bc, dQ_bc) here and
-            # *not* the numerical viscous flux as advised by [Bassi_1997]_.
-            f_ext = viscous_flux(state=state_plus, grad_cv=grad_cv_plus,
-                                 grad_t=grad_t_plus)
-            return f_ext@normal
-
-#    inlet_bndry = MyPrescribedBoundary(bnd_state_func=inlet_bnd_state_func)
-
-    inlet_bndry = RiemannInflowBoundary(cv=inflow_cv_cond, temperature=900.0)
+    inlet_bndry = MyPrescribedBoundary()
 
     outlet_bndry = PressureOutflowBoundary(boundary_pressure=2000.0)
+#    ref_mass = 2000.0/(eos.gas_const(species_mass_fractions=y_products)*900.0)
+#    outlet_bndry = LinearizedOutflowBoundary(
+#        free_stream_velocity=make_obj_array([0.1]),
+#        free_stream_pressure=2000.0,
+#        free_stream_density=ref_mass,
+#        free_stream_species_mass_fractions=y_products)
 
     sample_boundaries = {dd_vol_sample.trace("right").domain_tag: outlet_bndry,
                          dd_vol_sample.trace("left").domain_tag: inlet_bndry}
@@ -1097,7 +1028,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                      dd_vol_sample.trace("left").domain_tag: DummyBoundary()}
 
     def radiation_sink_terms(temperature, epsilon):
-#        return temperature*0.0
         """Radiation sink term"""
         radiation_boundaries = normalize_boundaries(my_boundaries)
         grad_epsilon = my_derivative_function(
@@ -1111,6 +1041,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def _my_rhs(time, actual_state):
 
         sample_state, sample_density = actual_state
+
+        tv = sample_state.tv
+        wv = sample_state.wv
 
         sample_operator_states_quad = make_operator_fluid_states(
             dcoll, sample_state, gas_model_sample, sample_boundaries,
@@ -1145,9 +1078,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             rhoY_o2=sample_state.cv.species_mass[idx_O2])
 
         # ~~~~
-        tv = sample_state.tv
-        wv = sample_state.wv
-
         species_sources = sample_state.cv.species_mass*0.0
         species_sources[idx_CO2] = m_dot_co2
         species_sources[idx_O2] = m_dot_o2
@@ -1163,9 +1093,16 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             momentum=darcy_momentum,
             species_mass=species_sources)
 
-#        reference_cv = get_sponge_rhs(sample_state.cv, sample_state.wv)
-#        sponge_rhs_1 = sponge_func(cv=sample_state.cv, cv_ref=reference_cv,
-#                                   sigma=sponge_sigma_1*1000.0)
+#        sample_mass_rhs = sample_zeros
+#        species_sources = sample_state.cv.species_mass*0.0
+#        darcy_momentum = -1.0*tv.viscosity/wv.permeability*wv.void_fraction*sample_cv.velocity
+#        darcy_energy = -1.0*tv.viscosity/wv.permeability*(wv.void_fraction)**2*np.dot(sample_cv.velocity, sample_cv.velocity)
+#        darcy_source = make_conserved(
+#            dim=dim,
+#            mass=sample_zeros,
+#            energy=darcy_energy,
+#            momentum=darcy_momentum,
+#            species_mass=species_sources)
 
         #~~~~~~~~~~~~~
         return make_obj_array([sample_rhs + darcy_source,
