@@ -472,8 +472,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     flame_grid_spacing = 100
 
-    ignore_wall = False
-
     # ~~~~~~~~~~~~~~~~~~
 
     # default i/o frequencies
@@ -491,7 +489,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.4
 
     # discretization and model control
-    order = 4
+    order = 2
 
     chem_rate = 1.0
     speedup_factor = 5.0
@@ -771,10 +769,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         cantera_soln.equilibrate("TP")
         temp_burned, rho_burned, y_burned = cantera_soln.TDY
 
+    idx_CO2 = cantera_soln.species_index("CO2")
+    idx_O2 = cantera_soln.species_index("O2")
+    idx_N2 = cantera_soln.species_index("N2")
+
     # ~~~ Atmosphere
     x = np.zeros(nspecies)
-    x[cantera_soln.species_index("O2")] = 0.21
-    x[cantera_soln.species_index("N2")] = 0.79
+    x[idx_O2] = 0.21
+    x[idx_N2] = 0.79
     cantera_soln.TPX = temp_unburned, pres_unburned, x
 
     y_atmosphere = np.zeros(nspecies)
@@ -783,7 +785,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # Pull temperature, density, mass fractions, and pressure from Cantera
     y_shroud = y_atmosphere*0.0
-    y_shroud[cantera_soln.species_index("N2")] = 1.0
+    y_shroud[idx_N2] = 1.0
 
     cantera_soln.TPY = 300.0, 101325.0, y_shroud
     temp_shroud, rho_shroud = cantera_soln.TD
@@ -801,7 +803,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                              temperature_guess=temperature_seed)
 
     base_transport = MixtureAveragedTransport(pyrometheus_mechanism,
-                                               factor=speedup_factor)
+                                              factor=speedup_factor)
 
     transport_model = PorousWallTransport(base_transport=base_transport)
 
@@ -809,12 +811,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     if my_material == "fiber":
 
-        material_densities = 168.0/10.0 + fluid_zeros
+        material_densities = 168.0/100.0 + fluid_zeros
 
         import mirgecom.materials.carbon_fiber as material_sample
-        material = FiberEOS(dim=2, char_mass=0.0, virgin_mass=168.0/10.0,
-                            anisotropic_direction=0, timescale=speedup_factor)
-        decomposition = No_Oxidation_Model()
+        material = FiberEOS(dim=dim, char_mass=0.0, virgin_mass=168.0/100.0,
+                            anisotropic_direction=1, timescale=speedup_factor)
+        decomposition = material_sample.Y3_Oxidation_Model(
+            wall_material=material, arrhenius=1e5, activation_energy=-120000.0)
 
     plug_region = PorousMaterial(x_min=0.015875, y_min=0.115, thickness=0.005)
 
@@ -934,8 +937,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     from grudge.dof_desc import DISCR_TAG_MODAL
     from meshmode.transform_metadata import FirstAxisIsElementsTag
 
-    def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
-        return cv
+    def _limit_fluid_cv(cv, wv, temperature_seed, gas_model, dd=None):
+        temperature = gas_model.get_temperature(cv=cv, wv=wv, tseed=temperature_seed)
+        pressure = gas_model.get_pressure(cv, wv, temperature)
 
         # limit species
         spec_lim = make_obj_array([
@@ -964,9 +968,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         
 
         # make a new CV with the limited variables
-        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
-                            momentum=mass_lim*cv.velocity,
-                            species_mass=mass_lim*spec_lim)
+        lim_cv = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                                momentum=mass_lim*cv.velocity,
+                                species_mass=mass_lim*spec_lim)
+
+        return make_obj_array([lim_cv, pressure, temperature])
 
     def drop_order(dcoll: DiscretizationCollection, field, theta,
                    positivity_preserving=False, dd=None):
@@ -1110,10 +1116,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         current_step = restart_step
         current_t = restart_data["t"]
         if np.isscalar(current_t) is False:
-            if ignore_wall:
-                current_t = np.min(actx.to_numpy(current_t[0]))
-            else:
-                current_t = np.min(actx.to_numpy(current_t[2]))
+            current_t = np.min(actx.to_numpy(current_t[2]))
 
         if restart_iterations:
             current_t = 0.0
@@ -1454,7 +1457,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         solid_viz_fields.append(("wv_mass", wall_cv.mass))
 
-        print("Writing solution file...")
+        if rank == 0:
+            logger.info("Writing solution file...")
         write_visfile(
             dcoll, fluid_viz_fields, fluid_visualizer,
             vizname=vizname+"-fluid", step=step, t=t,
@@ -1467,7 +1471,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_write_restart(step, t, state):
         if rank == 0:
-            print("Writing restart file...")
+            logger.info("Writing restart file...")
 
         cv, tseed, sample_densities, wall_cv = state
         restart_fname = rst_pattern.format(cname=casename, step=step,
@@ -1715,16 +1719,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             eos.get_species_source_terms(cv, temperature))
 
     # ~~~~~~~
-    def darcy_source_terms(cv, tv, wv):
+    def darcy_source_terms(state):
         """Source term to mimic Darcy's law."""
-        #cyl_coords_factor = make_obj_array([fluid_nodes[0], fluid_zeros+1.0])
+        momentum = -1.0 * state.tv.viscosity/state.wv.permeability * (
+            state.wv.void_fraction * state.cv.velocity)
+        energy = -1.0 * state.tv.viscosity/state.wv.permeability * (
+            state.wv.void_fraction**2 * np.dot(state.cv.velocity, state.cv.velocity))
         return make_conserved(dim=2,
             mass=fluid_zeros,
-            energy=fluid_zeros,
-            momentum=(
-                -1.0 * tv.viscosity * wv.void_fraction/wv.permeability *
-                cv.velocity),
-            species_mass=cv.species_mass*0.0)
+            energy=energy,
+            momentum=momentum,
+            species_mass=state.cv.species_mass*0.0)
 
     # ~~~~~~~
     def radiation_sink_terms(boundaries, temperature, epsilon):
@@ -1737,6 +1742,24 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         f_phi = actx.np.sqrt( grad_epsilon[0]**2 + grad_epsilon[1]**2 )
         
         return - 1.0*5.67e-8*(1.0/epsilon_0*f_phi)*(temperature**4 - 300.0**4)
+
+    # ~~~~~~~
+    def oxidation_source_terms(state):
+        """Oxidation source terms."""
+        sample_mass_rhs, m_dot_o2, m_dot_co2 = \
+            decomposition.get_source_terms(
+                temperature=state.temperature, tau=state.wv.tau,
+                rhoY_o2=state.cv.species_mass[idx_O2])
+
+        species_sources = state.cv.species_mass*0.0
+        species_sources[idx_CO2] = m_dot_co2
+        species_sources[idx_O2] = m_dot_o2
+
+        cv = make_conserved(dim=dim, mass=m_dot_o2+m_dot_co2,
+                            energy=fluid_zeros, momentum=state.cv.momentum*0.0,
+                            species_mass=species_sources)
+
+        return cv, sample_mass_rhs
 
 ##############################################################################
 
@@ -1941,6 +1964,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
             comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
 
+        # ~~~~~~~~~~~~~
+        oxidation, sample_mass_rhs = oxidation_source_terms(fluid_state)
+
         # ~~~~
         fluid_sources = (
             chemical_source_term(fluid_state.cv, fluid_state.temperature)
@@ -1948,40 +1974,35 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + gravity_source_terms(fluid_state.cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
                                   fluid_grad_temperature)
-            + darcy_source_terms(fluid_state.cv, fluid_state.tv, fluid_state.wv)
+            + darcy_source_terms(fluid_state)
             + radiation_sink_terms(fluid_all_boundaries_no_grad,
                                    fluid_state.temperature,
                                    fluid_state.wv.void_fraction)
+            + oxidation
         )
 
         # ~~~~~~~~~~~~~
-        if ignore_wall:
-            solid_rhs = SolidWallConservedVars(mass=solid_zeros,
-                                               energy=solid_zeros)
-            solid_sources = solid_zeros
-        else:
-            solid_energy_rhs = diffusion_operator(
-                dcoll, wdv.thermal_conductivity, solid_all_boundaries,
-                wdv.temperature,
-                penalty_amount=wall_penalty_amount,
-                quadrature_tag=quadrature_tag,
-                dd=dd_vol_solid,
-                grad_u=solid_grad_temperature,
-                comm_tag=_SolidOperatorTag,
-                # diffusion_numerical_flux_func=diffusion_facial_flux_harmonic,
-            )
+        solid_energy_rhs = diffusion_operator(
+            dcoll, wdv.thermal_conductivity, solid_all_boundaries,
+            wdv.temperature,
+            penalty_amount=wall_penalty_amount,
+            quadrature_tag=quadrature_tag,
+            dd=dd_vol_solid,
+            grad_u=solid_grad_temperature,
+            comm_tag=_SolidOperatorTag,
+        )
 
-            solid_sources = wall_time_scale * axisym_source_solid(
-                actx, dcoll, solid_state, solid_grad_temperature)
+        solid_sources = wall_time_scale * axisym_source_solid(
+            actx, dcoll, solid_state, solid_grad_temperature)
 
-            solid_rhs = wall_time_scale * SolidWallConservedVars(
-                mass=solid_zeros, energy=solid_energy_rhs)
+        solid_rhs = wall_time_scale * SolidWallConservedVars(
+            mass=solid_zeros, energy=solid_energy_rhs)
 
         #~~~~~~~~~~~~~
 
         return make_obj_array([fluid_rhs + fluid_sources,
                                fluid_zeros,
-                               fluid_zeros,  # XXX material degradation
+                               sample_mass_rhs,
                                solid_rhs + solid_sources])
 
     get_rhs_compiled = actx.compile(_get_rhs)
@@ -2027,8 +2048,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 gc.freeze()
 
         min_dt = np.min(actx.to_numpy(dt[0])) if local_dt else dt
-        # min_dt = np.min(actx.to_numpy(dt[-1])) if local_dt else dt
-        # min_dt = min_dt*wall_time_scale
         if logmgr:
             set_dt(logmgr, min_dt)
             logmgr.tick_after()

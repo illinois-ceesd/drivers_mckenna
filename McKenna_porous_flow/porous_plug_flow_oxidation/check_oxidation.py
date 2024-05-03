@@ -588,14 +588,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #####################################
 
     sponge_sigma_1 = (0.5*(1.0-actx.np.tanh(1.0/0.02*(sample_nodes[0]+0.3))))
-#    sponge_sigma_2 = (0.5*(1.0+actx.np.tanh(1.0/0.02*(sample_nodes[0]-0.3))))
 
 ##############################################################################
 
     original_casename = casename
     casename = f"{casename}-d{dim}p{order}e{global_nelements}n{nparts}"
-    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
                           
     from contextlib import nullcontext
     gc_timer = nullcontext()
@@ -654,6 +651,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return cv.replace(energy=energy_ref, momentum=momentum_ref)
 
+##############################################################################
+
     sample_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_sample)
 
     def my_write_viz(step, t, dt, sample_state):
@@ -668,8 +667,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             tau=sample_state.wv.tau,
             rhoY_o2=sample_state.cv.species_mass[idx_O2])
 
-        reference_cv = get_sponge_rhs(cv, wv)
-        sponge_rhs_1 = sponge_func(cv=cv, cv_ref=reference_cv, sigma=sponge_sigma_1*1000.0)
+        # reference_cv = get_sponge_rhs(cv, wv)
+        # sponge_rhs_1 = sponge_func(cv=cv, cv_ref=reference_cv, sigma=sponge_sigma_1*1000.0)
 
         gas_energy = cv.mass * (
             gas_model_sample.eos.get_internal_energy(
@@ -720,8 +719,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         write_visfile(dcoll, sample_viz_fields, sample_visualizer,
             vizname=vizname+"-sample", step=step, t=t, overwrite=True, comm=comm)
-
-#        sys.exit()
 
     def my_write_restart(step, t, sample_state):
         if rank == 0:
