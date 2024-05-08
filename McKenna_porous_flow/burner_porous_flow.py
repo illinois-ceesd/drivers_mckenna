@@ -966,7 +966,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + 0.5*np.dot(cv.velocity, cv.velocity)
         ) + wv.density*gas_model.wall_eos.enthalpy(temperature, wv.tau)
         
-
         # make a new CV with the limited variables
         lim_cv = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
                                 momentum=mass_lim*cv.velocity,
@@ -1212,9 +1211,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     yMinLoc = 0.04
 
     sponge_init = InitSponge(amplitude=sponge_amp,
-        x_max=xMaxLoc, y_min=yMinLoc,
-        x_thickness=sponge_x_thickness,
-        y_thickness=sponge_y_thickness)
+                             x_max=xMaxLoc, y_min=yMinLoc,
+                             x_thickness=sponge_x_thickness,
+                             y_thickness=sponge_y_thickness)
 
     sponge_sigma = force_eval(actx, sponge_init(x_vec=fluid_nodes))
 
@@ -1233,10 +1232,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return inflow_temperature
 
     def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-        inflow_cv_cond = ref_state(x_vec=inflow_nodes, gas_model=gas_model,
+        inflow_cv_cond = ref_state(
+            x_vec=inflow_nodes, gas_model=gas_model,
             flow_rate=flow_rate, state_minus=state_minus,
             prescribe_species=prescribe_species, boundary=True)
-        return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
+        return make_fluid_state(
+            cv=inflow_cv_cond, gas_model=gas_model,
             material_densities=state_minus.wv.material_densities,
             temperature_seed=300.0)
 
@@ -1274,13 +1275,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
             # no need for solid energy at the boundary
 
-            cv = make_conserved(dim=2, mass=state_plus.cv.mass,
+            cv = make_conserved(dim=dim, mass=state_plus.cv.mass,
                                 energy=energy_plus, momentum=mom_plus,
                                 species_mass=state_plus.cv.species_mass)
 
-            return make_fluid_state(cv=cv, gas_model=gas_model,
-                material_densities=state_minus.wv.material_densities,
-                temperature_seed=300.0)
+            return make_fluid_state(
+                cv=cv, gas_model=gas_model, temperature_seed=300.0,
+                material_densities=state_minus.wv.material_densities)
 
         def prescribed_state_for_diffusion(
                 self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
@@ -1692,18 +1693,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         source_mass = solid_state.cv.mass*0.0
 
         source_rhoE_dom = - qr
-        source_rhoE_sng = 0.0 #- dqrdr
-        source_rhoE = actx.np.where( solid_nodes_are_off_axis,
-                          source_rhoE_dom/solid_nodes[0], source_rhoE_sng)
+        source_rhoE_sng = 0.0  #- dqrdr
+        source_rhoE = actx.np.where(solid_nodes_are_off_axis,
+                                    source_rhoE_dom/solid_nodes[0], source_rhoE_sng)
 
         return SolidWallConservedVars(mass=source_mass, energy=source_rhoE)
 
-    compiled_axisym_source_solid = actx.compile(axisym_source_solid)
+    # compiled_axisym_source_solid = actx.compile(axisym_source_solid)
 
     # ~~~~~~~
     def gravity_source_terms(cv):
         """Gravity."""
-        gravity = - 9.80665 * speedup_factor 
+        gravity = - 9.80665 * speedup_factor
         delta_rho = cv.mass - rho_atmosphere
         return make_conserved(
             dim=2,
@@ -1725,7 +1726,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             state.wv.void_fraction * state.cv.velocity)
         energy = -1.0 * state.tv.viscosity/state.wv.permeability * (
             state.wv.void_fraction**2 * np.dot(state.cv.velocity, state.cv.velocity))
-        return make_conserved(dim=2,
+        return make_conserved(
+            dim=dim,
             mass=fluid_zeros,
             energy=energy,
             momentum=momentum,
@@ -1739,8 +1741,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             actx, dcoll, epsilon, radiation_boundaries, dd_vol_fluid,
             "replicate", _RadiationTag)
         epsilon_0 = 1.0
-        f_phi = actx.np.sqrt( grad_epsilon[0]**2 + grad_epsilon[1]**2 )
-        
+        f_phi = actx.np.sqrt(grad_epsilon[0]**2 + grad_epsilon[1]**2)
+
         return - 1.0*5.67e-8*(1.0/epsilon_0*f_phi)*(temperature**4 - 300.0**4)
 
     # ~~~~~~~
@@ -1776,18 +1778,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #        wall_diffusivity = solid_wall_model.thermal_diffusivity(solid_state)
 #        return current_cfl*char_length_solid**2/(wall_diffusivity)
 
-    from mirgecom.wall_model import get_porous_flow_timestep
+#    from mirgecom.wall_model import get_porous_flow_timestep
     def _my_get_timestep_fluid(fluid_state, t, dt):
 #        return get_porous_flow_timestep(dcoll, gas_model, fluid_state, current_cfl, dd_vol_fluid)
         return get_sim_timestep(
-            dcoll, fluid_state, t, dt, current_cfl,
-            constant_cfl=constant_cfl, local_dt=local_dt, fluid_dd=dd_vol_fluid)
+            dcoll, fluid_state, t, dt, current_cfl, constant_cfl=constant_cfl,
+            local_dt=local_dt, fluid_dd=dd_vol_fluid)
 
     my_get_timestep_wall = actx.compile(_my_get_timestep_wall)
     my_get_timestep_fluid = actx.compile(_my_get_timestep_fluid)
 
     def my_pre_step(step, t, dt, state):
-        
+
         if logmgr:
             logmgr.tick_before()
 
@@ -1811,7 +1813,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wall_cv = force_eval(actx, wall_cv)
         solid_state = get_solid_state(wall_cv)            
         wall_cv = solid_state.cv
-        wdv = solid_state.dv
+        # wdv = solid_state.dv
 
         t = force_eval(actx, t)
         dt_fluid = force_eval(actx,
@@ -1864,7 +1866,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 gc.freeze()
 
             if do_health:
-                ## FIXME warning in lazy compilation
+                # FIXME warning in lazy compilation
                 health_errors = global_reduce(
                     my_health_check(fluid_state.cv, fluid_state.dv), op="lor")
                 if health_errors:
@@ -1874,17 +1876,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             file_exists = os.path.exists("write_solution")
             if file_exists:
-              os.system("rm write_solution")
-              do_viz = True
-        
+                os.system("rm write_solution")
+                do_viz = True
+
             file_exists = os.path.exists("write_restart")
             if file_exists:
-              os.system("rm write_restart")
-              do_restart = True
+                os.system("rm write_restart")
+                do_restart = True
 
             if do_viz:
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
-                    solid_state=solid_state, smoothness=smoothness)
+                             solid_state=solid_state, smoothness=smoothness)
                 gc.freeze()
 
             if do_restart:
@@ -1895,7 +1897,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             if rank == 0:
                 logger.info("Errors detected; attempting graceful exit.")
             my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
-                solid_state=solid_state, smoothness=smoothness)
+                         solid_state=solid_state, smoothness=smoothness)
             raise
 
         return state, dt
@@ -1906,10 +1908,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         cv = fluid_state.cv
 
-        wall_cv = solid_state.cv
+        # wall_cv = solid_state.cv
         wdv = solid_state.dv
 
-        #~~~~~~~~~~~~~
+        # ~~~~~~~~~~~~~
         fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
             add_interface_boundaries_no_grad(
                 dcoll, gas_model,
@@ -1967,6 +1969,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # ~~~~~~~~~~~~~
         oxidation, sample_mass_rhs = oxidation_source_terms(fluid_state)
 
+        energy_radiation = radiation_sink_terms(
+            fluid_all_boundaries_no_grad, fluid_state.temperature,
+            fluid_state.wv.void_fraction)
+
+        radiation = make_conserved(
+            dim=dim, mass=fluid_zeros, momentum=cv.momentum*0.0,
+            energy=energy_radiation, species_mass=cv.species_mass*0.0)
+
         # ~~~~
         fluid_sources = (
             chemical_source_term(fluid_state.cv, fluid_state.temperature)
@@ -1975,9 +1985,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
                                   fluid_grad_temperature)
             + darcy_source_terms(fluid_state)
-            + radiation_sink_terms(fluid_all_boundaries_no_grad,
-                                   fluid_state.temperature,
-                                   fluid_state.wv.void_fraction)
+            + radiation
             + oxidation
         )
 
@@ -1998,7 +2006,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         solid_rhs = wall_time_scale * SolidWallConservedVars(
             mass=solid_zeros, energy=solid_energy_rhs)
 
-        #~~~~~~~~~~~~~
+        # ~~~~~~~~~~~~~
 
         return make_obj_array([fluid_rhs + fluid_sources,
                                fluid_zeros,
