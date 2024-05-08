@@ -28,7 +28,7 @@ import sys
 import gc
 import cantera
 import numpy as np
-import pyopencl as cl
+#import pyopencl as cl
 from functools import partial
 
 from arraycontext import thaw
@@ -56,7 +56,10 @@ from mirgecom.simutil import (
     check_naninf_local, check_range_local,
     global_reduce
 )
-from mirgecom.utils import force_evaluation
+from mirgecom.utils import (
+    force_evaluation,
+    normalize_boundaries
+)
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
@@ -100,6 +103,10 @@ class _FluidGradTempTag:
 
 
 class _FluidOperatorTag:
+    pass
+
+
+class _RadiationTag:
     pass
 
 
@@ -153,9 +160,8 @@ class FiberEOS(OriginalFiberEOS):
 
 
 @mpi_entry_point
-def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
-         use_leap=False, use_profiling=False, casename=None, lazy=False,
-         rst_filename=None):
+def main(actx_class, use_logmgr=True, use_profiling=False, casename=None,
+         lazy=False, rst_filename=None):
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
@@ -184,9 +190,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
      # default i/o frequencies
-    nviz = 10000
-    nrestart = 20000
-    nhealth = 1
+    nviz = 5000
+    nrestart = 10000
+    nhealth = 2
     nstatus = 100
     ngarbage = 10
 
@@ -269,11 +275,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ####################################################################
 
-    u_x = 1.25e-3*10.0*100.0
+    u_x = 0.125*10.0
     u_y = 0.0
 
     _temperature = 1000.0
-    _pressure = 101325.0
+    _pressure = 10132.5
 
     # {{{ Set up initial state using Cantera
 
@@ -284,9 +290,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     cantera_soln = cantera.Solution(name="gas", yaml=mech_input)
     nspecies = cantera_soln.n_species
 
+    idx_CO2 = cantera_soln.species_index("CO2")
+    idx_O2 = cantera_soln.species_index("O2")
+    idx_N2 = cantera_soln.species_index("N2")
+
     x_reference = np.zeros(nspecies,)
-    x_reference[cantera_soln.species_index("O2")] = 0.21
-    x_reference[cantera_soln.species_index("N2")] = 0.79
+    x_reference[idx_O2] = 0.21
+    x_reference[idx_N2] = 0.79
 
     # Set Cantera internal gas temperature, pressure, and mole fractios
     cantera_soln.TPX = _temperature, _pressure, x_reference
@@ -305,22 +315,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # }}}
 
-#    mu = 1.5e-5*100.0
-#    kappa = 1.5e-2
-#    diff = 1.5e-4*100.0*np.ones(nspecies,)
-#    base_transport = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
-#                                     species_diffusivity=diff)
     base_transport=PowerLawTransport(beta=4.093e-7*10.0, lewis=np.ones(nspecies,))
     sample_transport = PorousWallTransport(base_transport=base_transport)
 
     # ~~~
-    material_densities = 168.0/10.0 + zeros
+    material_densities = 168.0/100.0 + zeros
 
+    speedup_factor = 10.0
     import mirgecom.materials.carbon_fiber as material_sample
-    from mirgecom.materials.carbon_fiber import Y3_Oxidation_Model
-    material = FiberEOS(dim=2, char_mass=0.0, virgin_mass=168.0/10.0,
-                        anisotropic_direction=0)
-    decomposition = Y3_Oxidation_Model(wall_material=material)
+    material = FiberEOS(dim=dim, char_mass=0.0, virgin_mass=168.0/100.0,
+                        anisotropic_direction=1, timescale=speedup_factor)
+    decomposition = material_sample.Y3_Oxidation_Model(
+        wall_material=material, arrhenius=1e5, activation_energy=-120000.0)
 
     # ~~~
     gas_model = PorousFlowModel(eos=eos, transport=sample_transport,
@@ -411,71 +417,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             current_cv = connection(restart_data["cv"])
             temperature_seed = connection(restart_data["temperature_seed"])
             sample_densities = connection(restart_data["sample_densities"])
-
-#            # ------ filtering
-#            filter_cutoff = restart_order
-#            filter_order = 0
-#            filter_alpha = -1.0*np.log(np.finfo(float).eps)
-
-#            print("filter_cutoff = ", filter_cutoff)
-
-#            if filter_cutoff < 0:
-#                filter_cutoff = int(filter_frac * order)
-
-#            if filter_cutoff >= order:
-#                raise ValueError("Invalid setting for filter (cutoff >= order).")
-
-#            from mirgecom.filter import (
-#                exponential_mode_response_function as xmrfunc,
-#                filter_modally
-#            )
-#            frfunc = partial(xmrfunc, alpha=filter_alpha,
-#                             filter_order=filter_order)
-
-#            def filter_field(field):
-#                return filter_modally(dcoll, filter_cutoff, frfunc, field, dd=dd)
-
-#            def filter_field(field):
-#                # Compute cell averages of the state
-#                def cancel_polynomials(grp):
-#                    for mode_id in grp.mode_ids():
-#                        print(mode_id)
-#                    print(actx.from_numpy(np.asarray([0 if sum(mode_id) > restart_order
-#                                                       else 1 for mode_id in grp.mode_ids()])))
-#                    return actx.from_numpy(np.asarray([0 if sum(mode_id) > restart_order
-#                                                       else 1 for mode_id in grp.mode_ids()]))
-
-#                from grudge.dof_desc import DISCR_TAG_MODAL
-#                from meshmode.transform_metadata import FirstAxisIsElementsTag
-
-#                # map from nodal to modal
-#                dd_nodal = dd
-#                dd_modal = dd_nodal.with_discr_tag(DISCR_TAG_MODAL)
-
-#                modal_map = dcoll.connection_from_dds(dd_nodal, dd_modal)
-#                nodal_map = dcoll.connection_from_dds(dd_modal, dd_nodal)
-
-#                modal_discr = dcoll.discr_from_dd(dd_modal)
-#                modal_field = modal_map(field)
-
-#                # cancel the ``high-order'' polynomials p > 0, and only the average remains
-#                filtered_modal_field = DOFArray(
-#                    actx,
-#                    tuple(actx.einsum("ej,j->ej",
-#                                      vec_i,
-#                                      cancel_polynomials(grp),
-#                                      arg_names=("vec", "filter"),
-#                                      tagged=(FirstAxisIsElementsTag(),))
-#                          for grp, vec_i in zip(modal_discr.groups, modal_field))
-#                )
-
-#                # convert back to nodal to have the average at all points
-#                return nodal_map(filtered_modal_field)
-
-#            current_cv = filter_field(current_cv)
-#            temperature_seed = filter_field(temperature_seed)
-#            sample_densities = filter_field(sample_densities)
-
         else:
             current_cv = restart_data["cv"]
             temperature_seed = restart_data["temperature_seed"]
@@ -486,7 +427,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from mirgecom.limiter import bound_preserving_limiter
 
-    def _limit_fluid_cv(cv, wv, pressure, temperature, dd=None):
+    def _limit_fluid_cv(cv, wv, temperature_seed, gas_model, dd=None):
+        temperature = gas_model.get_temperature(cv=cv, wv=wv, tseed=temperature_seed)
+        pressure = gas_model.get_pressure(cv, wv, temperature)
 
         # limit species
         spec_lim = make_obj_array([
@@ -513,11 +456,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + 0.5*np.dot(cv.velocity, cv.velocity)
         ) + wv.density*gas_model.wall_eos.enthalpy(temperature, wv.tau)
         
-
         # make a new CV with the limited variables
-        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
-                              momentum=mass_lim*cv.velocity,
-                              species_mass=mass_lim*spec_lim)
+        lim_cv = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                                momentum=mass_lim*cv.velocity,
+                                species_mass=mass_lim*spec_lim)
+
+        return make_obj_array([lim_cv, pressure, temperature])
 
     # ~~~
 
@@ -600,19 +544,15 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #########################################################################
 
-    visualizer = make_visualizer(dcoll, vis_order=order)
+    visualizer = make_visualizer(dcoll)
 
     initname = "slab"
     eosname = gas_model.eos.__class__.__name__
-    init_message = make_init_message(dim=dim, order=order,
-                                     nelements=local_nelements,
-                                     global_nelements=global_nelements,
-                                     dt=current_dt, t_final=t_final,
-                                     nstatus=nstatus, nviz=nviz,
-                                     cfl=current_cfl,
-                                     constant_cfl=constant_cfl,
-                                     initname=initname,
-                                     eosname=eosname, casename=casename)
+    init_message = make_init_message(
+        dim=dim, order=order, nelements=local_nelements,
+        global_nelements=global_nelements, dt=current_dt, t_final=t_final,
+        nstatus=nstatus, nviz=nviz, cfl=current_cfl, constant_cfl=constant_cfl,
+        initname=initname, eosname=eosname, casename=casename)
 
     if rank == 0:
         logger.info(init_message)
@@ -636,6 +576,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if rank == 0:
             logging.info("Writing solution file.")
 
+        oxidation, sample_mass_rhs = oxidation_source_terms(fluid_state)
+
         viz_fields = [("CV", fluid_state.cv),
                       ("DV_U", fluid_state.cv.velocity[0]),
                       ("DV_V", fluid_state.cv.velocity[1]),
@@ -643,12 +585,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                       ("DV_T", fluid_state.dv.temperature),
                       ("WV", fluid_state.wv),
                       ("dt", dt[0] if local_dt else None),
-                      # ("plug", plug)
+                      ("oxidation_mass", oxidation.mass),
+                      ("oxidation_wall", sample_mass_rhs),
                       ]
 
         # species mass fractions
         viz_fields.extend((
             "Y_"+species_names[i], fluid_state.cv.species_mass_fractions[i])
+            for i in range(nspecies))
+
+        viz_fields.extend((
+            "oxidation_Y_"+species_names[i], oxidation.species_mass[i])
             for i in range(nspecies))
                    
         from mirgecom.simutil import write_visfile
@@ -704,15 +651,101 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #########################################################################
 
-    def darcy_source_terms(cv, tv, wv):
+    from arraycontext import outer
+    from grudge.trace_pair import interior_trace_pairs, tracepair_with_discr_tag
+    from grudge import op
+    from meshmode.discretization.connection import FACE_RESTR_ALL
+    #from grudge.geometry.metrics import normal as normal_vector
+    from grudge.geometry import normal as normal_vector
+    from mirgecom.flux import num_flux_central
+    from grudge.trace_pair import TracePair
+
+    def my_derivative_function(actx, dcoll, field, field_bounds, dd_vol,
+                               bnd_cond, comm_tag):    
+
+        dd_vol_quad = dd_vol.with_discr_tag(quadrature_tag)
+        dd_allfaces_quad = dd_vol_quad.trace(FACE_RESTR_ALL)
+
+        interp_to_surf_quad = partial(tracepair_with_discr_tag, dcoll,
+                                      quadrature_tag)
+
+        def interior_flux(field_tpair):
+            dd_trace_quad = field_tpair.dd.with_discr_tag(quadrature_tag)
+            normal_quad = normal_vector(actx, dcoll, dd_trace_quad)
+            bnd_tpair_quad = interp_to_surf_quad(field_tpair)
+            flux_int = outer(num_flux_central(bnd_tpair_quad.int,
+                                              bnd_tpair_quad.ext),
+                             normal_quad)
+
+            return op.project(dcoll, dd_trace_quad, dd_allfaces_quad, flux_int)
+
+        def boundary_flux(bdtag, bdry):
+            dd_bdry_quad = dd_vol_quad.with_domain_tag(bdtag)
+            normal_quad = normal_vector(actx, dcoll, dd_bdry_quad)
+            int_soln_quad = op.project(dcoll, dd_vol, dd_bdry_quad, field)
+
+            if bnd_cond == "symmetry" and bdtag == "-0":
+                ext_soln_quad = 0.0*int_soln_quad
+            else:
+                ext_soln_quad = 1.0*int_soln_quad
+
+            bnd_tpair = TracePair(
+                dd_bdry_quad, interior=int_soln_quad, exterior=ext_soln_quad)
+            flux_bnd = outer(num_flux_central(bnd_tpair.int, bnd_tpair.ext),
+                             normal_quad)
+        
+            return op.project(dcoll, dd_bdry_quad, dd_allfaces_quad, flux_bnd)
+
+        return -op.inverse_mass(
+            dcoll, dd_vol,
+            op.weak_local_grad(dcoll, dd_vol, field)
+            - op.face_mass(dcoll, dd_allfaces_quad,
+                (sum(interior_flux(u_tpair) for u_tpair in
+                    interior_trace_pairs(dcoll, field, volume_dd=dd_vol,
+                                         comm_tag=comm_tag))
+                + sum(boundary_flux(bdtag, bdry) for bdtag, bdry in
+                    field_bounds.items())
+                )
+            )
+        )
+
+    def darcy_source_terms(state):
         """Source term to mimic Darcy's law."""
-        return make_conserved(dim=2,
-            mass=zeros,
-            energy=zeros,
-            momentum=(
-                -1.0 * tv.viscosity * wv.void_fraction/wv.permeability *
-                cv.velocity),
-            species_mass=cv.species_mass*0.0)
+        momentum = -1.0 * state.tv.viscosity/state.wv.permeability * (
+            state.wv.void_fraction * state.cv.velocity)
+        energy = -1.0 * state.tv.viscosity/state.wv.permeability * (
+            state.wv.void_fraction**2 * np.dot(state.cv.velocity, state.cv.velocity))
+        return make_conserved(dim=dim, mass=zeros, energy=energy, momentum=momentum,
+                              species_mass=state.cv.species_mass*0.0)
+
+    # ~~~~~~~
+    def radiation_sink_terms(boundaries, temperature, epsilon):
+        """Radiation sink term"""
+        radiation_bndrs = normalize_boundaries(boundaries)
+        grad_epsilon = my_derivative_function(
+            actx, dcoll, epsilon, radiation_bndrs, dd, "replicate", _RadiationTag)
+        epsilon_0 = 1.0
+        f_phi = actx.np.sqrt( grad_epsilon[0]**2 + grad_epsilon[1]**2 )
+        
+        return - 1.0*5.67e-8*(1.0/epsilon_0*f_phi)*(temperature**4 - 300.0**4)
+
+    # ~~~~~~~
+    def oxidation_source_terms(state):
+        """Oxidation source terms."""
+        sample_mass_rhs, m_dot_o2, m_dot_co2 = \
+            decomposition.get_source_terms(
+                temperature=state.temperature, tau=state.wv.tau,
+                rhoY_o2=state.cv.species_mass[idx_O2])
+
+        species_sources = state.cv.species_mass*0.0
+        species_sources[idx_CO2] = m_dot_co2
+        species_sources[idx_O2] = m_dot_o2
+
+        cv = make_conserved(dim=dim, mass=m_dot_o2+m_dot_co2, energy=zeros,
+                            momentum=state.cv.momentum*0.0,
+                            species_mass=species_sources)
+
+        return cv, sample_mass_rhs
 
     # ~~~~~~~
 
@@ -764,11 +797,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                         logger.info("Fluid solution failed health check.")
                     raise MyRuntimeError("Failed simulation health check.")
 
-            t_elapsed = time.time() - t_start
-            if t_shutdown - t_elapsed < 300.0:
-                my_write_restart(step, t, state)
-                sys.exit()
-
+            file_exists = os.path.exists("write_solution")
+            if file_exists:
+              os.system("rm write_solution")
+              do_viz = True
+        
             file_exists = os.path.exists("write_restart")
             if file_exists:
               os.system("rm write_restart")
@@ -781,6 +814,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             if do_viz:                
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state)
                 gc.freeze()
+
+            t_elapsed = time.time() - t_start
+            if t_shutdown - t_elapsed < 300.0:
+                my_write_restart(step, t, state)
+                if logmgr:
+                    logmgr.close()
+                sys.exit()
 
         except MyRuntimeError:
             if rank == 0:
@@ -822,34 +862,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             grad_cv=fluid_grad_cv, grad_t=fluid_grad_temperature,
             comm_tag=_FluidOperatorTag)
 
-        darcy_flow = darcy_source_terms(fluid_state.cv, fluid_state.tv,
-                                        fluid_state.wv)
+        # ~~~
+        oxidation, sample_mass_rhs = oxidation_source_terms(fluid_state)
+
+        darcy_flow = (
+            darcy_source_terms(fluid_state)
+            + radiation_sink_terms(boundaries, fluid_state.temperature,
+                                   fluid_state.wv.void_fraction)
+            + oxidation
+        )
 
         # ~~~
-        idx_O2 = cantera_soln.species_index("O2")
-        idx_CO2 = cantera_soln.species_index("CO2")
-        sample_mass_rhs, sample_source_O2, sample_source_CO2 = \
-            decomposition.get_source_terms(
-                fluid_state.temperature, fluid_state.wv.tau,
-                fluid_state.cv.species_mass_fractions[idx_O2])
-
-        source_species = actx.np.zeros_like(fluid_state.cv.species_mass)
-        source_species[idx_O2] = sample_source_O2
-        source_species[idx_CO2] = sample_source_CO2
-
-        reaction_rates = 0.50
-        sample_heterogeneous_source = make_conserved(dim=2,
-            mass=reaction_rates*sum(source_species),
-            energy=zeros,
-            momentum=make_obj_array([zeros, zeros]),
-            species_mass=reaction_rates*source_species
-        )
-#        sample_heterogeneous_source = fluid_state.cv*0.0
-#        sample_mass_rhs = zeros*0.0
-
-        return make_obj_array([
-            fluid_rhs + darcy_flow + sample_heterogeneous_source,
-            zeros, reaction_rates*sample_mass_rhs])
+        return make_obj_array([fluid_rhs + darcy_flow, zeros, sample_mass_rhs])
 
     def my_post_step(step, t, dt, state):
 
@@ -957,6 +981,5 @@ if __name__ == "__main__":
     from grudge.array_context import get_reasonable_array_context_class
     actx_class = get_reasonable_array_context_class(lazy=args.lazy, distributed=True)
 
-    main(actx_class, use_logmgr=args.log, 
-         use_profiling=args.profile,
+    main(actx_class, use_logmgr=args.log, use_profiling=args.profile,
          lazy=args.lazy, casename=casename, rst_filename=restart_file)
