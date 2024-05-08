@@ -206,7 +206,7 @@ def main(actx_class, use_logmgr=True, use_profiling=False, casename=None,
     local_dt = True
     
     # discretization and model control
-    order = 4
+    order = 2
     use_overintegration = False
 
     mechanism_file = "air_3sp"
@@ -715,8 +715,12 @@ def main(actx_class, use_logmgr=True, use_profiling=False, casename=None,
             state.wv.void_fraction * state.cv.velocity)
         energy = -1.0 * state.tv.viscosity/state.wv.permeability * (
             state.wv.void_fraction**2 * np.dot(state.cv.velocity, state.cv.velocity))
-        return make_conserved(dim=dim, mass=zeros, energy=energy, momentum=momentum,
-                              species_mass=state.cv.species_mass*0.0)
+
+        radiation = radiation_sink_terms(boundaries, state.temperature,
+                                         state.wv.void_fraction)
+
+        return make_conserved(dim=dim, mass=zeros, energy=energy+radiation,
+                              momentum=momentum, species_mass=state.cv.species_mass*0.0)
 
     # ~~~~~~~
     def radiation_sink_terms(boundaries, temperature, epsilon):
@@ -864,13 +868,7 @@ def main(actx_class, use_logmgr=True, use_profiling=False, casename=None,
 
         # ~~~
         oxidation, sample_mass_rhs = oxidation_source_terms(fluid_state)
-
-        darcy_flow = (
-            darcy_source_terms(fluid_state)
-            + radiation_sink_terms(boundaries, fluid_state.temperature,
-                                   fluid_state.wv.void_fraction)
-            + oxidation
-        )
+        darcy_flow = darcy_source_terms(fluid_state) + oxidation
 
         # ~~~
         return make_obj_array([fluid_rhs + darcy_flow, zeros, sample_mass_rhs])
