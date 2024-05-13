@@ -489,12 +489,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.4
 
     # discretization and model control
-    order = 2
+    order = 4
 
     chem_rate = 1.0
-    speedup_factor = 5.0
+    speedup_factor = 7.5
 
-    equiv_ratio = 1.0
+    equiv_ratio = 0.7
     total_flow_rate = 17.0
     # air_flow_rate = 18.8
     shroud_rate = 11.85
@@ -811,13 +811,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     if my_material == "fiber":
 
-        material_densities = 168.0/100.0 + fluid_zeros
+        fiber_density = 168.0/1000.0
+        material_densities = fiber_density + fluid_zeros
 
         import mirgecom.materials.carbon_fiber as material_sample
-        material = FiberEOS(dim=dim, char_mass=0.0, virgin_mass=168.0/100.0,
+        material = FiberEOS(dim=dim, char_mass=0.0, virgin_mass=fiber_density,
                             anisotropic_direction=1, timescale=speedup_factor)
         decomposition = material_sample.Y3_Oxidation_Model(
-            wall_material=material, arrhenius=1e5, activation_energy=-120000.0)
+            wall_material=material, arrhenius=speedup_factor*1e5, activation_energy=-120000.0)
 
     plug_region = PorousMaterial(x_min=0.015875, y_min=0.115, thickness=0.005)
 
@@ -1402,22 +1403,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             step, t, dt, fluid_state, solid_state, smoothness=None,
             grad_cv_fluid=None, grad_t_fluid=None, grad_t_solid=None):
 
-#        wdv = solid_state.dv
-#        fluid_all_boundaries_no_grad, solid_all_boundaries_no_grad = \
-#            add_interface_boundaries_no_grad(
-#                dcoll, gas_model,
-#                dd_vol_fluid, dd_vol_solid,
-#                fluid_state, wdv.thermal_conductivity, wdv.temperature,
-#                fluid_boundaries, solid_boundaries,
-#                interface_noslip=True, interface_radiation=use_radiation)
-
-#        """Radiation sink term"""
-#        radiation_boundaries = normalize_boundaries(fluid_all_boundaries_no_grad)
-#        grad_epsilon = my_derivative_function(
-#            actx, dcoll, fluid_state.wv.void_fraction, radiation_boundaries,
-#            dd_vol_fluid, "replicate", _RadiationTag)
-#        epsilon_0 = 1.0
-#        f_phi = actx.np.sqrt( grad_epsilon[0]**2 + grad_epsilon[1]**2 )
 
         rho = fluid_state.cv.mass
         cp = eos.heat_capacity_cp(fluid_state.cv, fluid_state.temperature)
@@ -1743,7 +1728,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         epsilon_0 = 1.0
         f_phi = actx.np.sqrt(grad_epsilon[0]**2 + grad_epsilon[1]**2)
 
-        return - 1.0*5.67e-8*(1.0/epsilon_0*f_phi)*(temperature**4 - 300.0**4)
+        # this already includes wall/fluid speed-up
+        emissivity = material.emissivity(temperature, tau=None)
+
+        return - emissivity*5.67e-8*(1.0/epsilon_0*f_phi)*(temperature**4 - 300.0**4)
 
     # ~~~~~~~
     def oxidation_source_terms(state):

@@ -192,8 +192,8 @@ Transfinite Line {-56} = 16 Using Progression 1.02;
 Transfinite Line { 57} = 19 Using Progression 1.0;
 Transfinite Line {-29} = 19 Using Progression 1.02;
 
-Transfinite Line {-64} = 10 Using Progression 1.1;
-Transfinite Line { 61} = 10 Using Progression 1.1;
+Transfinite Line {-64} = 11 Using Progression 1.08;
+Transfinite Line { 61} = 11 Using Progression 1.08;
 
 Transfinite Line { 25} = 7 Using Bump 0.99;
 Transfinite Line { 52} = 7 Using Bump 1.20;
@@ -270,46 +270,32 @@ Plane Surface(21) = {-21};
 
 /*#########################*/
 
+Point(61) = {1.1*burner_base_radius, mat_location + delta_mat, 0., 0.4*clF};
+Point(62) = {1.2*burner_base_radius, mat_location + 1.0*mat_holder, 0., 0.6*clF};
+/*Point(63) = {1.1*burner_base_radius, mat_location + 1.5*mat_holder, 0., 1.0*clF};*/
+Point{61:62} In Surface{1};
 
-
-
-/*Point(49) = {   0.90*ext_radius, flame_pos + 1.25*delta, 0., 0.40*clF};*/
-/*Point(57) = {   1.00*int_radius, flame_pos + 1.25*delta, 0., 1.00*clF};*/
-/*Point(58) = {   1.00*int_radius, flame_pos + 1.00*delta, 0., 1.00*clF};*/
-/*Point(59) = {   1.00*int_radius, flame_pos + 0.75*delta, 0., 1.00*clF};*/
-/*Point(60) = {   0.75*int_radius, flame_pos + 0.75*delta, 0., 1.00*clF};*/
-/*Point(61) = {   0.50*int_radius, flame_pos + 0.75*delta, 0., 1.00*clF};*/
-/*Point(62) = {   0.25*int_radius, flame_pos + 0.75*delta, 0., 1.00*clF};*/
-/*Point(63) = {   0.25*int_radius, flame_pos + 0.25*delta, 0., 1.00*clF};*/
-/*Point(64) = {   0.50*int_radius, flame_pos + 0.25*delta, 0., 1.00*clF};*/
-/*Point(65) = {   0.75*int_radius, flame_pos + 0.25*delta, 0., 1.00*clF};*/
-/*Point(66) = {   1.00*int_radius, flame_pos + 0.25*delta, 0., 1.00*clF};*/
-/*Point(67) = {   1.25*int_radius, flame_pos + 0.25*delta, 0., 1.00*clF};*/
-/*Point(68) = {   1.50*int_radius, flame_pos + 0.25*delta, 0., 1.00*clF};*/
-/*Point(69) = {   1.75*int_radius, flame_pos + 0.25*delta, 0., 1.00*clF};*/
-/*Point{59:69} In Surface{1};*/
-
-Point(70) = {  0.080, burner_height - 0.028, 0., 2.250*clF};
-Point(71) = {  0.120, burner_height - 0.025, 0., 2.500*clF};
-Point(72) = {  0.160, burner_height - 0.020, 0., 2.625*clF};
-Point(73) = {  0.200, burner_height - 0.012, 0., 2.750*clF};
-Point(74) = {  0.230, burner_height + 0.000, 0., 2.875*clF};
-Point(75) = {  0.260, burner_height + 0.020, 0., 3.000*clF};
-Point(76) = {  0.280, burner_height + 0.050, 0., 3.125*clF};
-Point(77) = {  0.300, burner_height + 0.080, 0., 3.250*clF};
-Point(78) = {  0.320, burner_height + 0.120, 0., 3.375*clF};
-Point(79) = {  0.330, burner_height + 0.160, 0., 3.500*clF};
-Point(80) = {  0.340, burner_height + 0.200, 0., 3.625*clF};
-Point(81) = {  0.345, burner_height + 0.240, 0., 3.750*clF};
-Point(82) = {  0.350, burner_height + 0.280, 0., 4.000*clF};
-Point(83) = {  0.350, burner_height + 0.320, 0., 4.250*clF};
-Point(84) = {  0.350, burner_height + 0.360, 0., 4.500*clF};
-Point(85) = {  0.350, burner_height + 0.400, 0., 4.750*clF};
-Point(86) = {  0.350, burner_height + 0.500, 0., 5.000*clF};
-Point(87) = {  0.350, burner_height + 0.600, 0., 5.500*clF};
-Point(88) = {  0.350, burner_height + 0.700, 0., 6.000*clF};
-Point(89) = {  0.350, burner_height + 0.800, 0., 6.000*clF};
-Point{70:89} In Surface{1};
+Point(65) = {  0.120, burner_height - 0.025, 0., 3.500*clF};
+Point(66) = {  0.230, burner_height + 0.000, 0., 3.875*clF};
+Point(67) = {  0.300, burner_height + 0.080, 0., 4.250*clF};
+Point(68) = {  0.340, burner_height + 0.200, 0., 4.625*clF};
+Point(69) = {  0.350, burner_height + 0.320, 0., 5.250*clF};
+Point(70) = {  0.350, burner_height + 0.500, 0., 6.000*clF};
+Point(71) = {  0.350, burner_height + 0.800, 0., 7.000*clF};
+/*Point(72) = {  0.080, burner_height - 0.028, 0., 3.250*clF};*/
+/*Point(73) = {  0.160, burner_height - 0.020, 0., 3.625*clF};*/
+/*Point(74) = {  0.200, burner_height - 0.012, 0., 3.750*clF};*/
+/*Point(75) = {  0.260, burner_height + 0.020, 0., 4.000*clF};*/
+/*Point(76) = {  0.280, burner_height + 0.050, 0., 4.125*clF};*/
+/*Point(77) = {  0.320, burner_height + 0.120, 0., 4.375*clF};*/
+/*Point(78) = {  0.330, burner_height + 0.160, 0., 4.500*clF};*/
+/*Point(79) = {  0.345, burner_height + 0.240, 0., 4.750*clF};*/
+/*Point(80) = {  0.350, burner_height + 0.280, 0., 5.000*clF};*/
+/*Point(81) = {  0.350, burner_height + 0.360, 0., 5.500*clF};*/
+/*Point(82) = {  0.350, burner_height + 0.400, 0., 5.750*clF};*/
+/*Point(83) = {  0.350, burner_height + 0.600, 0., 6.500*clF};*/
+/*Point(84) = {  0.350, burner_height + 0.700, 0., 7.000*clF};*/
+Point{65:71} In Surface{1};
 
 /*Point(90) = {    0.0050, flame_pos + 0.33*delta, 0., 1.5*clS};*/
 /*Point(91) = {    0.0175, flame_pos + 0.33*delta, 0., 1.5*clS};*/
