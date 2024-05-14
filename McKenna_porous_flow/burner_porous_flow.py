@@ -206,9 +206,10 @@ class Burner2D_Reactive:  # noqa
         _ys = self._ys
         _yu = self._yu
 
-        cool_temp = 300.0
+        int_diam = 2.38*25.4/2000.0  # radius, actually
+        ext_diam = 2.89*25.4/2000.0  # radius, actually
 
-        #upper_bnd = 0.11
+        # ~~~ after combustion products
         upper_bnd = 0.15
 
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
@@ -219,8 +220,7 @@ class Burner2D_Reactive:  # noqa
                           12.0)
         )
 
-        int_diam = 2.38*25.4/2000.0  # radius, actually
-        ext_diam = 2.89*25.4/2000.0  # radius, actually
+        upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(12.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
         # ~~~ shroud
         shroud_1 = 0.5*(1.0 + actx.np.tanh(1.0/(_sigma)*(x_vec[0] - int_diam)))
@@ -233,9 +233,6 @@ class Burner2D_Reactive:  # noqa
 
         # ~~~ atmosphere
         atmosphere = 1.0 - (shroud + core)
-
-        # ~~~ after combustion products
-        upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(12.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
         # ~~~ flame ignition
         flame = actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - 0.1))
@@ -250,7 +247,19 @@ class Burner2D_Reactive:  # noqa
             y = state_minus.cv.species_mass_fractions
 
         # ~~~ temperature and EOS
-        temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
+
+        upper_bnd = 0.11
+
+        sigma_factor = 10.0 - 9.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
+        _sigma = self._sigma*(
+            actx.np.where(actx.np.less(x_vec[1], upper_bnd),
+                          actx.np.where(actx.np.greater(x_vec[1], .10),
+                                        sigma_factor, 1.0),
+                          10.0)
+        )
+        upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(2.5*self._sigma)*(x_vec[1] - upper_bnd)))
+
+        temp = (flame*self._temp + (1.0-flame)*300.0)*(1.0-upper_atm) + 300.0*upper_atm
         temperature = temp*core + 300.0*(1.0 - core)
 
         if state_minus is None:
@@ -513,7 +522,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if use_tpe:
         mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_porous_coarse_quads-v2.msh"
     else:
-        mesh_filename = f"mesh_v4_{width_mm}_{flame_grid_um}_porous_coarse"
+        mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_porous_coarse"
 
     temp_wall = 300.0
     wall_penalty_amount = 1.0
@@ -528,7 +537,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_alumina_kappa = 25.00
 
     # Average from https://www.azom.com/article.aspx?ArticleID=1630 for graphite
-    # FIXME There is a table with the temperature-dependent data for graphite
+    # TODO There is a table with the temperature-dependent data for graphite
     wall_graphite_rho = 1625.0
     wall_graphite_cp = 770.0
     wall_graphite_kappa = 200.0
@@ -805,6 +814,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                              temperature_guess=temperature_seed)
 
     base_transport = MixtureAveragedTransport(pyrometheus_mechanism,
+                                              lewis=np.ones(nspecies,),
                                               factor=speedup_factor)
 
     transport_model = PorousWallTransport(base_transport=base_transport)
