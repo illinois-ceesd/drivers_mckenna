@@ -208,7 +208,8 @@ class Burner2D_Reactive:  # noqa
 
         cool_temp = 300.0
 
-        upper_bnd = 0.11
+        #upper_bnd = 0.11
+        upper_bnd = 0.15
 
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
         _sigma = self._sigma*(
@@ -234,7 +235,7 @@ class Burner2D_Reactive:  # noqa
         atmosphere = 1.0 - (shroud + core)
 
         # ~~~ after combustion products
-        upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(2.0*self._sigma)*(x_vec[1] - upper_bnd)))
+        upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(12.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
         # ~~~ flame ignition
         flame = actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - 0.1))
@@ -244,6 +245,7 @@ class Burner2D_Reactive:  # noqa
             yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
             ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
             y = atmosphere*_ya + shroud*ys + core*yf
+            # y = (atmosphere*_ya + shroud*ys + core*yf)*(1.0 - self._plug) + self._plug*_yb
         else:
             y = state_minus.cv.species_mass_fractions
 
