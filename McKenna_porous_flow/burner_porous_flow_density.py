@@ -1105,7 +1105,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         del material_densities
 
         # ~~~ HOLDER
-        wall_mass = solid_wall_model.solid_density(wall_densities)
+        # wall_mass = solid_wall_model.solid_density(wall_densities)
+        wall_mass = solid_wall_model.density()
 
         wall_alumina_h = wall_alumina_cp*300.0 + solid_zeros
         wall_graphite_h = wall_graphite_cp*300.0 + solid_zeros
