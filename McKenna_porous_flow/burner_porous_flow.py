@@ -252,10 +252,10 @@ class Burner2D_Reactive:  # noqa
         if prescribe_species:
             yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
             ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
-            if self._plug is not None:
-                y = (atmosphere*_ya + shroud*ys + core*yf)*(1.0 - self._plug) + self._plug*_ym
-            else:
+            if boundary:
                 y = atmosphere*_ya + shroud*ys + core*yf
+            else:
+                y = (atmosphere*_ya + shroud*ys + core*yf)*(1.0 - self._plug) + self._plug*_ym
         else:
             y = state_minus.cv.species_mass_fractions
 
@@ -888,17 +888,20 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         + wall_alumina_rho * wall_alumina_mask
         + wall_graphite_rho * wall_graphite_mask)
 
-    def _get_solid_enthalpy(temperature, tau):
+    def _get_solid_density():
+        return wall_densities
+
+    def _get_solid_enthalpy(temperature):
         wall_alumina_h = wall_alumina_cp * temperature
         wall_graphite_h = wall_graphite_cp * temperature
         return (wall_alumina_h * wall_alumina_mask
                 + wall_graphite_h * wall_graphite_mask)
 
-    def _get_solid_heat_capacity(temperature, tau):
+    def _get_solid_heat_capacity(temperature):
         return (wall_alumina_cp * wall_alumina_mask
                 + wall_graphite_cp * wall_graphite_mask)
 
-    def _get_solid_thermal_conductivity(temperature, tau):
+    def _get_solid_thermal_conductivity(temperature):
         return (wall_alumina_kappa * wall_alumina_mask
                 + wall_graphite_kappa * wall_graphite_mask)
 
@@ -914,10 +917,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_emissivity = _get_solid_emissivity()
 
     solid_wall_model = SolidWallModel(
+        density_func=_get_solid_density,
         enthalpy_func=_get_solid_enthalpy,
         heat_capacity_func=_get_solid_heat_capacity,
         thermal_conductivity_func=_get_solid_thermal_conductivity,
-        decomposition_func=_get_solid_decomposition_progress)
+        # decomposition_func=_get_solid_decomposition_progress
+        )
 
     # }}}
 
@@ -1121,7 +1126,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         # del plug
 
         # ~~~ HOLDER
-        wall_mass = solid_wall_model.solid_density(wall_densities)
+        # wall_mass = solid_wall_model.solid_density(wall_densities)
+        wall_mass = solid_wall_model.density()
 
         wall_alumina_h = wall_alumina_cp*300.0 + solid_zeros
         wall_graphite_h = wall_graphite_cp*300.0 + solid_zeros
@@ -1130,8 +1136,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         wall_energy = wall_mass * wall_enthalpy
 
-        solid_cv = SolidWallConservedVars(mass=wall_densities,
-                                          energy=wall_energy)
+        solid_cv = SolidWallConservedVars(mass=wall_densities, energy=wall_energy)
 
         last_stored_step = -1.0
         my_file = open("temperature_file.dat", "w")
@@ -1244,7 +1249,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sponge_sigma = force_eval(actx, sponge_init(x_vec=fluid_nodes))
 
     ref_cv = ref_state(fluid_nodes, gas_model, flow_rate,
-                       state_minus=fluid_state, cantera_soln=cantera_soln,
+                       state_minus=fluid_state,
                        prescribe_species=prescribe_species)
 
     ref_cv = force_eval(actx, ref_cv)
@@ -1460,7 +1465,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             ("wv_energy", wall_cv.energy),
             ("cfl", solid_zeros),  # FIXME
             ("wall_kappa", wdv.thermal_conductivity),
-            ("wall_progress", wdv.tau),
+            # ("wall_progress", wdv.tau),
             ("wall_temperature", wdv.temperature),
             ("wall_grad_t", grad_t_solid),
             ("dt", dt[3] if local_dt else None),
