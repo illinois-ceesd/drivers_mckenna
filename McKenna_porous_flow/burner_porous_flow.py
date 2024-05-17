@@ -518,10 +518,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     chem_rate = 1.0
     speedup_factor = 7.5
 
-    equiv_ratio = 0.7
-    total_flow_rate = 17.0
+    equiv_ratio = 1.0
+    total_flow_rate = 25.0
     # air_flow_rate = 18.8
-    shroud_rate = 11.85
+    # shroud_rate = 11.85
     prescribe_species = True
 
     width_mm = str('%02i' % (width*1000)) + "mm"
@@ -836,14 +836,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     if my_material == "fiber":
 
-        fiber_density = 168.0/1000.0
+        fiber_density = 168.0/1.0
         material_densities = fiber_density + fluid_zeros
 
         import mirgecom.materials.carbon_fiber as material_sample
         material = FiberEOS(dim=dim, char_mass=0.0, virgin_mass=fiber_density,
-                            anisotropic_direction=1, timescale=speedup_factor)
-        decomposition = material_sample.Y3_Oxidation_Model(
-            wall_material=material, arrhenius=speedup_factor*1e5, activation_energy=-120000.0)
+                            anisotropic_direction=1, timescale=50*speedup_factor)
+        #decomposition = material_sample.Y3_Oxidation_Model(
+        #    wall_material=material, arrhenius=speedup_factor*1e5, activation_energy=-120000.0)
 
     plug_region = PorousMaterial(x_min=0.015875, y_min=0.115, thickness=0.005)
 
@@ -1985,7 +1985,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             comm_tag=_FluidOperatorTag, inviscid_terms_on=True)
 
         # ~~~~~~~~~~~~~
-        oxidation, sample_mass_rhs = oxidation_source_terms(fluid_state)
+        # oxidation, sample_mass_rhs = oxidation_source_terms(fluid_state)
+        sample_mass_rhs = fluid_zeros*0.0
+        oxidation = fluid_zeros*0.0
 
         energy_radiation = radiation_sink_terms(
             fluid_all_boundaries_no_grad, fluid_state.temperature,
