@@ -613,8 +613,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         print("Not today.")
         sys.exit()
 
-    my_material = "copper"
-    # my_material = "fiber"
+    # my_material = "copper"
+    my_material = "fiber"
     # my_material = "composite"
 
     # width = 0.005
@@ -668,11 +668,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     else:
         current_dt = 1.0e-6
         wall_time_scale = 10.0*speedup_factor  # wall speed-up
-        mechanism_file = "uiuc_8sp_phenol"
+        if my_material == "fiber":
+            mechanism_file = "uiuc_7sp"
+        if my_material == "composite":
+            mechanism_file = "uiuc_8sp_phenol"
         solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"] # XXX adiabatic
 
         if use_tpe:
-            mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads"
+            mesh_filename = f"mesh_v2_15mm_100um_2dom-phenol_coarse_quads"
         else:
             mesh_filename = f"mesh_12m_{width_mm}_015um_2domains"
 
@@ -898,10 +901,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     else:
         from mirgecom.multiphysics.phenolics_coupled_fluid_wall import (
             get_porous_domain_interface)
-        interface_sample, interface_nodes, solid_dd_list = \
+        interface_fluid, interface_sample, fluid_dd_list, solid_dd_list = \
             get_porous_domain_interface(actx, dcoll, dd_vol_fluid,
                                         dd_vol_solid, wall_sample_mask)
 
+        interface_nodes = op.project(dcoll, dd_vol_solid,
+                                     solid_dd_list[0], solid_nodes*wall_sample_mask)
         interface_zeros = actx.np.zeros_like(interface_nodes[0])
 
         # surface integral of the density
@@ -913,13 +918,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         integral_surface = actx.to_numpy(integral(dcoll, solid_dd_list[0], dS))
 
         radius = 0.015875
-        height = 0.01905
+        height = 0.01190625
 
         volume = np.pi*radius**2*height
         area = np.pi*radius**2 + 2.0*np.pi*radius*height
-
-        print("volume = ", volume, integral_volume - volume)
-        print("surface = ", area, integral_surface - area)
 
 ##########################################################################
 
@@ -1109,7 +1111,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             wall_sample_density = 0.12*1400.0 + solid_zeros
 
             import mirgecom.materials.carbon_fiber as material_sample
-            material = material_sample.FiberEOS(char_mass=0.0, virgin_mass=168.0)
+            material = material_sample.FiberEOS(dim=dim, anisotropic_direction=1,
+                                                char_mass=0.0, virgin_mass=168.0)
             #decomposition = material_sample.Y3_Oxidation_Model(wall_material=material)
             decomposition = No_Oxidation_Model()
 
@@ -1281,7 +1284,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return theta*(field - cell_avgs) + cell_avgs
 
-    def _limit_fluid_cv(cv, pressure, temperature, dd=None):
+    def _limit_fluid_cv(cv, temperature_seed, gas_model, dd=None):
+
+        temperature = gas_model.eos.temperature(
+            cv=cv, temperature_seed=temperature_seed)
+        pressure = gas_model.eos.pressure(
+            cv=cv, temperature=temperature)
 
         # limit species
         spec_lim = make_obj_array([
@@ -1308,10 +1316,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             + 0.5*np.dot(cv.velocity, cv.velocity)
         )
 
+        lim_cv = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                                momentum=mass_lim*cv.velocity,
+                                species_mass=mass_lim*spec_lim)
+
         # make a new CV with the limited variables
-        return make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
-                            momentum=mass_lim*cv.velocity,
-                            species_mass=mass_lim*spec_lim)
+        return make_obj_array([lim_cv, pressure, temperature])
 
     def _drop_order_cv(cv, flipped_smoothness, theta_factor, dd=None):
 
@@ -1781,7 +1791,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "copper":
             cv, tseed, wv = state
-        else:
+        if my_material == "fiber":
+            cv, tseed, wv, wv_tseed = state
+        if my_material == "composite":
             cv, tseed, wv, wv_tseed, _ = state
 
         restart_fname = rst_pattern.format(cname=casename, step=step,
@@ -2077,7 +2089,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "copper":
             cv, tseed, wv = state
-        else:
+        if my_material == "fiber":
+            cv, tseed, wv, wv_tseed = state
+        if my_material == "composite":
             cv, tseed, wv, wv_tseed, _ = state
 
         cv = force_eval(actx, cv)
@@ -2103,12 +2117,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wv = solid_state.cv
         wdv = solid_state.dv
 
-        # wall approximated blowing
-        if my_material == "copper":
-            boundary_momentum = interface_zeros
+#        # wall approximated blowing
+#        if my_material == "copper":
+#            boundary_momentum = interface_zeros
 
-        if my_material == "fiber":
-            boundary_momentum = interface_zeros
+#        if my_material == "fiber":
+#            boundary_momentum = interface_zeros
 
         if my_material == "composite":
             solid_mass_rhs = decomposition.get_source_terms(
@@ -2128,7 +2142,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "copper":
             dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
-        else:
+        if my_material == "copper":
+            dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros])
+        if my_material == "composite":
             dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros,
                                  interface_zeros])
 
@@ -2137,8 +2153,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             if my_material == "copper":
                 state = make_obj_array([
                     fluid_state.cv, fluid_state.dv.temperature,
-                    solid_state.cv])          
-            else:
+                    solid_state.cv])         
+            if my_material == "fiber":
+                state = make_obj_array([
+                    fluid_state.cv, fluid_state.dv.temperature,
+                    solid_state.cv, solid_state.dv.temperature])      
+            if my_material == "composite":
                 state = make_obj_array([
                     fluid_state.cv, fluid_state.dv.temperature,
                     solid_state.cv, solid_state.dv.temperature,
@@ -2161,78 +2181,81 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     import gc
                     gc.collect()
 
-            if step % 1000 == 0:
-                dd_centerline = dd_vol_solid.trace("wall_sym")
-                temperature_centerline = op.project(
-                    dcoll, dd_vol_solid, dd_centerline, solid_state.dv.temperature)
-                min_temp_center = vol_min(dd_centerline, temperature_centerline)
-                max_temp_center = vol_max(dd_centerline, temperature_centerline)
-                max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
+            # heat flux
+            coupling_data = coupling(fluid_state, solid_state)
+            fluid_grad_t = coupling_data[4]
+#            if step % 1000 == 0:
+#                dd_centerline = dd_vol_solid.trace("wall_sym")
+#                temperature_centerline = op.project(
+#                    dcoll, dd_vol_solid, dd_centerline, solid_state.dv.temperature)
+#                min_temp_center = vol_min(dd_centerline, temperature_centerline)
+#                max_temp_center = vol_max(dd_centerline, temperature_centerline)
+#                max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
 
-                wall_time = np.max(actx.to_numpy(t[2]))
-                if wall_time > last_stored_time:
-                    # temperature
-                    my_file = open("temperature_file.dat", "a")
-                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
-                    my_file.close()
+#                wall_time = np.max(actx.to_numpy(t[2]))
+#                if wall_time > last_stored_time:
+#                    # temperature
+#                    my_file = open("temperature_file.dat", "a")
+#                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f} \n")
+#                    my_file.close()
 
-                    if rank == 0:
-                        logger.info(f"Temperature (top) = {min_temp_center:.8f} at t = {wall_time:.8f}")
-                        logger.info(f"Temperature (center) = {max_temp_center:.8f}")
-                        logger.info(f"Temperature (edge) = {max_temp:.8f}")
+#                    if rank == 0:
+#                        logger.info(f"Temperature (top) = {min_temp_center:.8f} at t = {wall_time:.8f}")
+#                        logger.info(f"Temperature (center) = {max_temp_center:.8f}")
+#                        logger.info(f"Temperature (edge) = {max_temp:.8f}")
 
-                    # mass loss
-                    if my_material == "composite":
+#                    # mass loss
+#                    if my_material == "composite":
 
-                        sample_density = wall_sample_mask * solid_wall_model.solid_density(solid_state.cv.mass)
-                        sample_mass = actx.to_numpy(integral(dcoll, dd_vol_solid, sample_density * dV))
-                        mass_loss = initial_mass - sample_mass
+#                        sample_density = wall_sample_mask * solid_wall_model.solid_density(solid_state.cv.mass)
+#                        sample_mass = actx.to_numpy(integral(dcoll, dd_vol_solid, sample_density * dV))
+#                        mass_loss = initial_mass - sample_mass
 
-                        if rank == 0:
-                            logger.info(f"Mass loss = {mass_loss}")
+#                        if rank == 0:
+#                            logger.info(f"Mass loss = {mass_loss}")
 
-                        my_file = open("massloss_file.dat", "a")
-                        my_file.write(f"{wall_time:.8f}, {mass_loss} \n")
-                        my_file.close()
+#                        my_file = open("massloss_file.dat", "a")
+#                        my_file.write(f"{wall_time:.8f}, {mass_loss} \n")
+#                        my_file.close()
 
-                    # heat flux
-                    coupling_data = coupling(fluid_state, solid_state)
-                    fluid_grad_t = coupling_data[4]
+#                    # heat flux
+#                    coupling_data = coupling(fluid_state, solid_state)
+#                    fluid_grad_t = coupling_data[4]
 
-                    dd_interface = filter_part_boundaries(
-                        dcoll, volume_dd=dd_vol_fluid, neighbor_volume_dd=dd_vol_solid)
+#                    dd_interface = filter_part_boundaries(
+#                        dcoll, volume_dd=dd_vol_fluid, neighbor_volume_dd=dd_vol_solid)
 
-                    interface_nodes_aux = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                     fluid_nodes)
-                    grad_t_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                  fluid_grad_t)
-                    kappa_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                 fluid_state.tv.thermal_conductivity)
+#                    interface_nodes_aux = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+#                                                     fluid_nodes)
+#                    grad_t_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+#                                                  fluid_grad_t)
+#                    kappa_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+#                                                 fluid_state.tv.thermal_conductivity)
 
-                    normal = actx.thaw(dcoll.normal(dd_interface[0]))
-                    heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
-                    xx = actx.to_numpy(interface_nodes_aux[0])[0]
-                    yy = actx.to_numpy(interface_nodes_aux[1])[0]
-                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0]
-                    grad_n = actx.to_numpy(grad_t_interface@normal)[0]
-                    flux = actx.to_numpy(heat_flux/speedup_factor)[0]
+#                    normal = actx.thaw(dcoll.normal(dd_interface[0]))
+#                    heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
+#                    xx = actx.to_numpy(interface_nodes_aux[0])[0]
+#                    yy = actx.to_numpy(interface_nodes_aux[1])[0]
+#                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0]
+#                    grad_n = actx.to_numpy(grad_t_interface@normal)[0]
+#                    flux = actx.to_numpy(heat_flux/speedup_factor)[0]
 
-                    indx = np.argmin( xx )
-                    xxi = (xx.flatten())[indx]
-                    yyi = (yy.flatten())[indx]
-                    kappai = (kappa.flatten())[indx]
-                    grad_ni = (grad_n.flatten())[indx]
-                    fluxi = (flux.flatten())[indx]
+#                    indx = np.argmin( xx )
+#                    xxi = (xx.flatten())[indx]
+#                    yyi = (yy.flatten())[indx]
+#                    kappai = (kappa.flatten())[indx]
+#                    grad_ni = (grad_n.flatten())[indx]
+#                    fluxi = (flux.flatten())[indx]
 
-                    if rank == 0:
-                        logger.info(f"x, y, kappa, grad_T, flux = {xxi}, {yyi} {kappai}, {grad_ni}, {fluxi}")
+#                    if rank == 0:
+#                        logger.info(f"x, y, kappa, grad_T, flux = {xxi}, {yyi} {kappai}, {grad_ni}, {fluxi}")
 
-                    # temperature
-                    my_file = open("temperature_file.dat", "a")
-                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
-                    my_file.close()
+#                    # temperature
+#                    my_file = open("temperature_file.dat", "a")
+#                    my_file.write(f"{wall_time:.8f}, {min_temp_center:.8f}, {max_temp_center:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
+#                    my_file.close()
 
-                gc.freeze()
+#                gc.freeze()
 
             if do_health:
                 health_errors = global_reduce(
@@ -2386,7 +2409,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def _get_rhs(t, state):
 
-        if my_material == "copper":
+        if my_material != "composite":
             fluid_state, solid_state = state
         else:
             fluid_state, solid_state, boundary_momentum = state
@@ -2428,7 +2451,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             if my_material == "copper":
                 return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
                                        solid_rhs + solid_sources])
-            else:
+            if my_material == "fiber":
+                return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                                       solid_rhs + solid_sources, solid_zeros])
+            if my_material == "composite":
                 return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
                                        solid_rhs + solid_sources, solid_zeros,
                                        interface_zeros])
@@ -2477,9 +2503,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     mass=solid_mass_rhs*wall_sample_mask,
                     energy=solid_energy_rhs)
 
-                return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
-                                       solid_rhs + solid_sources, solid_zeros,
-                                       interface_zeros])
+                if my_material == "fiber":
+                   return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                                          solid_rhs + solid_sources, solid_zeros])
+
+                if my_material == "composite":
+                   return make_obj_array([fluid_rhs + fluid_sources, fluid_zeros,
+                                          solid_rhs + solid_sources, solid_zeros,
+                                          interface_zeros])
 
         #~~~~~~~~~~~~~
 
@@ -2488,7 +2519,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def my_rhs(t, state):
         if my_material == "copper":
             cv, tseed, wv = state
-        else:
+        if my_material == "fiber":
+            cv, tseed, wv, wv_tseed = state
+        if my_material == "composite":
             cv, tseed, wv, wv_tseed, boundary_momentum = state
 
         cv = force_eval(actx, cv)
@@ -2519,7 +2552,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         if my_material == "copper":
             actual_state = make_obj_array([fluid_state, solid_state])
-        else:
+        if my_material == "fiber":
+            actual_state = make_obj_array([fluid_state, solid_state])
+        if my_material == "composite":
             boundary_momentum = force_eval(actx, boundary_momentum)
 
             actual_state = make_obj_array([fluid_state, solid_state,
@@ -2573,14 +2608,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if my_material == "copper":
         stepper_state = make_obj_array([fluid_state.cv, fluid_state.dv.temperature,
                                         solid_state.cv])
-
         dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid])
         t = make_obj_array([t_fluid, t_fluid, t_solid])
-    else:
+    if my_material == "fiber":
+        stepper_state = make_obj_array([fluid_state.cv, fluid_state.dv.temperature,
+                                        solid_state.cv, solid_state.dv.temperature])
+        dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros])
+        t = make_obj_array([t_fluid, t_fluid, t_solid, t_solid])
+    if my_material == "composite":
         stepper_state = make_obj_array([fluid_state.cv, fluid_state.dv.temperature,
                                         solid_state.cv, solid_state.dv.temperature,
                                         interface_zeros])
-
         dt = make_obj_array([dt_fluid, fluid_zeros, dt_solid, solid_zeros, interface_zeros])
         t = make_obj_array([t_fluid, t_fluid, t_solid, t_solid, interface_zeros])
 
