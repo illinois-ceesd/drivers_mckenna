@@ -609,9 +609,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    # my_material = "copper"
+    my_material = "copper"
     # my_material = "fiber"
-    my_material = "composite"
+    # my_material = "composite"
 
     # width = 0.005
     # width = 0.010
@@ -641,13 +641,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_cfl = 0.4
 
     # discretization and model control
-    order = 3
+    order = 2
 
     chem_rate = 1.0
     speedup_factor = 7.5
 
     equiv_ratio = 1.0
-    total_flow_rate = 25.0
+    total_flow_rate = 17.0
     # air_flow_rate = 18.8
     # shroud_rate = 11.85
     prescribe_species = True
@@ -660,7 +660,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         mechanism_file = "uiuc_7sp"
         solid_domains = ["wall_sample"]
 
-        mesh_filename = f"mesh_v3_{width_mm}_{flame_grid_um}_heatProbe_coarse"
+        mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_coarse_gap"
         if use_tpe:
             mesh_filename = "mesh_v3_15mm_100um_heatProbe_coarse_quads-v2.msh"
 
@@ -1683,7 +1683,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     wall_symmetry = NeumannDiffusionBoundary(0.0)
     solid_boundaries = {
-        dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry
+        dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry,
+        dd_vol_solid.trace("wall_gap").domain_tag: wall_symmetry
     }
 
 ##############################################################################
