@@ -297,10 +297,10 @@ Plane Surface(20) = {60};
 /*#########################*/
 
 Physical Line("inlet") = {1,2,5};
-Physical Line("symmetry") = {6,22,50,31,59,68};
+Physical Line("symmetry") = {6,22,49,31,59,68};
 Physical Line("burner") = {44,14,15};
 Physical Line("linear") = {41,42,43};
 Physical Line("wall_sym") = {61};
 Physical Surface("fluid") = {1:7,11:16};
-Physical Surface("solid") = {20};
+Physical Surface("wall_sample") = {20};
 
