@@ -22,10 +22,10 @@ Line( 3) = {3, 4};
 Line( 4) = {4, 1};
 
 
-Transfinite Line {1} = 21 Using Progression 1.0;
-Transfinite Line {2} = 6 Using Progression 1.0;
-Transfinite Line {3} = 21 Using Progression 1.0;
-Transfinite Line {4} = 6 Using Progression 1.0;
+Transfinite Line {1} = 10 Using Progression 1.0;
+Transfinite Line {2} = 18 Using Progression 1.0;
+Transfinite Line {3} = 10 Using Progression 1.0;
+Transfinite Line {4} = 18 Using Progression 1.0;
 
 Line Loop(1) = {1,2,3,4};
 Plane Surface(1) = {1};
