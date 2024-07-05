@@ -1301,13 +1301,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return theta*(field - cell_avgs) + cell_avgs
 
-    def _limit_fluid_cv(cv, pressure, temperature, dd=None):
-#    def _limit_fluid_cv(cv, temperature_seed, gas_model, dd=None):
-#
-#        temperature = gas_model.eos.temperature(
-#            cv=cv, temperature_seed=temperature_seed)
-#        pressure = gas_model.eos.pressure(
-#            cv=cv, temperature=temperature)
+#    def _limit_fluid_cv(cv, pressure, temperature, dd=None):
+    def _limit_fluid_cv(cv, temperature_seed, gas_model, dd=None):
+
+        temperature = gas_model.eos.temperature(
+            cv=cv, temperature_seed=temperature_seed)
+        pressure = gas_model.eos.pressure(
+            cv=cv, temperature=temperature)
 
         # limit species
         spec_lim = make_obj_array([
@@ -1469,8 +1469,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         else:
             from mirgecom.materials.initializer import SolidWallInitializer
             tau = solid_wall_model.decomposition_progress(wall_densities)
-            solid_init = SolidWallInitializer(temperature=300.0,
-                                              material_densities=wall_densities)
+            solid_init = SolidWallInitializer(
+               temperature=300.0, material_densities=wall_densities)
             solid_cv = solid_init(solid_nodes, solid_wall_model)
 
         last_stored_step = -1.0
@@ -1707,7 +1707,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_symmetry = NeumannDiffusionBoundary(0.0)
     solid_boundaries = {
         dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry,
-        dd_vol_solid.trace("wall_gap").domain_tag: wall_symmetry
+        # dd_vol_solid.trace("wall_gap").domain_tag: wall_symmetry
     }
 
 ##############################################################################

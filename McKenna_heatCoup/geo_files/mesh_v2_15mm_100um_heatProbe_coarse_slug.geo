@@ -223,6 +223,9 @@ Transfinite Line {-29} = 8 Using Progression 1.027;
 Line Loop(40) = {10:12,17:19,22:23,26:31,41:44};
 Plane Surface(1) = {40};
 
+Line Loop(41) = {62:65,67,68};
+Plane Surface(2) = {-41};
+
 Point(70) = {  0.080, burner_height - 0.028, 0., 2.250*clF};
 Point(71) = {  0.120, burner_height - 0.025, 0., 2.500*clF};
 Point(72) = {  0.160, burner_height - 0.020, 0., 2.625*clF};
@@ -312,17 +315,14 @@ Line Loop(62) = {-48,-46,64,-45};
 Plane Surface(22) = {62};
 Transfinite Surface {22} Alternate;
 
-Line Loop(63) = {62:65,67,68};
-Plane Surface(23) = {-63};
-
 /*#########################*/
 
 Physical Line("inlet") = {1,2,5};
-Physical Line("symmetry") = {6,22,50,31,59};
+Physical Line("symmetry") = {6,22,50,31,59,68};
 Physical Line("burner") = {44,14,15};
 Physical Line("linear") = {41,42,43};
-Physical Line("wall_sym") = {61,68};
-Physical Surface("fluid") = {1,3:7,11:16};
+Physical Line("wall_sym") = {61};
+Physical Surface("fluid") = {1:7,11:16};
 Physical Surface("solid") = {20,21};
-Physical Surface("air") = {22,23};
+Physical Surface("air") = {22};
 
