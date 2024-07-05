@@ -1097,9 +1097,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         emissivity = 0.03*speedup_factor
 
-        def _solid_density_func():
-            return (wall_copper_rho*wall_copper_mask
-                    + wall_air_rho*wall_air_mask)
+        wall_densities = (wall_copper_rho*wall_copper_mask
+                          + wall_air_rho*wall_air_mask)
 
         def _solid_enthalpy_func(temperature, **kwargs):
             return (wall_copper_cp*temperature*wall_copper_mask
@@ -1114,7 +1113,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     + wall_air_kappa*wall_air_mask)
 
         solid_wall_model = SolidWallModel(
-            density_func=_solid_density_func,
             enthalpy_func=_solid_enthalpy_func,
             heat_capacity_func=_solid_heat_capacity_func,
             thermal_conductivity_func=_solid_thermal_cond_func)
@@ -1303,12 +1301,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return theta*(field - cell_avgs) + cell_avgs
 
-    def _limit_fluid_cv(cv, temperature_seed, gas_model, dd=None):
-
-        temperature = gas_model.eos.temperature(
-            cv=cv, temperature_seed=temperature_seed)
-        pressure = gas_model.eos.pressure(
-            cv=cv, temperature=temperature)
+    def _limit_fluid_cv(cv, pressure, temperature, dd=None):
+#    def _limit_fluid_cv(cv, temperature_seed, gas_model, dd=None):
+#
+#        temperature = gas_model.eos.temperature(
+#            cv=cv, temperature_seed=temperature_seed)
+#        pressure = gas_model.eos.pressure(
+#            cv=cv, temperature=temperature)
 
         # limit species
         spec_lim = make_obj_array([
@@ -1465,7 +1464,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         if my_material == "copper":
             from mirgecom.materials.initializer import SolidWallInitializer
             solid_init = SolidWallInitializer(
-                temperature=300.0, material_densities=wall_copper_rho)
+                temperature=300.0, material_densities=wall_densities)
             solid_cv = solid_init(solid_nodes, solid_wall_model)
         else:
             from mirgecom.materials.initializer import SolidWallInitializer
