@@ -1845,6 +1845,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             t_elapsed = time.time() - t_start
             if t_shutdown - t_elapsed < 60.0:
+                print("Allocation time is finishing...")
                 my_write_restart(step, t, state)
                 logmgr.close()
                 sys.exit()
@@ -1985,7 +1986,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return state, dt
 
     from mirgecom.multiphysics.thermally_coupled_walls import (
-        add_interface_boundaries_no_grad as add_wall_wall_boundaries_no_grad,
         add_interface_boundaries as add_wall_wall_boundaries
     )
     def coupling(fluid_state, wall_1_state, wall_2_state):
@@ -2015,13 +2015,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 interface_noslip=True, interface_radiation=use_radiation)
 
         wall_1_all_boundaries_no_grad, wall_2_all_boundaries_no_grad = \
-            add_wall_wall_boundaries_no_grad(
+            add_wall_wall_boundaries(
                 dcoll,
                 dd_vol_wall_1, dd_vol_wall_2,
-                wdv_1.thermal_conductivity, wdv_2.thermal_conductivity,
                 wdv_1.temperature, wdv_2.temperature,
                 wall_1_all_boundaries_no_grad, wall_2_all_boundaries_no_grad,
-                interface_resistance=0.1)
+                interface_resistance=2e-3)
 
         fluid_operator_states_quad = make_operator_fluid_states(
             dcoll, fluid_state, gas_model, fluid_all_boundaries_no_grad,
@@ -2083,12 +2082,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             add_wall_wall_boundaries(
                 dcoll,
                 dd_vol_wall_1, dd_vol_wall_2,
-                wdv_1.thermal_conductivity, wdv_2.thermal_conductivity,
                 wdv_1.temperature, wdv_2.temperature,
-                wall_1_grad_temperature, wall_2_grad_temperature,
                 wall_1_all_boundaries, wall_2_all_boundaries,
-                wall_penalty_amount=wall_penalty_amount,
-                interface_resistance=0.1)
+                interface_resistance=2e-3)
 
         return (
             fluid_all_boundaries, wall_1_all_boundaries, wall_2_all_boundaries,
@@ -2313,7 +2309,7 @@ if __name__ == "__main__":
         help="use quadrilateral elements.")
     parser.add_argument("--init_wall", action="store_true", default=False,
         help="Force wall initialization from scratch.")
-    parser.add_argument("--tshutdown", action="store", default=720,
+    parser.add_argument("--tshutdown", type=float, action="store", default=720,
         help="Time to shutdown the simulation.")
 
     args = parser.parse_args()
