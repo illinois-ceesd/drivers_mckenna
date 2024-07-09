@@ -594,7 +594,7 @@ class MyRuntimeError(RuntimeError):
 def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
          use_tpe=False, use_profiling=False, casename=None, lazy=False,
          restart_file=None, user_input_file=False,
-         force_wall_initialization=False):
+         force_wall_initialization=False, t_shutdown=720.0):
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
@@ -2313,6 +2313,8 @@ if __name__ == "__main__":
         help="use quadrilateral elements.")
     parser.add_argument("--init_wall", action="store_true", default=False,
         help="Force wall initialization from scratch.")
+    parser.add_argument("--tshutdown", action="store", default=720,
+        help="Time to shutdown the simulation.")
 
     args = parser.parse_args()
 
@@ -2349,10 +2351,13 @@ if __name__ == "__main__":
     if args.init_wall:
         print("Starting the wall from scratch!!")
 
+    if args.tshutdown:
+        print("Killing the simulation after " + str(args.tshutdown) + " minutes.")
+
     from mirgecom.array_context import get_reasonable_array_context_class
     actx_class = get_reasonable_array_context_class(
         lazy=args.lazy, distributed=True, profiling=args.profiling, numpy=args.numpy)
 
     main(actx_class, use_logmgr=args.log, casename=casename, use_tpe=args.tpe,
          restart_file=restart_file, user_input_file=input_file,
-         force_wall_initialization=args.init_wall)
+         force_wall_initialization=args.init_wall, t_shutdown=args.tshutdown)
