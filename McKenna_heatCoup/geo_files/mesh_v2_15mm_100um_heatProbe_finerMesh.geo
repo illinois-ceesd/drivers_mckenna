@@ -80,11 +80,11 @@ y2 = 0.4*25.4/1000;
 Point(52) = {  x2, mat_location + y2, 0., clM/2.0};
 
 x3 = 0.3*25.4/2000;
-y3 = 0.05*25.4/1000;
+y3 = 0.063*25.4/1000;
 Point(53) = {  x3, mat_location + y3, 0., clM/2.0};
 
 x4 = 0.35*25.4/2000;
-y4 = 0.05*25.4/1000;
+y4 = 0.063*25.4/1000;
 Point(54) = {  x4, mat_location + y4, 0., clM/2.0};
 
 x5 = 0.35*25.4/2000;
@@ -159,7 +159,8 @@ Line(68) = {55, 51};
 Line(69) = {57, 58};
 Line(70) = {58, 59};
 Line(71) = {59, 55};
-/*Line(75) = {53, 11};*/
+Line(75) = {53, 11};
+Line(76) = {11, 53};
 
 /*horizontal*/
 Transfinite Line {  1} = 10 Using Bump 0.75;
@@ -169,9 +170,9 @@ Transfinite Line { 18} = 18 Using Progression 1.02;
 
 Transfinite Line {- 5} = 26 Using Progression 1.00;
 Transfinite Line {-19} = 26 Using Progression 1.00;
-Transfinite Line { 23} = 26 Using Progression 1.00;
+Transfinite Line { 23} = 28 Using Progression 1.00;
 Transfinite Line {-50} =  7 Using Progression 1.00;
-Transfinite Line {-51} = 20 Using Progression 1.00;
+Transfinite Line {-51} = 22 Using Progression 1.01;
 
 Transfinite Line { 26} = 17 Using Progression 1.020;
 Transfinite Line { 54} = 17 Using Progression 1.050;
@@ -213,6 +214,8 @@ Transfinite Line { 57} = 11 Using Progression 1.00;
 Transfinite Line {-29} = 11 Using Progression 1.027;
 
 Transfinite Line { 69} = 2;
+Transfinite Line { 75} = 4;
+Transfinite Line { 76} = 4;
 
 Line Loop(40) = {10:12,17:19,22:23,26:31,41:44};
 Plane Surface(1) = {40};
@@ -292,8 +295,11 @@ Line Loop(54) = {59,-29, 58, 57};
 Plane Surface(15) = {54};
 Transfinite Surface {15};
 
-Line Loop(60) = {61:65,69:71,67,-57,-56,-55,-54,-51,-50};
+Line Loop(60) = {61:63,75,-50};
 Plane Surface(20) = {60};
+
+Line Loop(61) = {64,65,69:71,67,-57,-56,-55,-54,-51,76};
+Plane Surface(21) = {61};
 
 /*#########################*/
 
@@ -302,6 +308,7 @@ Physical Line("symmetry") = {6,22,49,30,31,59,68};
 Physical Line("burner") = {44,14,15};
 Physical Line("linear") = {41,42,43};
 Physical Line("wall_sym") = {61,67};
+Physical Line("wall_gap") = {75,76};
 Physical Surface("fluid") = {1:7,11:15};
-Physical Surface("solid") = {20};
+Physical Surface("solid") = {20,21};
 
