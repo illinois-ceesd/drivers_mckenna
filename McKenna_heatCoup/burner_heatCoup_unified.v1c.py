@@ -46,7 +46,6 @@ from grudge import op
 from grudge.reductions import integral
 from grudge.trace_pair import TracePair, inter_volume_trace_pairs
 from grudge.geometry.metrics import normal as normal_vector
-from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import (
     DOFDesc, as_dofdesc, DISCR_TAG_BASE, BoundaryDomainTag, VolumeDomainTag
@@ -644,7 +643,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     order = 2
 
     chem_rate = 1.0
-    speedup_factor = 7.5
+    speedup_factor = 1.0
 
     equiv_ratio = 1.0
     total_flow_rate = 17.0
@@ -656,11 +655,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     flame_grid_um = str('%03i' % flame_grid_spacing) + "um"
     if my_material == "copper":
         current_dt = 1.0e-7
-        wall_time_scale = 100.0  # wall speed-up
+        wall_time_scale = 1.0  # wall speed-up
         mechanism_file = "uiuc_7sp"
-        solid_domains = ["wall_sample"]
+        solid_domains = ["solid"]
 
-        mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_coarse_gap"
+        # mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_coarse"
+        mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_finerMesh"
         if use_tpe:
             mesh_filename = "mesh_v3_15mm_100um_heatProbe_coarse_quads-v2.msh"
 
@@ -669,7 +669,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wall_time_scale = 10.0*speedup_factor  # wall speed-up
         mechanism_file = "uiuc_8sp_phenol"
         solid_domains = ["wall_sample", "wall_alumina", "wall_graphite"]
-        # XXX adiabatic
+        
 
         if use_tpe:
             mesh_filename = f"mesh_13m_{width_mm}_015um_2domains_quads"
@@ -735,7 +735,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     t_start = time.time()
     t_shutdown = 720*60
 
-    x0_sponge = 0.150
+    x0_sponge = 0.250
     sponge_amp = 300.0
     theta_factor = 0.02
 
@@ -807,7 +807,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 mesh2_path, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             volume_to_tags = {"fluid": ["fluid"], "solid": solid_domains}
-            # XXX adiabatic
+            
             return mesh, tag_to_elements, volume_to_tags
 
         volume_to_local_mesh_data, global_nelements = distribute_mesh(
@@ -827,7 +827,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     local_nelements = (
           volume_to_local_mesh_data["fluid"][0].nelements +
           volume_to_local_mesh_data["solid"][0].nelements)
-    # XXX adiabatic
+    
 
     from mirgecom.discretization import create_discretization_collection
     dcoll = create_discretization_collection(
@@ -850,7 +850,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     dd_vol_fluid = DOFDesc(VolumeDomainTag("fluid"), DISCR_TAG_BASE)
     dd_vol_solid = DOFDesc(VolumeDomainTag("solid"), DISCR_TAG_BASE)
-    # XXX adiabatic
 
     if my_material != "copper":
         from mirgecom.utils import mask_from_elements
@@ -866,15 +865,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         wall_sample_mask = force_eval(actx, wall_sample_mask)
         wall_alumina_mask = force_eval(actx, wall_alumina_mask)
         wall_graphite_mask = force_eval(actx, wall_graphite_mask)
-    # XXX adiabatic
 
     fluid_nodes = actx.thaw(dcoll.nodes(dd_vol_fluid))
     solid_nodes = actx.thaw(dcoll.nodes(dd_vol_solid))
-    # XXX adiabatic
 
     fluid_zeros = force_eval(actx, fluid_nodes[0]*0.0)
     solid_zeros = force_eval(actx, solid_nodes[0]*0.0)
-    # XXX adiabatic
 
     # ~~~~~~~~~~
     from grudge.dt_utils import characteristic_lengthscales
@@ -882,7 +878,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_fluid))
     char_length_solid = force_eval(
         actx, characteristic_lengthscales(actx, dcoll, dd=dd_vol_solid))
-    # XXX adiabatic
 
     # ~~~~~~~~~~
     from grudge.discretization import filter_part_boundaries
@@ -1148,7 +1143,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             wall_sample_density * wall_sample_mask
             + wall_alumina_density * wall_alumina_mask
             + wall_graphite_density * wall_graphite_mask)
-    # XXX adiabatic
+    
 
         def _get_solid_enthalpy(temperature, tau):
             wall_sample_h = material.enthalpy(temperature, tau)
@@ -1157,28 +1152,28 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             return (wall_sample_h * wall_sample_mask
                     + wall_alumina_h * wall_alumina_mask
                     + wall_graphite_h * wall_graphite_mask)
-    # XXX adiabatic
+    
 
         def _get_solid_heat_capacity(temperature, tau):
             wall_sample_cp = material.heat_capacity(temperature, tau)
             return (wall_sample_cp * wall_sample_mask
                     + wall_alumina_cp * wall_alumina_mask
                     + wall_graphite_cp * wall_graphite_mask)
-    # XXX adiabatic
+    
 
         def _get_solid_thermal_conductivity(temperature, tau):
             wall_sample_kappa = material.thermal_conductivity(temperature, tau)
             return (wall_sample_kappa * wall_sample_mask
                     + wall_alumina_kappa * wall_alumina_mask
                     + wall_graphite_kappa * wall_graphite_mask)
-    # XXX adiabatic
+    
 
         def _get_solid_decomposition_progress(mass):
             wall_sample_tau = material.decomposition_progress(mass)
             return (wall_sample_tau * wall_sample_mask
                     + 1.0 * wall_alumina_mask
                     + 1.0 * wall_graphite_mask)
-    # XXX adiabatic
+    
 
         def _get_emissivity(temperature, tau):
             wall_sample_emissivity = material.emissivity(temperature, tau)
@@ -1186,14 +1181,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                 wall_sample_emissivity * wall_sample_mask
                  + 0.00 * wall_alumina_mask
                  + 0.85 * wall_graphite_mask)
-    # XXX adiabatic
+    
 
         solid_wall_model = SolidWallModel(
             enthalpy_func=_get_solid_enthalpy,
             heat_capacity_func=_get_solid_heat_capacity,
             thermal_conductivity_func=_get_solid_thermal_conductivity,
             decomposition_func=_get_solid_decomposition_progress)
-    # XXX adiabatic
+    
 
     # }}}
 
@@ -1219,7 +1214,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def smoothness_region(dcoll, nodes):
         ypos = nodes[1]
 
-        y_max = 0.55
+        y_max = 0.75
         y_thickness = 0.20
 
         y0 = (y_max - y_thickness)
@@ -1377,12 +1372,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def _get_porous_solid_state(wv, wv_tseed):
         wdv = solid_wall_model.dependent_vars(wv=wv, tseed=wv_tseed)
         return SolidWallState(cv=wv, dv=wdv)
-    # XXX adiabatic
+    
 
     def _get_copper_solid_state(cv):
         wdv = solid_wall_model.dependent_vars(cv)
         return SolidWallState(cv=cv, dv=wdv)
-    # XXX adiabatic
+    
 
     if my_material == "copper":
         get_solid_state = actx.compile(_get_copper_solid_state)
@@ -1507,7 +1502,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if use_wv_tseed:
         wv_tseed = force_eval(actx, wv_tseed)
         solid_state = get_solid_state(solid_cv, wv_tseed)
-    # XXX adiabatic
+    
     else:
         solid_state = get_solid_state(solid_cv)
 
@@ -1547,7 +1542,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 ##############################################################################
 
     # initialize the sponge field
-    sponge_x_thickness = 0.055
+    sponge_x_thickness = 0.080
     sponge_y_thickness = 0.055
 
     xMaxLoc = x0_sponge + sponge_x_thickness
@@ -1684,14 +1679,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     wall_symmetry = NeumannDiffusionBoundary(0.0)
     solid_boundaries = {
         dd_vol_solid.trace("wall_sym").domain_tag: wall_symmetry,
-        dd_vol_solid.trace("wall_gap").domain_tag: wall_symmetry
+        #dd_vol_solid.trace("wall_gap").domain_tag: wall_symmetry
     }
 
 ##############################################################################
 
     fluid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_fluid)
     solid_visualizer = make_visualizer(dcoll, volume_dd=dd_vol_solid)
-    # XXX adiabatic
+    
 
     initname = original_casename
     eosname = eos.__class__.__name__
@@ -1783,7 +1778,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         write_visfile(
             dcoll, solid_viz_fields, solid_visualizer,
             vizname=vizname+"-wall", step=step, t=t, overwrite=True, comm=comm)
-    # XXX adiabatic
+    
 
     def my_write_restart(step, t, state):
         if rank == 0:
@@ -1812,7 +1807,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             }
             
             write_restart_file(actx, restart_data, restart_fname, comm)
-    # XXX adiabatic
+    
 
 #########################################################################
 
@@ -2173,89 +2168,89 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                     import gc
                     gc.collect()
 
-            if step % 1000 == 0:
-                dd_centerline = dd_vol_solid.trace("wall_sym")
-                temperature_centerline = op.project(
-                    dcoll, dd_vol_solid, dd_centerline, solid_state.dv.temperature)
-                min_temp_center = vol_min(dd_centerline, temperature_centerline)
-                max_temp_center = vol_max(dd_centerline, temperature_centerline)
-                max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
+#            if step % 1000 == 0:
+#                dd_centerline = dd_vol_solid.trace("wall_sym")
+#                temperature_centerline = op.project(
+#                    dcoll, dd_vol_solid, dd_centerline, solid_state.dv.temperature)
+#                min_temp_center = vol_min(dd_centerline, temperature_centerline)
+#                max_temp_center = vol_max(dd_centerline, temperature_centerline)
+#                max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
 
-                wall_time = np.max(actx.to_numpy(t[2]))
-                if step > last_stored_step:
+#                wall_time = np.max(actx.to_numpy(t[2]))
+#                if step > last_stored_step:
 
-                    # heat flux
-                    coupling_data = coupling(fluid_state, solid_state, boundary_momentum)
-                    fluid_grad_t = coupling_data[4]
+#                    # heat flux
+#                    coupling_data = coupling(fluid_state, solid_state, boundary_momentum)
+#                    fluid_grad_t = coupling_data[4]
 
-                    dd_interface = filter_part_boundaries(
-                        dcoll, volume_dd=dd_vol_fluid, neighbor_volume_dd=dd_vol_solid)
+#                    dd_interface = filter_part_boundaries(
+#                        dcoll, volume_dd=dd_vol_fluid, neighbor_volume_dd=dd_vol_solid)
 
-                    interface_nodes_aux = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                     fluid_nodes)
-                    grad_t_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                  fluid_grad_t)
-                    kappa_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
-                                                 fluid_state.tv.thermal_conductivity)
+#                    interface_nodes_aux = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+#                                                     fluid_nodes)
+#                    grad_t_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+#                                                  fluid_grad_t)
+#                    kappa_interface = op.project(dcoll, dd_vol_fluid, dd_interface[0],
+#                                                 fluid_state.tv.thermal_conductivity)
 
-                    normal = actx.thaw(dcoll.normal(dd_interface[0]))
-                    heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
-                    xx = actx.to_numpy(interface_nodes_aux[0])[0]
-                    yy = actx.to_numpy(interface_nodes_aux[1])[0]
-                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0]
-                    grad_n = actx.to_numpy(grad_t_interface@normal)[0]
-                    flux = actx.to_numpy(heat_flux/speedup_factor)[0]
+#                    normal = actx.thaw(dcoll.normal(dd_interface[0]))
+#                    heat_flux = (-grad_t_interface*kappa_interface)@normal/10000.0
+#                    xx = actx.to_numpy(interface_nodes_aux[0])[0]
+#                    yy = actx.to_numpy(interface_nodes_aux[1])[0]
+#                    kappa = actx.to_numpy(kappa_interface/speedup_factor)[0]
+#                    grad_n = actx.to_numpy(grad_t_interface@normal)[0]
+#                    flux = actx.to_numpy(heat_flux/speedup_factor)[0]
 
-                    indx = np.argmin( xx )
-                    xxi = (xx.flatten())[indx]
-                    yyi = (yy.flatten())[indx]
-                    kappai = (kappa.flatten())[indx]
-                    grad_ni = (grad_n.flatten())[indx]
-                    fluxi = (flux.flatten())[indx]
+#                    indx = np.argmin( xx )
+#                    xxi = (xx.flatten())[indx]
+#                    yyi = (yy.flatten())[indx]
+#                    kappai = (kappa.flatten())[indx]
+#                    grad_ni = (grad_n.flatten())[indx]
+#                    fluxi = (flux.flatten())[indx]
 
-                    if rank == 0:
-                        logger.info(f"x, y, kappa, grad_T, flux = {xxi}, {yyi} {kappai}, {grad_ni}, {fluxi}")
+#                    if rank == 0:
+#                        logger.info(f"x, y, kappa, grad_T, flux = {xxi}, {yyi} {kappai}, {grad_ni}, {fluxi}")
 
-                    # temperature
-                    my_file = open("temperature_file.dat", "a")
-                    my_file.write(f"{wall_time:.8f}, {step}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
-                    my_file.close()
+#                    # temperature
+#                    my_file = open("temperature_file.dat", "a")
+#                    my_file.write(f"{wall_time:.8f}, {step}, {min_temp_center:.8f}, {max_temp_center:.8f}, {max_temp:.8f}, {xxi:.8f}, {yyi:.8f}, {fluxi:.8f} \n")
+#                    my_file.close()
 
-                    if rank == 0:
-                        logger.info(f"Temperature (top) = {min_temp_center:.8f} at t = {wall_time:.8f}")
-                        logger.info(f"Temperature (center) = {max_temp_center:.8f}")
-                        logger.info(f"Temperature (edge) = {max_temp:.8f}")
+#                    if rank == 0:
+#                        logger.info(f"Temperature (top) = {min_temp_center:.8f} at t = {wall_time:.8f}")
+#                        logger.info(f"Temperature (center) = {max_temp_center:.8f}")
+#                        logger.info(f"Temperature (edge) = {max_temp:.8f}")
 
-                    # mass loss
-                    if my_material == "composite":
+#                    # mass loss
+#                    if my_material == "composite":
 
-                        initial_mass_0 = virgin_volume_fraction*1200.0*0.25
-                        initial_mass_1 = virgin_volume_fraction*1200.0*0.75
+#                        initial_mass_0 = virgin_volume_fraction*1200.0*0.25
+#                        initial_mass_1 = virgin_volume_fraction*1200.0*0.75
 
-                        mass_loss_0 = wall_sample_mask*initial_mass_0 - solid_state.cv.mass[0]
-                        mass_loss_1 = wall_sample_mask*initial_mass_1 - solid_state.cv.mass[1]
+#                        mass_loss_0 = wall_sample_mask*initial_mass_0 - solid_state.cv.mass[0]
+#                        mass_loss_1 = wall_sample_mask*initial_mass_1 - solid_state.cv.mass[1]
 
-                        wv_mass_0_centerline = op.project(dcoll, dd_vol_solid, dd_centerline, mass_loss_0)
-                        wv_mass_1_centerline = op.project(dcoll, dd_vol_solid, dd_centerline, mass_loss_1)
+#                        wv_mass_0_centerline = op.project(dcoll, dd_vol_solid, dd_centerline, mass_loss_0)
+#                        wv_mass_1_centerline = op.project(dcoll, dd_vol_solid, dd_centerline, mass_loss_1)
 
-                        mass_loss_0_center = vol_max(dd_centerline, wv_mass_0_centerline)
-                        mass_loss_1_center = vol_max(dd_centerline, wv_mass_1_centerline)
-                        mass_loss_0_max = vol_max(dd_vol_solid, mass_loss_0)
-                        mass_loss_1_max = vol_max(dd_vol_solid, mass_loss_1)
+#                        mass_loss_0_center = vol_max(dd_centerline, wv_mass_0_centerline)
+#                        mass_loss_1_center = vol_max(dd_centerline, wv_mass_1_centerline)
+#                        mass_loss_0_max = vol_max(dd_vol_solid, mass_loss_0)
+#                        mass_loss_1_max = vol_max(dd_vol_solid, mass_loss_1)
 
-                        sample_density = wall_sample_mask * solid_wall_model.solid_density(solid_state.cv.mass)
-                        sample_mass = actx.to_numpy(integral(dcoll, dd_vol_solid, sample_density * dV))
-                        mass_loss = initial_mass - sample_mass
+#                        sample_density = wall_sample_mask * solid_wall_model.solid_density(solid_state.cv.mass)
+#                        sample_mass = actx.to_numpy(integral(dcoll, dd_vol_solid, sample_density * dV))
+#                        mass_loss = initial_mass - sample_mass
 
-                        if rank == 0:
-                            logger.info(f"Mass loss = {mass_loss}")
+#                        if rank == 0:
+#                            logger.info(f"Mass loss = {mass_loss}")
 
-                        my_file = open("massloss_file.dat", "a")
-                        my_file.write(f"{wall_time:.8f}, {step}, {mass_loss}, {mass_loss_0_center}, {mass_loss_1_center}, {mass_loss_0_max}, {mass_loss_1_max} \n")
-                        my_file.close()
+#                        my_file = open("massloss_file.dat", "a")
+#                        my_file.write(f"{wall_time:.8f}, {step}, {mass_loss}, {mass_loss_0_center}, {mass_loss_1_center}, {mass_loss_0_max}, {mass_loss_1_max} \n")
+#                        my_file.close()
 
-                # garbage is getting out of control without this
-                gc.freeze()
+#                # garbage is getting out of control without this
+#                gc.freeze()
 
             if do_health:
                 health_errors = global_reduce(
@@ -2276,18 +2271,19 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
               do_restart = True
 
             if do_viz:
+                fluid_grad_t = None
                 my_write_viz(step=step, t=t, dt=dt, fluid_state=fluid_state,
                     solid_state=solid_state, smoothness=smoothness,
                     grad_t_fluid=fluid_grad_t)
 
                 # garbage is getting out of control without this
-                gc.freeze()
+                #gc.freeze()
 
             if do_restart:
                 my_write_restart(step, t, state)
 
                 # garbage is getting out of control without this
-                gc.freeze()
+                #gc.freeze()
 
         except MyRuntimeError:
             if rank == 0:
@@ -2443,7 +2439,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                           sigma=sponge_sigma)
             + gravity_source_terms(fluid_state.cv)
             + axisym_source_fluid(actx, dcoll, fluid_state, fluid_grad_cv,
-                                  fluid_grad_t))
+                                  fluid_grad_t)
+        )
 
         #~~~~~~~~~~~~~
         if ignore_wall:
