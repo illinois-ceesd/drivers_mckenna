@@ -13,7 +13,7 @@ phases:
 - name: gas
   thermo: ideal-gas
   elements: [O, H, C, N]
-  species: [C2H4, H2, H, O2, O, H2O, CO, CO2, OH, HO2, C2H3, C2H2, CH3, CH2, CH2O, HCO, CH2CHO, N2]
+  species: [C2H4, H2, H, O2, O, H2O, CO, CO2, OH, HCO, HO2, C2H3, C2H2, CH3, CH2, CH2O, CH2CHO, N2]
   kinetics: gas
   reactions: all
   transport: mixture-averaged
