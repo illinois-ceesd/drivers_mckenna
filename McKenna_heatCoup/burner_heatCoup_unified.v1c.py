@@ -656,7 +656,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if my_material == "copper":
         current_dt = 1.0e-7
         wall_time_scale = 1.0  # wall speed-up
-        mechanism_file = "uiuc_7sp"
+        mechanism_file = "uiuc_20sp"
         solid_domains = ["solid"]
 
         # mesh_filename = f"mesh_v2_{width_mm}_{flame_grid_um}_heatProbe_coarse"
@@ -1062,6 +1062,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     print(f"T = {temp_shroud}")
     print(f"D = {rho_shroud}")
     print(f"Y = {y_shroud}\n")
+
+    import sys
+    sys.exit()
 
     # }}}
 
@@ -2017,7 +2020,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~
     def gravity_source_terms(cv):
         """Gravity."""
-        gravity = - 9.80665 * speedup_factor 
+        gravity = - 9.80665 * speedup_factor**2
         delta_rho = cv.mass - rho_atmosphere
         return make_conserved(
             dim=2,
@@ -2172,7 +2175,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                dd_centerline = dd_vol_solid.trace("wall_sym")
 #                temperature_centerline = op.project(
 #                    dcoll, dd_vol_solid, dd_centerline, solid_state.dv.temperature)
-#                min_temp_center = vol_min(dd_centerline, temperature_centerline)
+#                y_nodes_centerline = op.project(
+#                    dcoll, dd_vol_solid, dd_centerline, solid_nodes[1])
+#                slug_temperature = actx.np.where(
+#                    actx.np.less(y_nodes_centerline, 0.1 + width + 0.04*25.4/1000 + 0.0001),
+#                        temperature_centerline, 1234567.8)
+#                min_temp_center = vol_min(dd_centerline, slug_temperature)
 #                max_temp_center = vol_max(dd_centerline, temperature_centerline)
 #                max_temp = vol_max(dd_vol_solid, solid_state.dv.temperature)
 

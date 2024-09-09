@@ -1772,7 +1772,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # ~~~~~~~
     def gravity_source_terms(cv):
         """Gravity."""
-        gravity = - 9.80665 * speedup_factor 
+        gravity = - 9.80665 * speedup_factor**2
         delta_rho = cv.mass - rho_atmosphere
         return make_conserved(
             dim=2,
