@@ -2056,35 +2056,84 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             numerical_flux_func=grad_facial_flux_weighted,
             comm_tag=_WallGradTempTag_2)
 
-        fluid_all_boundaries, wall_1_all_boundaries = \
-            add_interface_boundaries(
-                dcoll, gas_model, dd_vol_fluid, dd_vol_wall_1,
-                fluid_state, wdv_1.thermal_conductivity, wdv_1.temperature,
+#        fluid_all_boundaries, wall_1_all_boundaries = \
+#            add_interface_boundaries(
+#                dcoll, gas_model, dd_vol_fluid, dd_vol_wall_1,
+#                fluid_state, wdv_1.thermal_conductivity, wdv_1.temperature,
+#                fluid_grad_temperature, wall_1_grad_temperature,
+#                fluid_boundaries, wall_1_boundaries,
+#                interface_noslip=True, interface_radiation=use_radiation,
+#                wall_emissivity=emissivity, sigma=5.67e-8,
+#                ambient_temperature=300.0,
+#                wall_penalty_amount=wall_penalty_amount)
+
+#        fluid_all_boundaries, wall_2_all_boundaries = \
+#            add_interface_boundaries(
+#                dcoll, gas_model, dd_vol_fluid, dd_vol_wall_2,
+#                fluid_state, wdv_2.thermal_conductivity, wdv_2.temperature,
+#                fluid_grad_temperature, wall_2_grad_temperature,
+#                fluid_all_boundaries, wall_2_boundaries,
+#                interface_noslip=True, interface_radiation=use_radiation,
+#                wall_emissivity=emissivity, sigma=5.67e-8,
+#                ambient_temperature=300.0,
+#                wall_penalty_amount=wall_penalty_amount)
+
+#        wall1_wall2_all_boundaries, wall2_wall1_all_boundaries = \
+#            add_wall_wall_boundaries(
+#                dcoll,
+#                dd_vol_wall_1, dd_vol_wall_2,
+#                wdv_1.temperature, wdv_2.temperature,
+#                wall_1_all_boundaries, wall_2_all_boundaries,
+#                interface_resistance=2e-3)
+
+        fluid_wall1_interface, wall1_fluid_interface = \
+            _get_interface_boundaries(
+                dcoll, dd_vol_fluid, dd_vol_wall_1,
+                fluid_state.tv.thermal_conductivity, wdv_1.thermal_conductivity,
+                fluid_state.dv.temperature, wdv_1.temperature,
                 fluid_grad_temperature, wall_1_grad_temperature,
-                fluid_boundaries, wall_1_boundaries,
                 interface_noslip=True, interface_radiation=use_radiation,
                 wall_emissivity=emissivity, sigma=5.67e-8,
                 ambient_temperature=300.0,
-                wall_penalty_amount=wall_penalty_amount)
+                wall_penalty_amount=wall_penalty_amount,
+                quadrature_tag=quadrature_tag,
+                comm_tag=None)
 
-        fluid_all_boundaries, wall_2_all_boundaries = \
-            add_interface_boundaries(
-                dcoll, gas_model, dd_vol_fluid, dd_vol_wall_2,
-                fluid_state, wdv_2.thermal_conductivity, wdv_2.temperature,
+        fluid_wall2_interface, wall2_fluid_interface = \
+            _get_interface_boundaries(
+                dcoll, dd_vol_fluid, dd_vol_wall_2,
+                fluid_state.tv.thermal_conductivity, wdv_2.thermal_conductivity,
+                fluid_state.dv.temperature, wdv_2.temperature,
                 fluid_grad_temperature, wall_2_grad_temperature,
-                fluid_all_boundaries, wall_2_boundaries,
                 interface_noslip=True, interface_radiation=use_radiation,
                 wall_emissivity=emissivity, sigma=5.67e-8,
                 ambient_temperature=300.0,
-                wall_penalty_amount=wall_penalty_amount)
+                wall_penalty_amount=wall_penalty_amount,
+                quadrature_tag=quadrature_tag,
+                comm_tag=None)
 
-        wall_1_all_boundaries, wall_2_all_boundaries = \
-            add_wall_wall_boundaries(
+        wall1_wall2_interface, wall2_wall1_interface = \
+            _get_interface_boundaries(
                 dcoll,
-                dd_vol_wall_1, dd_vol_wall_2,
-                wdv_1.temperature, wdv_2.temperature,
-                wall_1_all_boundaries, wall_2_all_boundaries,
-                interface_resistance=2e-3)
+                wall_1_dd, wall_2_dd,
+                wall_1_temperature, wall_2_temperature,
+                interface_resistance,
+                comm_tag)
+
+        fluid_all_boundaries = {}
+        fluid_all_boundaries.update(fluid_boundaries)
+        fluid_all_boundaries.update(fluid_wall1_interface)
+        fluid_all_boundaries.update(fluid_wall2_interface)
+
+        wall_1_all_boundaries = {}
+        wall_1_all_boundaries.update(wall_1_boundaries)
+        wall_1_all_boundaries.update(wall1_fluid_interface)
+        wall_1_all_boundaries.update(wall1_wall2_interface)
+
+        wall_2_all_boundaries = {}
+        wall_2_all_boundaries.update(wall_2_boundaries)
+        wall_2_all_boundaries.update(wall2_fluid_interface)
+        wall_2_all_boundaries.update(wall2_wall1_interface)
 
         return (
             fluid_all_boundaries, wall_1_all_boundaries, wall_2_all_boundaries,
