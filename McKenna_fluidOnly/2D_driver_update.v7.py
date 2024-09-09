@@ -48,7 +48,7 @@ from mirgecom.navierstokes import (
     grad_t_operator,
     grad_cv_operator,
     ns_operator)
-from mirgecom.utils import force_evaluation
+from mirgecom.utils import force_evaluation, project_from_base
 from mirgecom.simutil import (
     check_step,
     get_sim_timestep,
@@ -65,8 +65,9 @@ from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     IsothermalWallBoundary,
     PressureOutflowBoundary,
-    PrescribedFluidBoundary,
-    AdiabaticNoslipWallBoundary,
+    #PrescribedFluidBoundary,
+    #AdiabaticNoslipWallBoundary,
+    MengaldoBoundaryCondition,
     LinearizedOutflowBoundary,
     AdiabaticSlipBoundary)
 from mirgecom.fluid import make_conserved
@@ -118,15 +119,12 @@ class _FluidGradCVTag:
 class _FluidGradTempTag:
     pass
 
-class Burner2D_Reactive:
+class Burner2D_Reactive:  # noqa
 
-    def __init__(self, *, dim=2, nspecies, sigma, sigma_flame,
-        flame_loc, pressure, temperature, speedup_factor,
-        mass_rate_burner, mass_rate_shroud,
-        species_unburn, species_burned, species_shroud, species_atm):
+    def __init__(self, *, sigma, sigma_flame, pressure,
+                 temperature, speedup_factor, mass_rate_burner, mass_rate_shroud,
+                 species_unburn, species_burned, species_shroud, species_atm):
 
-        self._dim = dim
-        self._nspecies = nspecies 
         self._sigma = sigma
         self._sigma_flame = sigma_flame
         self._pres = pressure
@@ -136,17 +134,12 @@ class Burner2D_Reactive:
         self._ys = species_shroud
         self._ya = species_atm
         self._temp = temperature
-        self._flaLoc = flame_loc
 
         self._mass_rate_burner = mass_rate_burner
         self._mass_rate_shroud = mass_rate_shroud
 
-    def __call__(self, x_vec, eos, flow_rate, solve_the_flame=True,
-                 state_minus=None, time=None):
-
-        if x_vec.shape != (self._dim,):
-            raise ValueError(f"Position vector has unexpected dimensionality,"
-                             f" expected {self._dim}.")
+    def __call__(self, x_vec, eos, flow_rate, state_minus=None,
+                 prescribe_species=False, time=None):
 
         actx = x_vec[0].array_context
 
@@ -161,58 +154,44 @@ class Burner2D_Reactive:
         sigma_factor = 12.0 - 11.0*(upper_bnd - x_vec[1])**2/(upper_bnd - 0.10)**2
         _sigma = self._sigma*(
             actx.np.where(actx.np.less(x_vec[1], upper_bnd),
-                              actx.np.where(actx.np.greater(x_vec[1], .10),
-                                            sigma_factor, 1.0),
-                              12.0)
+                          actx.np.where(actx.np.greater(x_vec[1], .10),
+                                        sigma_factor, 1.0),
+                          12.0)
         )
-#        _sigma = self._sigma
 
-        int_diam = 2.38*25.4/2000.0 #radius, actually
-        ext_diam = 2.89*25.4/2000.0 #radius, actually 
+        int_diam = 2.38*25.4/2000.0  # radius, actually
+        ext_diam = 2.89*25.4/2000.0  # radius, actually
 
-        #~~~ shroud
-        S1 = 0.5*(1.0 + actx.np.tanh(1.0/(_sigma)*(x_vec[0] - int_diam)))
-        S2 = actx.np.where(actx.np.greater(x_vec[0], ext_diam),
-                 0.0, - actx.np.tanh(1.0/(_sigma)*(x_vec[0] - ext_diam))
-             )
-        shroud = S1*S2
+        # ~~~ shroud
+        shroud_1 = 0.5*(1.0 + actx.np.tanh(1.0/(_sigma)*(x_vec[0] - int_diam)))
+        shroud_2 = actx.np.where(actx.np.greater(x_vec[0], ext_diam),
+                                 0.0, - actx.np.tanh(1.0/(_sigma)*(x_vec[0] - ext_diam)))
+        shroud = shroud_1*shroud_2
 
-        #~~~ flame ignition
+        # ~~~ flame ignition
         core = 0.5*(1.0 - actx.np.tanh(1.0/_sigma*(x_vec[0] - int_diam)))
 
-        #~~~ atmosphere
+        # ~~~ atmosphere
         atmosphere = 1.0 - (shroud + core)
-             
-        #~~~ after combustion products
-        upper_atm = 0.5*(1.0 + actx.np.tanh( 1.0/(15.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
-        if solve_the_flame:
+        # ~~~ after combustion products
+        upper_atm = 0.5*(1.0 + actx.np.tanh(1.0/(2.0*self._sigma)*(x_vec[1] - upper_bnd)))
 
-            #~~~ flame ignition
-            flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
+        # ~~~ flame ignition
+        #flame = 0.5*(1.0 + actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - self._flaLoc)))
+        flame = actx.np.tanh(1.0/(self._sigma_flame)*(x_vec[1] - 0.1))
 
-            #~~~ species
+        # ~~~ species
+        if prescribe_species:
             yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
             ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
             y = atmosphere*_ya + shroud*ys + core*yf
-
-            #~~~ temperature and EOS
-            temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
-            temperature = temp*core + 300.0*(1.0 - core)
-
         else:
+            y = state_minus.cv.species_mass_fractions
 
-            #~~~ flame ignition
-            flame = 1.0
-
-            #~~~ species
-            yf = (flame*_yb + (1.0-flame)*_yu)*(1.0-upper_atm) + _ya*upper_atm
-            ys = _ya*upper_atm + (1.0 - upper_atm)*_ys
-            y = atmosphere*_ya + shroud*ys + core*yf
-
-            #~~~ temperature and EOS
-            temp = self._temp*(1.0-upper_atm) + 300.0*upper_atm
-            temperature = temp*core + 300.0*(1.0 - core)
+        # ~~~ temperature and EOS
+        temp = (flame*self._temp + (1.0-flame)*cool_temp)*(1.0-upper_atm) + 300.0*upper_atm
+        temperature = temp*core + 300.0*(1.0 - core)
 
         if state_minus is None:
             pressure = self._pres + 0.0*x_vec[0]
@@ -220,25 +199,25 @@ class Burner2D_Reactive:
         else:
             mass = state_minus.cv.mass
 
-        #~~~ velocity
+        # ~~~ velocity and/or momentum
         mom_burner = self._mass_rate_burner*self._speedup_factor
         mom_shroud = self._mass_rate_shroud*self._speedup_factor
-        smoothY = mom_burner*(1.0-upper_atm) + 0.0*upper_atm
+        smoothY = mom_burner*(1.0-upper_atm) + 0.0*upper_atm  # noqa
         mom_x = 0.0*x_vec[0]
         mom_y = core*smoothY + shroud*mom_shroud*(1.0-upper_atm)
         momentum = make_obj_array([mom_x, mom_y])
         velocity = momentum/mass
 
-        #~~~ 
+        # ~~~
         specmass = mass * y
 
-        #~~~ 
+        # ~~~
         internal_energy = eos.get_internal_energy(temperature, species_mass_fractions=y)
         kinetic_energy = 0.5 * np.dot(velocity, velocity)
         energy = mass * (internal_energy + kinetic_energy)
 
-        return make_conserved(dim=self._dim, mass=mass, energy=energy,
-                momentum=mass*velocity, species_mass=specmass)
+        return make_conserved(dim=2, mass=mass, energy=energy,
+                              momentum=mass*velocity, species_mass=specmass)
 
 
 
@@ -365,7 +344,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_v2_100um_noSample.msh"
+    mesh_filename = "mesh_v2_100um_noSample"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -387,7 +366,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     niter = 3000001
     local_dt = True
     constant_cfl = True
-    current_cfl = 0.2
+    current_cfl = 0.4
     
     # discretization and model control
     order = 2
@@ -398,16 +377,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     theta_factor = 0.02
 
     mechanism_file = "uiuc_7sp"
-    equiv_ratio = 0.7
-    speedup_factor = 7.5
-    chem_rate = 0.5
-    flow_rate = 25.0
-    shroud_rate = 11.85
+    equiv_ratio = 1.0
+    speedup_factor = 10.0
+    chem_rate = 1.0
+    total_flow_rate = 25.0
     Twall = 300.0
-    T_products = 2000.0
     solve_the_flame = True
-
-    transport = "PowerLaw"
 
     restart_iterations = False
 
@@ -446,8 +421,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##########################################################################
 
-
-    # {{{  Set up initial state using Cantera
+    # {{{ Set up initial state using Cantera
 
     # Use Cantera for initialization
     from mirgecom.mechanisms import get_mechanism_input
@@ -458,70 +432,91 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # Initial temperature, pressure, and mixture mole fractions are needed to
     # set up the initial state in Cantera.
-    temp_unburned = 300.0
-    temp_ignition = T_products
 
     air = "O2:0.21,N2:0.79"
     fuel = "C2H4:1"
-    cantera_soln.set_equivalence_ratio(phi=equiv_ratio, fuel=fuel, oxidizer=air)
-    x_unburned = cantera_soln.X
-    pres_unburned = cantera.one_atm
-
+    cantera_soln.set_equivalence_ratio(phi=equiv_ratio,
+                                       fuel=fuel, oxidizer=air)
+    temp_unburned = 300.0
+    pres_unburned = 101325.0
+    cantera_soln.TP = temp_unburned, pres_unburned
+    x_reference = cantera_soln.X
+    y_reference = cantera_soln.Y
     rho_int = cantera_soln.density
 
-    r_int = 2.38*25.4/2000.0 #radius, actually
-    r_ext = 2.89*25.4/2000.0 #radius, actually
-    
-    mass_react = flow_rate*1.0
-    mass_shroud = shroud_rate*1.0
-    A_int = np.pi*r_int**2
-    A_ext = np.pi*(r_ext**2 - r_int**2)
+    r_int = 2.38*25.4/2000.0
+    r_ext = 2.89*25.4/2000.0
+
+    try:
+        total_flow_rate
+    except NameError:
+        total_flow_rate = None
+
+    if total_flow_rate is not None:
+        flow_rate = total_flow_rate*1.0
+    else:
+        idx_fuel = cantera_soln.species_index("C2H4")
+        flow_rate = air_flow_rate/(sum(x_reference) - x_reference[idx_fuel])
+
+    A_int = np.pi*r_int**2  # noqa
     lmin_to_m3s = 1.66667e-5
-    u_int = mass_react*lmin_to_m3s/A_int
-    u_ext = mass_shroud*lmin_to_m3s/A_ext
-    rhoU_int = rho_int*u_int
+    u_int = flow_rate*lmin_to_m3s/A_int
+    rhoU_int = rho_int*u_int  # noqa
 
-    rho_ext = 101325.0/((8314.46/cantera_soln.molecular_weights[-1])*300.0)
-    mdot_ext = rho_ext*u_ext*A_ext
-    rhoU_ext = rho_ext*u_ext
+    #mass_shroud = shroud_rate*1.0
+    A_ext = np.pi*(r_ext**2 - r_int**2)  # noqa
+    u_ext = u_int #mass_shroud*lmin_to_m3s/A_ext
+    rho_ext = 101325.0/((cantera.gas_constant/cantera_soln.molecular_weights[-1])*300.)
+    # mdot_ext = rho_ext*u_ext*A_ext
+    rhoU_ext = rho_ext*u_ext  # noqa
 
-    print("V_dot=",mass_react,"(L/min)")
-    print(f"{A_int= }","(m^2)")
-    print(f"{A_ext= }","(m^2)")
-    print(f"{u_int= }","(m/s)")
-    print(f"{u_ext= }","(m/s)")
-    print(f"{rho_int= }","(kg/m^3)")
-    print(f"{rho_ext= }","(kg/m^3)")
+    width = 0.1
+    width_mm = width*1000
+    print("width=", width_mm, "(mm)")
+    print("V_dot=", flow_rate, "(L/min)")
+    print(f"{A_int= }", "(m^2)")
+    print(f"{A_ext= }", "(m^2)")
+    print(f"{u_int= }", "(m/s)")
+    print(f"{u_ext= }", "(m/s)")
+    print(f"{rho_int= }", "(kg/m^3)")
+    print(f"{rho_ext= }", "(kg/m^3)")
     print(f"{rhoU_int= }")
     print(f"{rhoU_ext= }")
-    print("ratio=",u_ext/u_int)
+    print("ratio=", u_ext/u_int,"\n")
 
-    # Let the user know about how Cantera is being initilized
-    print(f"Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x_unburned}")
     # Set Cantera internal gas temperature, pressure, and mole fractios
-    cantera_soln.TPX = temp_unburned, pres_unburned, x_unburned
-    #y_unburned = np.zeros(nspecies)
-    can_t, rho_unburned, y_unburned = cantera_soln.TDY
+    cantera_soln.TPX = temp_unburned, pres_unburned, x_reference
 
-    # now find the conditions for the burned gas
-    cantera_soln.TPX = temp_ignition, pres_unburned, x_unburned
-    cantera_soln.equilibrate("TP")
+    # Pull temperature, density, mass fractions, and pressure from Cantera
+    # set the mass flow rate at the inlet
+    sim = cantera.ImpingingJet(gas=cantera_soln, width=width)
+    sim.inlet.mdot = rhoU_int
+    sim.set_refine_criteria(ratio=2, slope=0.1, curve=0.1, prune=0.0)
+    sim.set_initial_guess(products='equil')
+    sim.solve(loglevel=0, refine_grid=True, auto=True)
 
-    temp_burned, rho_burned, y_burned = cantera_soln.TDY
-    pres_burned = cantera_soln.P
+    # ~~~ Reactants
+    assert np.absolute(sim.density[0]*sim.velocity[0] - rhoU_int) < 1e-11
+    rho_unburned = sim.density[0]
+    y_unburned = sim.Y[:,0]
+    
+    # ~~~ Products
+    index_burned = np.argmax(sim.T) 
+    temp_burned = sim.T[index_burned]
+    rho_burned = sim.density[index_burned]
+    y_burned = sim.Y[:,index_burned]
 
+    # ~~~ Atmosphere
     x = np.zeros(nspecies)
     x[cantera_soln.species_index("O2")] = 0.21
     x[cantera_soln.species_index("N2")] = 0.79
     cantera_soln.TPX = temp_unburned, pres_unburned, x
 
-    # Pull temperature, density, mass fractions, and pressure from Cantera
     y_atmosphere = np.zeros(nspecies)
     dummy, rho_atmosphere, y_atmosphere = cantera_soln.TDY
-    cantera_soln.equilibrate("TP")
     temp_atmosphere, rho_atmosphere, y_atmosphere = cantera_soln.TDY
-    pres_atmosphere = cantera_soln.P
-    
+
+    # Pull temperature, density, mass fractions, and pressure from Cantera
     y_shroud = y_atmosphere*0.0
     y_shroud[cantera_soln.species_index("N2")] = 1.0
 
@@ -547,15 +542,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # }}}    
 
     # {{{ Initialize transport model
-    if transport == "Mixture":
-        from mirgecom.transport import MixtureAveragedTransport
-        physical_transport = MixtureAveragedTransport(pyrometheus_mechanism,
-                                                      factor=speedup_factor)
-    if transport == "PowerLaw":
-        from mirgecom.transport import PowerLawTransport
-        lewis = np.ones((nspecies))
-        physical_transport = PowerLawTransport(lewis=np.ones((nspecies)),
-                                               beta=4.093e-7*speedup_factor)
+    from mirgecom.transport import MixtureAveragedTransport
+    physical_transport = MixtureAveragedTransport(pyrometheus_mechanism,
+                                                  factor=speedup_factor)
 
     gas_model = GasModel(eos=eos, transport=physical_transport)
 
@@ -737,16 +726,18 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ##################################
 
-    fluid_init = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
-        sigma_flame=0.00005, temperature=temp_ignition, pressure=101325.0,
-        flame_loc=0.10025, speedup_factor=speedup_factor,
+    fluid_init = Burner2D_Reactive(
+        sigma=0.00020, sigma_flame=0.00020,
+        temperature=temp_burned, pressure=101325.0,
+        speedup_factor=speedup_factor,
         mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
         species_unburn=y_unburned, species_burned=y_burned)
 
-    ref_state = Burner2D_Reactive(dim=dim, nspecies=nspecies, sigma=0.00020,
-        sigma_flame=0.00001, temperature=temp_ignition, pressure=101325.0,
-        flame_loc=0.1050, speedup_factor=speedup_factor,
+    ref_state = Burner2D_Reactive(
+        sigma=0.00020, sigma_flame=0.00001,
+        temperature=temp_burned, pressure=101325.0,
+        speedup_factor=speedup_factor,
         mass_rate_burner=rhoU_int, mass_rate_shroud=rhoU_ext,
         species_shroud=y_shroud, species_atm=y_atmosphere,
         species_unburn=y_unburned, species_burned=y_burned)
@@ -760,13 +751,26 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         first_step = current_step + 0
         current_t = 0.0
   
+        import os
         if rank == 0:
-            print(f"Reading mesh from {mesh_filename}")
+            local_path = os.path.dirname(os.path.abspath(__file__)) + "/"
+            geo_path = local_path + mesh_filename + ".geo"
+            mesh2_path = local_path + mesh_filename + "-v2.msh"
+            mesh1_path = local_path + mesh_filename + "-v1.msh"
+
+            os.system(f"rm -rf {mesh1_path} {mesh2_path}")
+            os.system(f"gmsh {geo_path} -2 -o {mesh1_path}")
+            os.system(f"gmsh {mesh1_path} -save -format msh2 -o {mesh2_path}")
+
+            os.system(f"rm -rf {mesh1_path}")
+            print(f"Reading mesh from {mesh2_path}")
+
+        comm.Barrier()
 
         def get_mesh_data():
             from meshmode.mesh.io import read_gmsh
             mesh, tag_to_elements = read_gmsh(
-                mesh_filename, force_ambient_dim=dim,
+                mesh2_path, force_ambient_dim=dim,
                 return_tag_to_elements_map=True)
             tag_to_elements = None
             volume_to_tags = None
@@ -854,7 +858,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     if restart_file is None:
         if rank == 0:
             logging.info("Initializing soln.")
-        current_cv = fluid_init(nodes, eos, flow_rate=flow_rate)
+        current_cv = fluid_init(nodes, eos, flow_rate=flow_rate,
+                                prescribe_species=True)
     else:
         current_step = restart_step
         current_t = restart_data["t"]
@@ -944,171 +949,102 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     )
 
     sponge_sigma = force_evaluation(actx, sponge_init(x_vec=nodes))
-    ref_cv = force_evaluation(actx, ref_state(nodes, eos, flow_rate))
+    ref_cv = force_evaluation(actx, ref_state(nodes, eos, flow_rate,
+                                              state_minus=current_state,
+                                              prescribe_species=True))
 
 #####################################################################################
 
-    inflow_nodes = force_evaluation(actx, dcoll.nodes(dd_vol.trace('inlet')))
+    # {{{
+
+    inflow_nodes = force_evaluation(actx, dcoll.nodes(dd_vol.trace("inlet")))
     inflow_temperature = inflow_nodes[0]*0.0 + 300.0
-    def bnd_temperature_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-        return inflow_temperature
-
-#    def bnd_temperature_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-#        inflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
-#        inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
-#        if solve_the_flame:
-#            return inflow_nodes[0]*0.0 + 300.0
-#        else:
-#            inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
-#                flow_rate=flow_rate, state_minus=state_minus,
-#                solve_the_flame=solve_the_flame
-#            )
-#            inflow_state = make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-#                temperature_seed=300.0,
-#                limiter_func=_limit_fluid_cv, limiter_dd=dd_bdry)
-#            return inflow_state.temperature
-
-#    def bnd_temperature_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-#        inflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
-#        inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
-
-#        time = kwargs['time']
-
-#        inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
-#            flow_rate=flow_rate, state_minus=state_minus,
-#            solve_the_flame=solve_the_flame, time=time
-#        )
-#        inflow_state = make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-#            temperature_seed=300.0,
-#            #limiter_func=_limit_fluid_cv, limiter_dd=dd_bdry
-#        )
-#        return inflow_state.temperature
 
     def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
-
-        time = kwargs['time']
-
-        inflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
-        inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
         inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
-            flow_rate=flow_rate, state_minus=state_minus, time=time)
+            flow_rate=flow_rate, state_minus=state_minus,
+            prescribe_species=True)
         return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
-            temperature_seed=300.0, #smoothness=inflow_nodes[0]*0.0,
-            #limiter_func=_limit_fluid_cv, limiter_dd=dd_bdry
-        )
+                                temperature_seed=300.0)
 
-    inflow_nodes = force_evaluation(actx, dcoll.nodes(dd_vol.trace('inlet')))
-    ref_cv_inlet = force_evaluation(actx, ref_state(inflow_nodes, eos, flow_rate))
-
-    from mirgecom.inviscid import inviscid_flux, inviscid_facial_flux_rusanov
-    from mirgecom.flux import num_flux_central
+    from mirgecom.inviscid import inviscid_flux
     from mirgecom.viscous import viscous_flux
+    from mirgecom.flux import num_flux_central, num_flux_lfr
 
-    """
-    """
-    from mirgecom.fluid import species_mass_fraction_gradient
-    class MyPrescribedBoundary(PrescribedFluidBoundary):
-        r"""My prescribed boundary function. """
+    class MyPrescribedBoundary(MengaldoBoundaryCondition):
+        r"""Prescribed my boundary function."""
 
-        def __init__(self, bnd_state_func, temperature_func):
+        def __init__(self, wall_temperature, boundary_state_func):
             """Initialize the boundary condition object."""
-            self.bnd_state_func = bnd_state_func
-            PrescribedFluidBoundary.__init__(self,
-            boundary_state_func=bnd_state_func,
-            inviscid_flux_func=self.inviscid_wall_flux,
-            viscous_flux_func=self.viscous_wall_flux,
-            boundary_temperature_func=temperature_func,
-            boundary_gradient_cv_func=self.grad_cv_bc)
+            self._wall_temp = wall_temperature
+            self._bnd_state_func = boundary_state_func
 
-        def prescribed_state_for_advection(self, dcoll, dd_bdry, gas_model,
-                                           state_minus, **kwargs):
-            state_plus = self.bnd_state_func(dcoll, dd_bdry, gas_model,
-                                             state_minus, **kwargs)
+        def state_plus(self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+            state_bc = self._bnd_state_func(
+                dcoll, dd_bdry, gas_model, state_minus, **kwargs)
 
-            mom_x = - state_minus.cv.momentum[0]
-            mom_y = - state_minus.cv.momentum[1] + 2.0*state_plus.cv.momentum[1]
+            mom_x = -state_minus.cv.momentum[0]
+            mom_y = 2.0*state_bc.cv.momentum[1] - state_minus.cv.momentum[1]
             mom_plus = make_obj_array([mom_x, mom_y])
 
-            kin_energy_ref = 0.5/state_plus.cv.mass*np.dot(state_plus.cv.momentum, state_plus.cv.momentum)
-            kin_energy_mod = 0.5/state_plus.cv.mass*np.dot(mom_plus, mom_plus)
-            energy_plus = state_plus.cv.energy - kin_energy_ref + kin_energy_mod
+            int_energy_plus = state_bc.cv.mass*eos.get_internal_energy(
+                temperature=state_minus.temperature,
+                species_mass_fractions=state_bc.species_mass_fractions)
+            kin_energy_plus = 0.5*np.dot(mom_plus, mom_plus)/state_bc.cv.mass
 
-            cv = make_conserved(dim=2, mass=state_plus.cv.mass,
-                energy=energy_plus, momentum=mom_plus,
-                species_mass=state_plus.cv.species_mass)
+            cv_plus = make_conserved(dim=2,
+                                     mass=state_bc.cv.mass,
+                                     energy=int_energy_plus+kin_energy_plus,
+                                     momentum=mom_plus,
+                                     species_mass=state_bc.cv.species_mass)
 
-            return make_fluid_state(cv=cv, gas_model=gas_model,
-                                    temperature_seed=300.0)
+            return make_fluid_state(cv=cv_plus, gas_model=gas_model,
+                                    temperature_seed=state_minus.temperature)
 
-        def prescribed_state_for_diffusion(self, dcoll, dd_bdry, gas_model,
-                                           state_minus, **kwargs):
-            return self.bnd_state_func(dcoll, dd_bdry, gas_model,
-                                       state_minus, **kwargs)
+        def state_bc(self, dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+            return self._bnd_state_func(dcoll, dd_bdry, gas_model,
+                                        state_minus, **kwargs)
+
+        def temperature_bc(self, dcoll, dd_bdry, state_minus, **kwargs):
+            """Get temperature value used in grad(T)."""
+            actx = state_minus.array_context
+            wall_temp = project_from_base(dcoll, dd_bdry, self._wall_temp)
+            return actx.np.zeros_like(state_minus.temperature) + wall_temp
+
+        def grad_cv_bc(self, dcoll, dd_bdry, gas_model, state_minus,
+                       grad_cv_minus, normal, **kwargs):
+            """Return grad(CV) for boundary calculation of viscous flux."""
+            return grad_cv_minus
+
+        def grad_temperature_bc(self, dcoll, dd_bdry, grad_t_minus, normal,
+                                **kwargs):
+            """Return BC on grad(temperature)."""
+            # Mengaldo Eqns (50-51)
+            return grad_t_minus
 
         def inviscid_wall_flux(self, dcoll, dd_bdry, gas_model, state_minus,
-                numerical_flux_func, **kwargs):
+                               numerical_flux_func, **kwargs):
 
-            state_plus = self.prescribed_state_for_advection(dcoll=dcoll,
-                dd_bdry=dd_bdry, gas_model=gas_model, 
-                state_minus=state_minus,**kwargs)
+            state_plus = self.state_plus(
+                dcoll=dcoll, dd_bdry=dd_bdry, gas_model=gas_model,
+                state_minus=state_minus, **kwargs)
 
             state_pair = TracePair(dd_bdry, interior=state_minus,
                                    exterior=state_plus)
 
-            actx = state_minus.array_context
-            normal = actx.thaw(dcoll.normal(dd_bdry))
+    # }}}
 
-            actx = state_pair.int.array_context
-            lam = actx.np.maximum(state_pair.int.wavespeed,
-                                  state_pair.ext.wavespeed)
-            from mirgecom.flux import num_flux_lfr
-            return num_flux_lfr(
-                f_minus_normal=inviscid_flux(state_pair.int)@normal,
-                f_plus_normal=inviscid_flux(state_pair.ext)@normal,
-                q_minus=state_pair.int.cv,
-                q_plus=state_pair.ext.cv, lam=lam)
-
-        def grad_cv_bc(self, state_plus, state_minus, grad_cv_minus, normal,
-                       **kwargs):
-            """Return grad(CV) for boundary calculation of viscous flux."""
-            return grad_cv_minus
-
-        def viscous_wall_flux(self, dcoll, dd_bdry, gas_model, state_minus,
-            grad_cv_minus, grad_t_minus, numerical_flux_func, **kwargs):
-            """Return the boundary flux for viscous flux."""
-            actx = state_minus.array_context
-            normal = actx.thaw(dcoll.normal(dd_bdry))
-
-            state_plus = self.prescribed_state_for_diffusion(dcoll=dcoll,
-                dd_bdry=dd_bdry, gas_model=gas_model,
-                state_minus=state_minus, **kwargs)
-
-            grad_cv_plus = self.grad_cv_bc(state_plus=state_plus,
-                state_minus=state_minus, grad_cv_minus=grad_cv_minus,
-                normal=normal, **kwargs)
-
-            grad_t_plus = self._bnd_grad_temperature_func(
-                dcoll=dcoll, dd_bdry=dd_bdry, gas_model=gas_model,
-                state_minus=state_minus, grad_cv_minus=grad_cv_minus,
-                grad_t_minus=grad_t_minus)
-
-            # Note that [Mengaldo_2014]_ uses F_v(Q_bc, dQ_bc) here and
-            # *not* the numerical viscous flux as advised by [Bassi_1997]_.
-            f_ext = viscous_flux(state=state_plus, grad_cv=grad_cv_plus,
-                                 grad_t=grad_t_plus)
-            return f_ext@normal
-
-    linear_bnd = LinearizedOutflow2DBoundary(free_stream_density=rho_atmosphere,
+    linear_bnd = LinearizedOutflowBoundary(free_stream_density=rho_atmosphere,
         free_stream_pressure=101325.0, free_stream_velocity=np.zeros(shape=(dim,)),
         free_stream_species_mass_fractions=y_atmosphere)
     
     boundaries = {
-        BoundaryDomainTag("inlet"): MyPrescribedBoundary(bnd_state_func=inlet_bnd_state_func, temperature_func=bnd_temperature_func),
+        BoundaryDomainTag("inlet"): MyPrescribedBoundary(boundary_state_func=inlet_bnd_state_func,
+                                                         wall_temperature=300.0),
         BoundaryDomainTag("symmetry"): AdiabaticSlipBoundary(),
-        BoundaryDomainTag("burner"): AdiabaticNoslipWallBoundary(),
         BoundaryDomainTag("outlet"): PressureOutflowBoundary(boundary_pressure=101325.0),
         BoundaryDomainTag("linear"): linear_bnd,
-        BoundaryDomainTag("wall"): IsothermalWallBoundary(wall_temperature=300.0)
+        BoundaryDomainTag("burner"): IsothermalWallBoundary(wall_temperature=300.0)
     }
 
 ####################################################################################
@@ -1343,24 +1279,22 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                        species_mass=source_spec)
 
 
+    # ~~~~~~~
     def gravity_source_terms(cv):
         """Gravity."""
-        gravity = -9.80665*speedup_factor
+        gravity = - 9.80665 * speedup_factor**2
         delta_rho = cv.mass - rho_atmosphere
-        return make_conserved(dim=2,
-                              mass=cv.mass*0.0,
-                              energy=delta_rho*cv.velocity[1]*gravity,
-                              momentum=make_obj_array([cv.mass*0.0,
-                                                       delta_rho*gravity]),
-                              species_mass=cv.species_mass*0.0)
+        return make_conserved(
+            dim=2,
+            mass=zeros,
+            energy=delta_rho*cv.velocity[1]*gravity,
+            momentum=make_obj_array([zeros, delta_rho*gravity]),
+            species_mass=cv.species_mass*0.0)
 
 
     def chemical_source_term(cv, temperature):
-        if solve_the_flame:
-            return chem_rate*speedup_factor*reaction_rates_damping*(
-                eos.get_species_source_terms(cv, temperature))
-        else:
-            return zeros
+        return chem_rate*speedup_factor*reaction_rates_damping*(
+            eos.get_species_source_terms(cv, temperature))
 
 ##############################################################################
 
