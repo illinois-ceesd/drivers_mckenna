@@ -37,7 +37,7 @@ from logpyle import IntervalTimer, set_dt
 from pytools.obj_array import make_obj_array
 from arraycontext import thaw, freeze
 from meshmode.dof_array import DOFArray
-from grudge.eager import EagerDGDiscretization
+#from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import BoundaryDomainTag, VolumeDomainTag
 from grudge.dof_desc import DOFDesc, as_dofdesc, DISCR_TAG_BASE, VolumeDomainTag
@@ -67,7 +67,7 @@ from mirgecom.boundary import (
     PressureOutflowBoundary,
     PrescribedFluidBoundary,
     AdiabaticNoslipWallBoundary,
-    LinearizedOutflow2DBoundary,
+    LinearizedOutflowBoundary,
     AdiabaticSlipBoundary)
 from mirgecom.fluid import make_conserved
 from mirgecom.eos import PyrometheusMixture
@@ -365,7 +365,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
 
-    mesh_filename = "mesh_11m_10mm_020um-v2.msh"
+    mesh_filename = "mesh_v2_100um_noSample.msh"
 
     rst_path = "restart_data/"
     viz_path = "viz_data/"
@@ -678,7 +678,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return theta*(field - cell_avgs) + cell_avgs
 
 
-    def _limit_fluid_cv(cv, pressure, temperature, dd=None):
+    def _limit_fluid_cv(cv, temperature_seed, gas_model, dd=None):
+
+        temperature = gas_model.eos.temperature(
+            cv=cv, temperature_seed=temperature_seed)
+        pressure = gas_model.eos.pressure(
+            cv=cv, temperature=temperature)
 
         # limit species
         spec_lim = make_obj_array([
@@ -860,23 +865,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             current_t = 0.0
             current_step = 0
 
-        if restart_order != order:
-            restart_discr = EagerDGDiscretization(
-                actx,
-                local_mesh,
-                order=restart_order,
-                mpi_communicator=comm)
-            from meshmode.discretization.connection import make_same_mesh_connection
-            connection = make_same_mesh_connection(
-                actx,
-                dcoll.discr_from_dd("vol"),
-                restart_discr.discr_from_dd("vol"))
+#        if restart_order != order:
+#            restart_discr = EagerDGDiscretization(
+#                actx,
+#                local_mesh,
+#                order=restart_order,
+#                mpi_communicator=comm)
+#            from meshmode.discretization.connection import make_same_mesh_connection
+#            connection = make_same_mesh_connection(
+#                actx,
+#                dcoll.discr_from_dd("vol"),
+#                restart_discr.discr_from_dd("vol"))
 
-            current_cv = connection(restart_data["state"])
-            tseed = connection(restart_data["temperature_seed"])
-        else:
-            current_cv = restart_data["state"]
-            tseed = restart_data["temperature_seed"]
+#            current_cv = connection(restart_data["state"])
+#            tseed = connection(restart_data["temperature_seed"])
+#        else:
+        current_cv = restart_data["state"]
+        tseed = restart_data["temperature_seed"]
 
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
