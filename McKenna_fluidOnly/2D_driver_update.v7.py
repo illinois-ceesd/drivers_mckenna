@@ -573,10 +573,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #############################################################################
 
-    def reaction_damping(dcoll, field, **kwargs):
+    def reaction_damping(dcoll, nodes, **kwargs):
 
-        actx = field.array_context
-        nodes = force_evaluation(actx, dcoll.nodes())
         ypos = nodes[1]
 
         y_max = 0.25
@@ -584,40 +582,29 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         y0 = (y_max - y_thickness)
         dy = +((ypos - y0)/y_thickness)
-        damping = actx.np.where(
+        return actx.np.where(
             actx.np.greater(ypos, y0),
-                actx.np.where(actx.np.greater(ypos, y_max),
-                              0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
-                1.0
-        )
+            actx.np.where(actx.np.greater(ypos, y_max),
+                          0.0, 1.0 - (3.0*dy**2 - 2.0*dy**3)),
+            1.0)
 
-        return damping
+    # ~~~~~~~~~~~~~~
 
-#############################################################################
-
-    from mirgecom.artificial_viscosity import smoothness_indicator
-    def smoothness_region(dcoll, field):
-        
-        actx = field.array_context
-        nodes = force_evaluation(actx, dcoll.nodes())
-        xpos = nodes[0]
+    def smoothness_region(dcoll, nodes):
         ypos = nodes[1]
 
-        y_max = 0.45
+        y_max = 0.75
         y_thickness = 0.20
 
         y0 = (y_max - y_thickness)
         dy = +((ypos - y0)/y_thickness)
-        region = actx.np.where(
+        return actx.np.where(
             actx.np.greater(ypos, y0),
-                actx.np.where(actx.np.greater(ypos, y_max),
-                              1.0, 3.0*dy**2 - 2.0*dy**3),
-                0.0
-        )
+            actx.np.where(actx.np.greater(ypos, y_max),
+                          1.0, 3.0*dy**2 - 2.0*dy**3),
+            0.0)
 
-        return region
-
-##############################################################################
+    # ~~~~~~~~~~~~~~
 
     from mirgecom.limiter import bound_preserving_limiter
 
@@ -816,9 +803,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #####################################################################################
 
-    smooth_region = force_evaluation(actx, smoothness_region(dcoll, nodes[0]))
+    smooth_region = force_evaluation(actx, smoothness_region(dcoll, nodes))
 
-    reaction_rates_damping = force_evaluation(actx, reaction_damping(dcoll, nodes[0]))
+    reaction_rates_damping = force_evaluation(actx, reaction_damping(dcoll, nodes))
 
     def _get_fluid_state(cv, temp_seed):
         return make_fluid_state(cv=cv, gas_model=gas_model,
