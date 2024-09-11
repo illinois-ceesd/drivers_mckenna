@@ -370,24 +370,23 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     
     # discretization and model control
     order = 2
-    use_overintegration = False
 
-    x0_sponge = 0.15
-    sponge_amp = 400.0
+    x0_sponge = 0.25
+    sponge_amp = 300.0
     theta_factor = 0.02
 
-    mechanism_file = "uiuc_7sp"
+    mechanism_file = "uiuc_20sp"
     equiv_ratio = 1.0
     speedup_factor = 10.0
-    chem_rate = 1.0
     total_flow_rate = 25.0
-    Twall = 300.0
-    solve_the_flame = True
 
-    restart_iterations = False
+    prescribe_species = False
 
 ##########################################################################
 
+    use_overintegration = False
+    restart_iterations = False
+    chem_rate = 1.0
     dim = 2
 
     def _compiled_stepper_wrapper(state, t, dt, rhs):
@@ -923,7 +922,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #####################################################################################
 
     # initialize the sponge field
-    sponge_x_thickness = 0.055
+    sponge_x_thickness = 0.080
     sponge_y_thickness = 0.055
 
     xMaxLoc = x0_sponge + sponge_x_thickness
@@ -938,7 +937,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     sponge_sigma = force_evaluation(actx, sponge_init(x_vec=nodes))
     ref_cv = force_evaluation(actx, ref_state(nodes, eos, flow_rate,
                                               state_minus=current_state,
-                                              prescribe_species=True))
+                                              prescribe_species=prescribe_species))
 
 #####################################################################################
 
@@ -950,7 +949,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def inlet_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
         inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
             flow_rate=flow_rate, state_minus=state_minus,
-            prescribe_species=True)
+            prescribe_species=prescribe_species)
         return make_fluid_state(cv=inflow_cv_cond, gas_model=gas_model,
                                 temperature_seed=300.0)
 
@@ -1001,7 +1000,27 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         def grad_cv_bc(self, dcoll, dd_bdry, gas_model, state_minus,
                        grad_cv_minus, normal, **kwargs):
             """Return grad(CV) for boundary calculation of viscous flux."""
-            return grad_cv_minus
+            if prescribe_species:
+                return grad_cv_minus
+            else:
+                normal_velocity = state_minus.cv.velocity@normal
+
+                inflow_cv_cond = ref_state(x_vec=inflow_nodes, eos=eos,
+                                           flow_rate=flow_rate,
+                                           prescribe_species=True)
+                y_reference = inflow_cv_cond.species_mass_fractions
+
+                grad_y_bc = 0.*grad_cv_minus.species_mass
+                grad_species_mass_bc = 0.*grad_cv_minus.species_mass
+                for i in range(nspecies):
+                    delta_y = state_minus.cv.species_mass_fractions[i] - y_reference[i]
+                    dij = state_minus.tv.species_diffusivity[i]
+                    grad_y_bc[i] = + (normal_velocity*delta_y/dij) * normal
+                    grad_species_mass_bc[i] = (
+                        state_minus.mass_density*grad_y_bc[i]
+                        + state_minus.species_mass_fractions[i]*grad_cv_minus.mass)
+
+                return grad_cv_minus.replace(species_mass=grad_species_mass_bc)
 
         def grad_temperature_bc(self, dcoll, dd_bdry, grad_t_minus, normal,
                                 **kwargs):
