@@ -164,19 +164,16 @@ Line(75) = {53, 11};
 Line(76) = {11, 53};
 
 /*horizontal*/
-Transfinite Line {  1} = 10 Using Bump 0.75;
-Transfinite Line { 17} = 10 Using Bump 0.75;
-Transfinite Line {  2} = 18 Using Progression 1.02;
-Transfinite Line { 18} = 18 Using Progression 1.02;
+Transfinite Line {  1} = 18 Using Progression 1.0;
+Transfinite Line { 17} = 18 Using Progression 1.0;
+Transfinite Line {  2} = 21 Using Progression 1.04;
+Transfinite Line { 18} = 21 Using Progression 1.04;
 
 Transfinite Line {- 5} = 26 Using Progression 1.00;
 Transfinite Line {-19} = 26 Using Progression 1.00;
 Transfinite Line { 23} = 28 Using Progression 1.00;
 Transfinite Line {-50} =  7 Using Progression 1.00;
 Transfinite Line {-51} = 22 Using Progression 1.01;
-
-Transfinite Line { 26} = 19 Using Progression 1.024;
-Transfinite Line { 54} = 19 Using Progression 1.055;
 
 /*vertical*/
 Transfinite Line {  3} = 14 Using Progression 1.1;
@@ -187,8 +184,8 @@ Transfinite Line { 13} = 14 Using Progression 1.0;
 Transfinite Line { 10} = 14 Using Progression 1.0;
 
 /*burner*/
-Transfinite Line {-15} = 15 Using Progression 1.04;
-Transfinite Line {-12} = 15 Using Progression 1.04;
+Transfinite Line {-15} = 18 Using Progression 1.066;
+Transfinite Line {-12} = 18 Using Progression 1.066;
 Transfinite Line { 14} = 11 Using Progression 1.00;
 Transfinite Line { 11} = 11 Using Progression 1.00;
 
@@ -205,20 +202,46 @@ Transfinite Line { 59} = 10 Using Progression 1.100;
 /*Transfinite Line { 30} = 3 Using Progression 1.020;*/
 /*Transfinite Line { 66} = 31 Using Progression 1.033;*/
 
-Transfinite Line { 27} = 37 Using Progression 1.0;
-Transfinite Line { 55} = 37 Using Progression 1.0;
+Transfinite Line { 26} = 21 Using Progression 1.005;
+Transfinite Line { 54} = 21 Using Progression 1.027;
 
-Transfinite Line { 28} = 41 Using Progression 1.008;
-Transfinite Line { 56} = 41 Using Progression 1.005;
+Transfinite Line { 27} = 45 Using Progression 1.005;
+Transfinite Line { 55} = 45 Using Progression 1.005;
 
-Transfinite Line { 57} = 11 Using Progression 1.00;
-Transfinite Line {-29} = 11 Using Progression 1.027;
+Transfinite Line { 28} = 45 Using Progression 1.008;
+Transfinite Line { 56} = 45 Using Progression 1.005;
+
+Transfinite Line { 57} = 15 Using Progression 1.00;
+Transfinite Line {-29} = 15 Using Progression 1.027;
 
 Transfinite Line { 69} = 2;
 Transfinite Line { 75} = 4;
 Transfinite Line { 76} = 4;
 
 //+
+
+Field[4] = Box;
+Field[4].XMax = 0.04;
+Field[4].XMin = 0.016;
+Field[4].YMax = 0.16;
+Field[4].YMin = 0.10;
+Field[4].ZMax = -1;
+Field[4].ZMin = 1;
+Field[4].Thickness = 0.01;
+Field[4].VIn = 0.0008;
+Field[4].VOut = 0.12;
+
+Field[5] = Box;
+Field[5].XMax = 0.06;
+Field[5].XMin = 0.016;
+Field[5].YMax = 0.215;
+Field[5].YMin = 0.10;
+Field[5].ZMax = -1;
+Field[5].ZMin = 1;
+Field[5].Thickness = 0.1;
+Field[5].VIn = 0.0012;
+Field[5].VOut = 0.12;
+
 Field[1] = Box;
 Field[1].XMax = 0.08;
 Field[1].XMin = 0.0;
@@ -227,7 +250,7 @@ Field[1].YMin = 0.105;
 Field[1].ZMax = -1;
 Field[1].ZMin = 1;
 Field[1].Thickness = 0.8;
-Field[1].VIn = 0.002;
+Field[1].VIn = 0.0018;
 Field[1].VOut = 0.12;
 
 Field[2] = Box;
@@ -252,28 +275,6 @@ Field[3].Thickness = 0.8;
 Field[3].VIn = 0.008;
 Field[3].VOut = 0.12;
 
-Field[4] = Box;
-Field[4].XMax = 0.05;
-Field[4].XMin = 0.016;
-Field[4].YMax = 0.16;
-Field[4].YMin = 0.10;
-Field[4].ZMax = -1;
-Field[4].ZMin = 1;
-Field[4].Thickness = 0.01;
-Field[4].VIn = 0.001;
-Field[4].VOut = 0.12;
-
-Field[5] = Box;
-Field[5].XMax = 0.065;
-Field[5].XMin = 0.016;
-Field[5].YMax = 0.215;
-Field[5].YMin = 0.10;
-Field[5].ZMax = -1;
-Field[5].ZMin = 1;
-Field[5].Thickness = 0.01;
-Field[5].VIn = 0.0015;
-Field[5].VOut = 0.12;
-
 
 Field[6] = Min;
 Field[6].FieldsList = {1, 2, 3, 4, 5};
@@ -294,7 +295,7 @@ Point(104) = {int_radius           ,   0.000100 + burner_height, 0., 1.0};
 /*Point(106) = {      0.005 + 0.00050, flame_dist + burner_height, 0., 1.0};*/
 Point(107) = {        0.           ,  -0.000200 + mat_location , 0., 1.0};
 
-Line Loop(42) = {1,3,-17,-16};
+Line Loop(42) = {-17,-16,1,3};
 Plane Surface(3) = {42};
 Transfinite Surface {3} Alternate;
 
