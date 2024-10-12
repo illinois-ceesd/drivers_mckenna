@@ -611,7 +611,7 @@ reactions:
 - equation: C2H4 + O2 <=> C2H3 + HO2  # Reaction 232
   rate-constant: {A: 4.22e+13, b: 0.0, Ea: 6.08e+04}
 
-- equation: CH2* + N2 <=> CH2 + N2  # Reaction 64 # XXX affects a bit the timescale
+- equation: CH2* + N2 <=> CH2 + N2  # Reaction 64
   rate-constant: {A: 1.5e+13, b: 0.0, Ea: 600.0}
 - equation: CH2* + O <=> CO + H2  # Reaction 67
   rate-constant: {A: 1.5e+13, b: 0.0, Ea: 0.0}
